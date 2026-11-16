@@ -9,6 +9,7 @@ import { SettingsSheet } from "@/features/settings/SettingsSheet";
 import { SetupScreen } from "@/features/setup/SetupScreen";
 import { onDownloadEvent, onToolStatus, onToolUpdated } from "@/lib/ipc";
 import { TOOL_NAMES } from "@/lib/tools";
+import { useAppUpdate } from "@/stores/appUpdate";
 import { selectAllUsable, useBinaries } from "@/stores/binaries";
 import { useDownloads } from "@/stores/downloads";
 import { useToasts } from "@/stores/toasts";
@@ -49,7 +50,25 @@ export function App() {
           action: { label: "Update", run: () => void useBinaries.getState().sync(true) },
         });
       });
+    // Siphon itself: look at launch and once a day, and always ask before restarting.
+    const checkApp = () =>
+      void useAppUpdate
+        .getState()
+        .check()
+        .then(() => {
+          const { available, install } = useAppUpdate.getState();
+          if (!available) return;
+          useToasts.getState().show({
+            id: "app-update",
+            title: `Siphon ${available} is available`,
+            description: "Updating takes a few seconds and restarts the app.",
+            action: { label: "Restart to update", run: () => void install() },
+          });
+        });
+    checkApp();
+    const daily = window.setInterval(checkApp, 24 * 60 * 60 * 1000);
     return () => {
+      window.clearInterval(daily);
       for (const subscription of subscriptions) void subscription.then((unlisten) => unlisten());
     };
   }, []);

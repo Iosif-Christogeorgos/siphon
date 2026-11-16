@@ -1,6 +1,7 @@
 // Hide the console window in release builds on Windows.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod app_update;
 mod binaries;
 mod commands;
 mod downloads;
@@ -39,6 +40,7 @@ fn main() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             preview::clear_cache(app.handle());
             let binaries = binaries::BinaryManager::new(app.handle())?;
@@ -63,6 +65,8 @@ fn main() {
             commands::set_settings,
             commands::open_file,
             commands::reveal_file,
+            app_update::app_update_check,
+            app_update::app_update_install,
         ])
         .build(tauri::generate_context!())
         .expect("failed to start Siphon")

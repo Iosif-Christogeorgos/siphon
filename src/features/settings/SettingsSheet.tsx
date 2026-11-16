@@ -8,6 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sheet } from "@/components/ui/sheet";
 import { ipc, toAppError } from "@/lib/ipc";
 import { TOOL_NAMES, TOOL_ORDER } from "@/lib/tools";
+import { useAppUpdate } from "@/stores/appUpdate";
 import { selectAvailable, useBinaries } from "@/stores/binaries";
 import { useToasts } from "@/stores/toasts";
 import { useUi } from "@/stores/ui";
@@ -144,7 +145,7 @@ function SettingsForm({
 
       <Section
         title="Updates"
-        hint="yt-dlp, FFmpeg and Deno are checked when Siphon starts and once a day. Sites change often, and yt-dlp follows."
+        hint="Siphon and its tools (yt-dlp, FFmpeg, Deno) are checked at launch and once a day. Sites change often, and yt-dlp follows."
       >
         <Choice
           label="yt-dlp releases"
@@ -229,10 +230,11 @@ function Tools() {
   const sync = useBinaries((state) => state.sync);
   // (A boolean, not the list: a selector must return a stable value.)
   const available = useBinaries((state) => selectAvailable(state).length > 0);
+  const app = useAppUpdate();
   if (!tools) return null;
 
   const run = async () => {
-    await sync(available);
+    await Promise.all([sync(available), app.check()]);
     // A tool can't be swapped while a download is using it. Say so, or the
     // button would seem to have done nothing.
     const stillWaiting = selectAvailable(useBinaries.getState()).length > 0;
@@ -248,6 +250,20 @@ function Tools() {
   return (
     <div className="mt-3 rounded-xl border">
       <ul>
+        <li className="flex items-center justify-between gap-3 border-b px-3 py-2 text-[13px]">
+          <span className="font-medium">Siphon</span>
+          <span className="flex items-center gap-2 text-xs text-muted-foreground tabular-nums">
+            <span>
+              {app.current ?? "…"}
+              {app.available && <span className="text-primary"> → {app.available}</span>}
+            </span>
+            {app.available && (
+              <Button size="sm" className="h-7" disabled={app.installing} onClick={() => void app.install()}>
+                Restart to update
+              </Button>
+            )}
+          </span>
+        </li>
         {TOOL_ORDER.map((tool) => {
           const status = tools[tool];
           return (

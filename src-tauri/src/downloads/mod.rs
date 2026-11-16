@@ -239,6 +239,11 @@ impl DownloadManager {
         self.finished.lock().unwrap().contains(path)
     }
 
+    /// True when nothing is running or waiting (paused downloads don't count).
+    pub fn is_idle(&self) -> bool {
+        self.jobs.lock().unwrap().is_empty()
+    }
+
     /// Re-evaluates the queue, after the concurrency limit changed.
     pub fn refresh_queue(&self) {
         self.gate_changed.notify_waiters();
@@ -320,6 +325,7 @@ impl DownloadManager {
                     Ok(Some(_)) => {
                         // Formats looked up by the old version may be the problem.
                         job.app.state::<MediaCache>().forget(url);
+                        job.emit(Tracker::new(false).current());
                         self.attempt(job, url, options, trim, &output_dir).await
                     }
                     // Already current (or the update couldn't run): the first error stands.

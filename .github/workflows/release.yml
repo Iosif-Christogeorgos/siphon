@@ -1,0 +1,49 @@
+# Builds and signs Siphon when a version tag (v0.5.0, …) is pushed, and
+# attaches the installer and the updater manifest (latest.json) to a draft
+# GitHub release. Installed copies only see the update once that draft is
+# published.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Signs the update so installed copies accept it (see the public
+          # key in src-tauri/tauri.conf.json). The key has no password.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: Siphon ${{ github.ref_name }}
+          releaseBody: See the README for what each version adds.
+          releaseDraft: true
+          updaterJsonPreferNsis: true
