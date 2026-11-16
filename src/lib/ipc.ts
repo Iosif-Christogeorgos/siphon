@@ -11,7 +11,6 @@ export const ipc = {
   cancelDownload: (id: string) => invoke<void>("cancel_download", { id }),
   openFile: (path: string) => invoke<void>("open_file", { path }),
   revealFile: (path: string) => invoke<void>("reveal_file", { path }),
-  openUrl: (url: string) => invoke<void>("open_url", { url }),
 };
 
 export const onToolStatus = (handler: (status: ToolStatus) => void): Promise<UnlistenFn> =>

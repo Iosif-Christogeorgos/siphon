@@ -1,6 +1,7 @@
 import { AnimatePresence } from "motion/react";
 import { useEffect } from "react";
 import { TitleBar } from "@/components/TitleBar";
+import { Home } from "@/features/home/Home";
 import { SetupScreen } from "@/features/setup/SetupScreen";
 import { onToolStatus } from "@/lib/ipc";
 import { selectAllUsable, useBinaries } from "@/stores/binaries";
@@ -11,9 +12,11 @@ export function App() {
 
   // Wire backend events into the store, then check the managed binaries.
   useEffect(() => {
-    const subscription = onToolStatus(useBinaries.getState().apply);
+    const subscriptions = [onToolStatus(useBinaries.getState().apply)];
     void useBinaries.getState().sync();
-    return () => void subscription.then((unlisten) => unlisten());
+    return () => {
+      for (const subscription of subscriptions) void subscription.then((unlisten) => unlisten());
+    };
   }, []);
 
   return (
@@ -22,7 +25,9 @@ export function App() {
       <div className="pointer-events-none absolute inset-x-0 top-0 h-80 bg-[radial-gradient(60%_100%_at_50%_0%,var(--primary-soft),transparent)]" />
       <TitleBar />
       <main className="relative min-h-0 flex-1">
-        <AnimatePresence mode="wait">{loaded && !usable && <SetupScreen key="setup" />}</AnimatePresence>
+        <AnimatePresence mode="wait">
+          {!loaded ? null : usable ? <Home key="home" /> : <SetupScreen key="setup" />}
+        </AnimatePresence>
       </main>
     </div>
   );

@@ -5,6 +5,7 @@ mod binaries;
 mod commands;
 mod error;
 mod process;
+mod ytdlp;
 
 use std::sync::Arc;
 
@@ -23,6 +24,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::binaries_status,
             commands::binaries_sync,
+            commands::fetch_media,
         ])
         .run(tauri::generate_context!())
         .expect("failed to start Siphon");
