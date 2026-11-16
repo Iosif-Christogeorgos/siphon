@@ -6,7 +6,7 @@ Siphon is a personal-use tool. It does not bypass DRM; protected videos get a cl
 
 ## Status
 
-Siphon was built in phases, and all five are done. This is **v0.5.1**.
+Siphon was built in phases, and all five are done. This is **v0.5.2**.
 
 | Phase | Scope | State |
 | --- | --- | --- |
@@ -122,8 +122,9 @@ Every download joins a queue. A set number run at once (three by default) and th
 
 - **Pause** stops the download but keeps what it has fetched; **Resume** carries on from there.
 - **Cancel** stops it and deletes the partial files.
-- A download that fails because the connection dropped is tried once more on its own before the error is shown.
-- Closing the app pauses whatever is running, so no yt-dlp or ffmpeg process is left behind. The list itself is not kept between sessions.
+- A download that fails because the connection dropped or the site refused it is tried again on its own: twice, after 2 and 10 seconds. A site that is limiting requests (HTTP 429) gets one more try, after 30 seconds. The download shows "Trying again in a moment" while it waits.
+- Every new try, automatic or with **Try again**, carries on from what the last one fetched instead of starting over.
+- Closing the app stops every download and deletes their partial files, so no yt-dlp or ffmpeg process and no half-finished file is left behind. The list itself is not kept between sessions.
 
 A playlist link shows its videos with checkboxes. The ones you select are added to the queue with the current preset, and the best format is worked out for each video when its turn comes. A YouTube video link that also names a playlist offers a way to the whole playlist.
 
@@ -145,7 +146,7 @@ Video sites change often and yt-dlp follows within days, so an old yt-dlp is the
 - **Channel.** yt-dlp comes from its stable releases by default. **Nightly** switches to `yt-dlp/yt-dlp-nightly-builds`, which gets site fixes sooner.
 - **Install automatically or ask first.** By default a new version is installed in the background and a toast says what changed. With **Ask first**, the toast offers the update and nothing is replaced until you accept. A tool that is missing is always installed, because Siphon can't work without it.
 - **Never mid-download.** A tool is not replaced while a download is using it. The update waits and is tried again within the hour.
-- **Update and retry.** If a download fails in a way that points to an outdated yt-dlp (a bot check, an unreadable page, HTTP 403 or 429), Siphon looks for a newer yt-dlp and, if there is one, installs it and tries the download once more before reporting the error.
+- **Update and retry.** If a download fails in a way that points to an outdated yt-dlp (a bot check, an unreadable page, HTTP 403 or 429), Siphon looks for a newer yt-dlp and, if there is one, installs it and tries the download once more before reporting the error. If there is none, a refused or limited request is still tried again after a pause (see [Queue](#queue-playlists-and-settings)), and the video is looked up afresh in case the site changed what it offers.
 
 Siphon also updates itself. At launch it looks for a newer published release on GitHub. If there is one, a toast and Settings → Updates offer **Restart to update**. Siphon always asks first, because it has to restart, and it refuses while downloads are running or waiting. The update is only installed if its signature matches the public key built into the app.
 
@@ -160,6 +161,8 @@ The signing key is in the repository secret `TAURI_SIGNING_PRIVATE_KEY`; its pub
 ### Talking to yt-dlp
 
 All yt-dlp commands are built in Rust and passed as argument arrays, never as shell strings. Links are validated as plain `http(s)` URLs and placed after a `--` separator, so user input can't be read as an option.
+
+Two settings keep downloads fast. Segmented streams (HLS, DASH, which most sites other than YouTube use) are fetched four pieces at a time. A trimmed part is fetched by ffmpeg in the request size the site asks for (10 MB on YouTube), because YouTube sends a single large request at only about twice playback speed. The measurements are in [docs/decisions.md](docs/decisions.md#download-speed).
 
 Progress comes from `--progress-template` lines that the backend parses and folds into one overall percentage, weighted by stream size. It reaches the UI as `download://event` events.
 

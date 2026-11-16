@@ -10,7 +10,16 @@ Why Siphon works the way it does, and what is known not to be right yet. Progres
 - **The planner is the single source of truth.** `plan()` in `src-tauri/src/plan/mod.rs` is a pure function from formats, options and trim range to a recipe. The summary shown before downloading and the yt-dlp/ffmpeg commands are both generated from that recipe, so the app cannot describe one thing and do another.
 - **Stream ranking** prefers plain files over HLS copies, tracks with known codecs over unknown ones, and audio without levelled ("DRC") volume. These rules came from a real YouTube format list and have regression tests.
 - **The share preset defaults to 10 MB** and offers 10, 16, 50, 100 and 500 MB, because the current Discord and WhatsApp limits could not be confirmed (see device-support.md).
-- **Format metadata is cached in the backend** by URL (`src-tauri/src/state.rs`), so the frontend never sends formats back.
+- **Format metadata is cached in the backend** by URL (`src-tauri/src/state.rs`), so the frontend never sends formats back. A download that fails with an "outdated" error looks the video up again on its next try, because the site may have changed what it offers since. The cached copy is replaced, not dropped first, so the open video keeps working if the new lookup fails.
+
+### Download speed
+
+Measured on 2026-11-17 with the 4K test video below, on a connection that downloads a whole YouTube stream at about 52 MiB/s.
+
+- **Trimmed parts are fetched in the request size the site names** (`-request_size` for ffmpeg, from the format's `downloader_options.http_chunk_size`; 10 MB on YouTube). yt-dlp hands a section to ffmpeg, which otherwise asks for the rest of the stream in one request, and YouTube answers that at about twice playback speed: a five-minute 1080p part took 172 s, against 6 s in 10 MB requests, with byte-identical output. Sites that name no size are left alone, because a server that ignores `Range` could misbehave. The option is only passed if the installed ffmpeg knows it (checked once, `state::ChunkedRequests`): an older ffmpeg stops with "Unrecognized option", which matters on macOS, where ffmpeg comes from Homebrew.
+- **Segmented streams download four pieces at once** (`--concurrent-fragments 4`): 23 → 55 MiB/s on a YouTube HLS stream. Eight were no faster, and three downloads at once already means twelve connections to one site.
+- **yt-dlp retries five times with a growing pause** (1, 2, 4, 8 and 8 s) instead of its default ten in a row with none, which is over within a second. A short outage is ridden out inside one try; a longer one is left to Siphon's own retries (see Queue and settings). A piece of a segmented stream that can't be fetched fails the try (`--abort-on-unavailable-fragments`) instead of being left out of the file.
+- **Not done: reusing the lookup for the download** (`--load-info-json`). It would save about 1.2 s per download, at the risk of stream links that have expired since the lookup.
 
 ### Trimming
 
@@ -25,12 +34,17 @@ Why Siphon works the way it does, and what is known not to be right yet. Progres
 
 ### Queue and settings
 
-- **Pausing kills the process and keeps the partial files.** yt-dlp has no pause command. Resuming starts the same job again without `--force-overwrites`, so yt-dlp continues from its `.part` file, and a source that was already downloaded goes straight back to converting. Section (trimmed) downloads can't be continued by yt-dlp and start over when resumed.
+- **Pausing kills the process and keeps the partial files.** yt-dlp has no pause command.
+- **A paused or failed download keeps a record of its files** (`leftovers` in `src-tauri/src/downloads/mod.rs`, by download id). The next start under the same id, whether **Resume**, **Try again** or an automatic retry, runs without `--force-overwrites`, so yt-dlp continues from its `.part` file, and a source that was already downloaded goes straight back to converting. A new download runs with `--force-overwrites`, which also makes yt-dlp ignore partial files. The backend decides which applies; the frontend doesn't say. Section (trimmed) downloads are written by ffmpeg, which can't continue a file, so they start over.
+- **A download that began by replacing an existing file starts over on every try** (`Leftovers::replaces_existing`). Without `--force-overwrites`, yt-dlp would take the old file for the result and report success.
+- **Each stream file says whether it is an intermediate** awaiting a merge, rather than one flag per download. Cleanup deletes intermediates but only the `.part` companions of anything else, so a retry that picks different streams can never delete a finished file. A trimmed part is never an intermediate: it arrives under its final name.
 - **The queue is first in, first out behind one gate.** A job runs when it is first in line and fewer than the configured number are running. The limit is read each time, so changing it in Settings takes effect at once.
 - **Settings live in the backend** (`settings.json`), not in browser storage, because the backend is what uses them. The choice of preset and other per-download options stay in the frontend.
 - **Custom file names can't contain folders or `..`** and must contain at least one yt-dlp field. The folder is its own setting, and a name without fields would make every download overwrite the last.
-- **A network error gets one automatic retry**, two seconds later (`run` in `src-tauri/src/downloads/mod.rs`). Sites refuse or drop a request now and then and the same request works a moment later. Only one retry, so being offline still fails quickly. An "outdated" error is handled separately: yt-dlp is updated first, then the download is tried again.
+- **Errors say whether they may pass** (`Retry` on `AppError`, which the frontend never sees). A dropped or refused connection, HTTP 403 and 5xx errors get two more tries, after 2 and 10 seconds; HTTP 429 gets one, after 30 (`run` in `src-tauri/src/downloads/mod.rs`). A bot check is not retried, because asking again straight away makes a site more suspicious. An "outdated" error still updates yt-dlp first and tries again with it; if yt-dlp is already current, or the update has to wait for other downloads, it falls back to the pauses above. The wait shows as its own stage ("Trying again in a moment") and ends at once if the download is stopped.
+- **The cost of those retries:** being offline takes about 15 s to report instead of 5, and a connection lost in the middle of a download takes about 80 s to give up.
 - **The download list is not saved between sessions.** A finished file may have been moved or deleted since, and a half-finished one is simply started again.
+- **Closing the app removes partial files** (`DownloadManager::shut_down`). Every download is stopped, which also ends its yt-dlp or ffmpeg process, and what it left is deleted, along with the files of paused and failed downloads. Nothing would ever pick them up again: the list is gone, and a new download starts afresh.
 
 ### Managed binaries
 
@@ -62,13 +76,21 @@ Why Siphon works the way it does, and what is known not to be right yet. Progres
 
 - **Test links:** `https://www.youtube.com/watch?v=jNQXAC9IVRw` (19 seconds, a quick end-to-end check), `https://www.youtube.com/watch?v=aqz-KE-bpKQ` (10 minutes, 4K60: progress, presets, trimming, pause and resume), `https://www.youtube.com/playlist?list=PLa1F2ddGya_86Vmu2clTpAfBvBWnfLc9s` (20 videos: the playlist picker and the queue), `https://archive.org/details/BigBuckBunny_124` (a site other than YouTube).
 - **To test a tool update without waiting for a real release:** close the app, change `tools.yt_dlp.version` in `%LOCALAPPDATA%\app.siphon.desktop\bin\manifest.json` to an older value, and start it again.
+- **Retries and lost connections:** serve a file from a small local HTTP server that supports `Range`, can cut the connection after a set number of bytes, and then refuses requests for a set time. yt-dlp's generic extractor downloads `http://127.0.0.1:<port>/clip.mp4` like any other link, and the server's request log shows whether a retry continued (`Range: bytes=N-`) or started over. Point the download folder at a scratch folder first and set it back afterwards.
+- **Closing the app:** use the window's Close button (over the DevTools protocol, the button with `aria-label="Close"`). `taskkill /IM siphon.exe` without `/F` did not end the app in testing, so it says nothing about the exit handler.
+- **To listen for download events from DevTools:** `const T = window.__TAURI_INTERNALS__; await T.invoke("plugin:event|listen", { event: "download://event", target: { kind: "Any" }, handler: T.transformCallback((e) => console.log(e.payload)) });`
 - **To drive the running app without touching the desktop:** start it with `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222` and use the Chrome DevTools Protocol at `http://127.0.0.1:9222/json` (screenshots, `Runtime.evaluate`, `Input.insertText`, mouse events, `Emulation.setEmulatedMedia` for light mode). `window.__TAURI_INTERNALS__.invoke(…)` calls backend commands directly.
 
 ## Known issues
 
-- **Intermittent HTTP 403 on section downloads.** A trimmed YouTube download once failed with `ffmpeg exited with code 3436169992`, which is ffmpeg's `AVERROR_HTTP_FORBIDDEN`. The same request succeeded on every retry and from a shell, so it is YouTube refusing a request now and then. Since 0.5.1 a download that fails with a network error is tried once more after two seconds, which covers this; if the second try fails too, the error is shown ("The site dropped the connection … Try again").
+- **Intermittent HTTP 403 on section downloads.** A trimmed YouTube download once failed with `ffmpeg exited with code 3436169992`, which is ffmpeg's `AVERROR_HTTP_FORBIDDEN`. The same request succeeded on every retry and from a shell, so it is YouTube refusing a request now and then. Since 0.5.2 it is tried twice more (see Queue and settings) before the error is shown.
+- **A stalled connection during a trimmed download may hang.** ffmpeg has no read timeout by default and yt-dlp passes none. Adding `-rw_timeout` to the `ffmpeg_i` arguments would be the fix; untested, so not added.
+- **"Update and retry" does little for a queue of downloads.** An update can't be swapped in while other downloads are running (see Managed binaries), so when every video of a playlist fails for the same reason, each falls back to the ordinary retries.
+- **A conversion that fails deletes its downloaded source**, so **Try again** downloads it again.
+- **HLS trimmed parts print many "keepalive request failed" warnings** from ffmpeg. They are harmless; the download works.
 - **YouTube draws its own overlay on the paused preview.** With the official embedded player, a paused frame is partly covered by the video title, a play button and "More videos". The API offers no way to hide them. Scrubbing still shows the frame underneath.
 - **The YouTube embed can stall in "buffering" after a seek.** `YouTubePlayer.tsx` nudges it out with a second seek.
 - **Downloading the same video twice with the same settings overwrites the first file.**
 - **macOS has never been run.** The release workflow compiles and bundles it (Apple silicon only, first for v0.5.0), so the code builds, but nobody has started the app there. The platform branches (VideoToolbox, system FFmpeg, native window buttons) are untested, and the bundle is not notarised, so macOS will warn before opening it.
+- **The dev server needs the project path spelled as Windows spells it.** Started from `c:\Repos\siphon` (lowercase, as some editors do), Vite bundled React twice and the dev window stayed blank with "Invalid hook call". `vite.config.ts` now sets `root` from `realpathSync.native`, which fixes it. If it ever comes back, delete `node_modules/.vite` and start again from `C:\`.
 - **The shadcn CLI mis-resolves the `@/` alias.** It writes `import { cn } from "cn"` and installs a package called `cn`. After `npx shadcn add …`, change the import to `@/lib/utils` and run `npm uninstall cn`.
