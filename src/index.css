@@ -159,6 +159,22 @@
   }
 }
 
+/*
+ * "Reduce motion": Motion's animations follow the setting through
+ * <MotionConfig>; this quiets the CSS ones. Spinners keep turning, because a
+ * frozen spinner reads as a hang.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *:not(.animate-spin),
+  *:not(.animate-spin)::before,
+  *:not(.animate-spin)::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
 /* Loading placeholder with a slow sheen. */
 @utility skeleton {
   border-radius: 0.5rem;

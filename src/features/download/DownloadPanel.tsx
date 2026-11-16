@@ -69,7 +69,7 @@ export function DownloadPanel({
                 type="button"
                 onClick={download ? () => download.ids.forEach(store.retry) : onStart}
                 disabled={disabled}
-                className="group flex size-full items-center justify-center gap-2.5 text-[15px] font-semibold text-primary-foreground transition-[background-color,transform] duration-150 hover:bg-primary-hover active:scale-[0.985] disabled:pointer-events-none disabled:opacity-60"
+                className="group relative flex size-full items-center justify-center gap-2.5 overflow-hidden text-[15px] font-semibold text-primary-foreground transition-[background-color,transform] duration-150 hover:bg-primary-hover active:scale-[0.985] disabled:pointer-events-none disabled:opacity-60"
               >
                 {download ? (
                   <RotateCw className="size-4.5 transition-transform duration-300 group-hover:rotate-45" />
@@ -77,6 +77,11 @@ export function DownloadPanel({
                   <ArrowDownToLine className="size-4.5 transition-transform duration-200 group-hover:translate-y-0.5" />
                 )}
                 {download ? "Try again" : label}
+                {/* A band of light that sweeps across once when the pointer arrives. */}
+                <span
+                  aria-hidden
+                  className="pointer-events-none absolute inset-y-0 -left-1/3 w-1/3 -skew-x-12 bg-linear-to-r from-transparent via-white/25 to-transparent opacity-0 group-hover:left-full group-hover:opacity-100 group-hover:transition-[left] group-hover:duration-700 group-hover:ease-out motion-reduce:hidden"
+                />
               </button>
             </Face>
           )}

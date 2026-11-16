@@ -13,7 +13,7 @@ export function VideoCard({ video, action }: { video: VideoInfo; action?: ReactN
   const byline = [video.channel, displayHost(video.url)].filter(Boolean).join(" · ");
 
   return (
-    <article className="flex gap-4 rounded-[1.25rem] border bg-card p-3 shadow-card">
+    <article className="group/card flex gap-4 rounded-[1.25rem] border bg-card p-3 shadow-card">
       <Thumbnail src={video.thumbnail} duration={video.duration} />
       <div className="flex min-w-0 flex-1 flex-col py-1 pr-2">
         <h2
@@ -57,7 +57,8 @@ function Thumbnail({ src, duration }: { src: string | null; duration: number | n
             initial={false}
             animate={state === "loaded" ? { opacity: 1, scale: 1 } : { opacity: 0, scale: 1.06 }}
             transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
-            className="size-full object-cover"
+            // The hover zoom is a CSS `scale`, separate from the transform Motion animates.
+            className="size-full object-cover transition-[scale] duration-500 ease-out-expo group-hover/card:scale-[1.04]"
           />
         </>
       )}
