@@ -4,11 +4,11 @@ import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useState } from "react";
 import { ErrorCard } from "@/components/ErrorCard";
 import { Button } from "@/components/ui/button";
-import { DownloadPanel } from "@/features/download/DownloadPanel";
 import { ClipboardOffer } from "@/features/link/ClipboardOffer";
 import { LinkInput } from "@/features/link/LinkInput";
 import { useClipboardLink } from "@/features/link/useClipboardLink";
-import { VideoCard, VideoCardSkeleton } from "@/features/video/VideoCard";
+import { VideoCardSkeleton } from "@/features/video/VideoCard";
+import { VideoPane } from "@/features/video/VideoPane";
 import { ipc, toAppError } from "@/lib/ipc";
 import { gentleSpring, riseIn } from "@/lib/motion";
 import { parseVideoUrl } from "@/lib/url";
@@ -122,13 +122,7 @@ export function Home() {
                   }
                 />
               ) : media.data.type === "video" ? (
-                <>
-                  <VideoCard video={media.data} />
-                  <DownloadPanel
-                    video={media.data}
-                    options={{ mode: "preset", preset: "max", max_lines: null, size_limit_mb: null }}
-                  />
-                </>
+                <VideoPane video={media.data} />
               ) : (
                 <PlaylistNotice playlist={media.data} />
               )}

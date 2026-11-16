@@ -16,7 +16,7 @@ import { ipc } from "@/lib/ipc";
 import { riseIn, spring } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import { type Download, useDownloads } from "@/stores/downloads";
-import type { DownloadOptions, Stage, VideoInfo } from "@/types";
+import type { Stage } from "@/types";
 import { CompletionMark } from "./CompletionMark";
 
 const STAGE_LABELS: Record<Stage, string> = {
@@ -33,18 +33,22 @@ const STAGE_LABELS: Record<Stage, string> = {
  * The big button under the video card. It morphs in place:
  * Download → live progress → "Downloaded" with open/reveal actions.
  */
-export function DownloadPanel({ video, options }: { video: VideoInfo; options: DownloadOptions }) {
-  const [id, setId] = useState<string | null>(null);
-  const download = useDownloads((state) => (id ? state.byId[id] : undefined));
-  const start = useDownloads((state) => state.start);
+export function DownloadPanel({
+  download,
+  onStart,
+  disabled,
+}: {
+  /** The download started from this panel, if any. */
+  download: Download | undefined;
+  onStart: () => void;
+  /** True while there is no valid plan to download. */
+  disabled: boolean;
+}) {
   const cancel = useDownloads((state) => state.cancel);
   // The bar is allowed to glide to 100% before the finished state takes over.
   const [filled, setFilled] = useState(false);
-
-  const begin = () => {
-    setFilled(false);
-    setId(start(video, options));
-  };
+  const downloadId = download?.id;
+  useEffect(() => setFilled(false), [downloadId]);
 
   const view =
     !download || download.status === "failed"
@@ -68,8 +72,9 @@ export function DownloadPanel({ video, options }: { video: VideoInfo; options: D
             <Face key="idle">
               <button
                 type="button"
-                onClick={begin}
-                className="group flex size-full items-center justify-center gap-2.5 text-[15px] font-semibold text-primary-foreground transition-[background-color,transform] duration-150 hover:bg-primary-hover active:scale-[0.985]"
+                onClick={onStart}
+                disabled={disabled}
+                className="group flex size-full items-center justify-center gap-2.5 text-[15px] font-semibold text-primary-foreground transition-[background-color,transform] duration-150 hover:bg-primary-hover active:scale-[0.985] disabled:pointer-events-none disabled:opacity-60"
               >
                 {download ? (
                   <RotateCw className="size-4.5 transition-transform duration-300 group-hover:rotate-45" />
