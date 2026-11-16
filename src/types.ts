@@ -15,6 +15,7 @@ export type ErrorKind =
   | "disk_full"
   | "cancelled"
   | "setup"
+  | "busy"
   | "internal";
 
 export interface AppError {
@@ -45,6 +46,17 @@ export interface ToolStatus {
   /** 0–1 while downloading. */
   progress: number | null;
   error: string | null;
+  /** A newer version waiting for the user's go-ahead ("ask first" mode). */
+  available: { version: string; summary: string } | null;
+}
+
+/** Sent after a tool was updated (`binaries://updated`). */
+export interface UpdateNotice {
+  tool: Tool;
+  from: string | null;
+  to: string;
+  /** One line about what changed, from the release notes. */
+  summary: string;
 }
 
 // ── ytdlp/metadata.rs ───────────────────────────────────────────────────
@@ -204,6 +216,10 @@ export interface Settings {
   custom_template: string;
   /** How many downloads run at once. */
   max_concurrent: number;
+  /** yt-dlp's release channel. */
+  update_channel: "stable" | "nightly";
+  /** Install new versions of the tools without asking, or ask first. */
+  update_mode: "auto" | "ask";
 }
 
 /** What `get_settings` returns: the settings plus facts for displaying them. */
@@ -229,6 +245,8 @@ export interface Preview {
 export type Stage =
   /** Waiting for a free slot in the queue. */
   | "queued"
+  /** yt-dlp is being updated before a second attempt. */
+  | "updating"
   | "preparing"
   | "downloading_video"
   | "downloading_audio"

@@ -8,8 +8,7 @@ use std::sync::Arc;
 use tauri::{AppHandle, State};
 use tauri_plugin_opener::OpenerExt;
 
-use crate::binaries::sources::Channel;
-use crate::binaries::{BinaryManager, ToolStatus};
+use crate::binaries::{BinaryManager, ToolStatus, UpdatePolicy};
 use crate::downloads::{self, DownloadManager, DownloadRequest};
 use crate::error::{AppError, ErrorKind, Result};
 use crate::plan::explain::{self, PlanSummary};
@@ -28,11 +27,23 @@ pub fn binaries_status(bins: Binaries<'_>) -> Vec<ToolStatus> {
     bins.statuses()
 }
 
-/// Installs missing binaries and updates outdated ones.
+/// Installs missing binaries and looks for newer versions. Those are
+/// installed or only reported, as the settings say, unless `install`
+/// forces it (the user pressed "Update now").
 /// Progress arrives as `binaries://status` events.
 #[tauri::command]
-pub async fn binaries_sync(bins: Binaries<'_>) -> Result<Vec<ToolStatus>> {
-    Ok(bins.sync_all(Channel::default()).await)
+pub async fn binaries_sync(
+    bins: Binaries<'_>,
+    settings: State<'_, SettingsStore>,
+    install: bool,
+) -> Result<Vec<ToolStatus>> {
+    let settings = settings.get();
+    let policy = if install {
+        UpdatePolicy::Install
+    } else {
+        settings.update_policy()
+    };
+    Ok(bins.sync_all(settings.update_channel, policy).await)
 }
 
 /// Looks a link up and remembers the result for planning and downloading.
@@ -143,8 +154,8 @@ pub fn set_settings(
 
 /// Opens a downloaded file in its default app.
 #[tauri::command]
-pub fn open_file(app: AppHandle, path: String) -> Result<()> {
-    let path = existing(path)?;
+pub fn open_file(app: AppHandle, downloads: Downloads<'_>, path: String) -> Result<()> {
+    let path = existing(&downloads, path)?;
     app.opener()
         .open_path(path.to_string_lossy(), None::<&str>)
         .map_err(|err| AppError::internal("Couldn't open the file.").with_details(err.to_string()))
@@ -152,8 +163,8 @@ pub fn open_file(app: AppHandle, path: String) -> Result<()> {
 
 /// Shows a downloaded file in Explorer / Finder.
 #[tauri::command]
-pub fn reveal_file(app: AppHandle, path: String) -> Result<()> {
-    let path = existing(path)?;
+pub fn reveal_file(app: AppHandle, downloads: Downloads<'_>, path: String) -> Result<()> {
+    let path = existing(&downloads, path)?;
     app.opener()
         .reveal_item_in_dir(path)
         .map_err(|err| AppError::internal("Couldn't open the folder.").with_details(err.to_string()))
@@ -167,8 +178,13 @@ fn ensure_ready(bins: &BinaryManager) -> Result<()> {
     }
 }
 
-fn existing(path: String) -> Result<PathBuf> {
+/// Only files Siphon downloaded this session can be opened: the webview
+/// can't use these commands to launch arbitrary paths.
+fn existing(downloads: &DownloadManager, path: String) -> Result<PathBuf> {
     let path = PathBuf::from(path);
+    if !downloads.produced(&path) {
+        return Err(AppError::internal("Siphon can only open files it downloaded."));
+    }
     if path.exists() {
         Ok(path)
     } else {

@@ -7,7 +7,7 @@
 
 mod tracker;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
@@ -19,7 +19,7 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::Command;
 use tokio::sync::Notify;
 
-use crate::binaries::BinaryManager;
+use crate::binaries::{BinaryManager, Tool};
 use crate::error::{AppError, ErrorKind, Result};
 use crate::ffmpeg::{self, encoders::Encoders};
 use crate::plan::{self, DownloadOptions, Recipe, Trim};
@@ -125,6 +125,8 @@ pub struct DownloadManager {
     /// freed, a waiting job was stopped, or the limit changed.
     gate_changed: Notify,
     paused: Mutex<HashMap<String, Leftovers>>,
+    /// Files finished this session: the only ones the UI may open or reveal.
+    finished: Mutex<HashSet<PathBuf>>,
 }
 
 /// Everything one running job needs.
@@ -188,11 +190,14 @@ impl DownloadManager {
             let event = match (stop, outcome) {
                 (Some(Stop::Cancel), _) => DownloadEvent::Cancelled { id },
                 (Some(Stop::Pause), _) => DownloadEvent::Paused { id },
-                (None, Ok(path)) => DownloadEvent::Finished {
-                    size: std::fs::metadata(&path).ok().map(|meta| meta.len()),
-                    path: path.to_string_lossy().into_owned(),
-                    id,
-                },
+                (None, Ok(path)) => {
+                    manager.finished.lock().unwrap().insert(path.clone());
+                    DownloadEvent::Finished {
+                        size: std::fs::metadata(&path).ok().map(|meta| meta.len()),
+                        path: path.to_string_lossy().into_owned(),
+                        id,
+                    }
+                }
                 (None, Err(error)) => DownloadEvent::Failed { id, error },
             };
             let _ = app.emit(EVENT, event);
@@ -227,6 +232,11 @@ impl DownloadManager {
             }
             changed.await;
         }
+    }
+
+    /// Whether `path` is a file a download produced this session.
+    pub fn produced(&self, path: &Path) -> bool {
+        self.finished.lock().unwrap().contains(path)
     }
 
     /// Re-evaluates the queue, after the concurrency limit changed.
@@ -301,12 +311,40 @@ impl DownloadManager {
                 .with_details(format!("{}: {err}", output_dir.display()))
         })?;
 
+        match self.attempt(job, url, options, trim, &output_dir).await {
+            // Sites change, and yt-dlp follows within days. If the failure
+            // looks like that, get the newest yt-dlp and try once more.
+            Err(error) if error.kind == ErrorKind::Outdated && self.stop_of(job.id).is_none() => {
+                job.emit(Tracker::updating());
+                match job.bins.update_now(Tool::YtDlp, job.settings.update_channel).await {
+                    Ok(Some(_)) => {
+                        // Formats looked up by the old version may be the problem.
+                        job.app.state::<MediaCache>().forget(url);
+                        self.attempt(job, url, options, trim, &output_dir).await
+                    }
+                    // Already current (or the update couldn't run): the first error stands.
+                    _ => Err(error),
+                }
+            }
+            outcome => outcome,
+        }
+    }
+
+    /// One pass through the job's steps: look up, download, convert.
+    async fn attempt(
+        &self,
+        job: &JobContext<'_>,
+        url: &str,
+        options: &DownloadOptions,
+        trim: Option<Trim>,
+        output_dir: &Path,
+    ) -> Result<PathBuf> {
         let video = self.video_info(job, url).await?;
         let recipe = plan::plan(&video, options, trim)?;
         let mut tracker = Tracker::new(recipe.needs_ffmpeg_pass());
 
         let downloaded = self
-            .fetch_streams(job, &video.url, &recipe, &output_dir, &mut tracker)
+            .fetch_streams(job, &video.url, &recipe, output_dir, &mut tracker)
             .await?;
         if !recipe.needs_ffmpeg_pass() {
             return Ok(downloaded);
@@ -399,7 +437,7 @@ impl DownloadManager {
         let mut part_file: Option<PathBuf> = None;
         let expected_bytes = recipe.trim.and(recipe.estimated_source_bytes());
         let result = self
-            .run_child(job.id, cmd, |event| match event {
+            .run_child(job.bins, job.id, cmd, |event| match event {
                 ChildEvent::Tick => {
                     if let (Some(part), Some(expected)) = (&part_file, expected_bytes) {
                         if let Ok(meta) = std::fs::metadata(part) {
@@ -468,7 +506,7 @@ impl DownloadManager {
 
         job.emit(tracker.on_convert(0.0));
         let result = self
-            .run_child(job.id, cmd, |event| {
+            .run_child(job.bins, job.id, cmd, |event| {
                 let ChildEvent::Line(line) = event else { return };
                 if let (Some(done), Some(total)) = (ffmpeg::parse_progress(line), recipe.duration) {
                     job.emit(tracker.on_convert(done / total));
@@ -491,6 +529,7 @@ impl DownloadManager {
     /// `on_event`, and returns the stderr log on success.
     async fn run_child(
         &self,
+        bins: &BinaryManager,
         id: &str,
         mut cmd: Command,
         mut on_event: impl FnMut(ChildEvent<'_>),
@@ -499,6 +538,8 @@ impl DownloadManager {
         if let Some(stop) = self.stop_of(id) {
             return Err(Failure::Stopped(stop));
         }
+        // Keeps a tool update from swapping the binaries while this runs.
+        let _in_use = bins.in_use().await;
         let mut child = cmd
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

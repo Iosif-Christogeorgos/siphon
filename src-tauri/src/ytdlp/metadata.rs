@@ -246,6 +246,7 @@ pub async fn fetch(bins: &BinaryManager, url: &str) -> Result<Media> {
     ])
     .arg(url);
 
+    let _in_use = bins.in_use().await;
     let output = process::output_within(cmd, FETCH_TIMEOUT).await?.ok_or_else(|| {
         AppError::new(
             ErrorKind::Network,

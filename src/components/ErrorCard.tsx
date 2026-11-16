@@ -25,6 +25,7 @@ const PRESENTATION: Record<ErrorKind, { icon: LucideIcon; title: string }> = {
   network: { icon: WifiOff, title: "Connection problem" },
   disk_full: { icon: HardDrive, title: "Not enough disk space" },
   setup: { icon: CircleAlert, title: "Not ready yet" },
+  busy: { icon: CircleAlert, title: "Busy right now" },
   cancelled: { icon: CircleAlert, title: "Cancelled" },
   internal: { icon: CircleAlert, title: "Something went wrong" },
 };

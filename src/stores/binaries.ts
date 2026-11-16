@@ -7,8 +7,11 @@ interface BinariesState {
   tools: Record<Tool, ToolStatus> | null;
   syncing: boolean;
   apply: (status: ToolStatus) => void;
-  /** Loads the current state, then installs/updates in the background. */
-  sync: () => Promise<void>;
+  /**
+   * Loads the current state, then installs what is missing and looks for
+   * newer versions. `install` installs them even in "ask first" mode.
+   */
+  sync: (install?: boolean) => Promise<void>;
 }
 
 const byTool = (statuses: ToolStatus[]) =>
@@ -23,12 +26,12 @@ export const useBinaries = create<BinariesState>((set, get) => ({
     if (tools) set({ tools: { ...tools, [status.tool]: status } });
   },
 
-  sync: async () => {
+  sync: async (install = false) => {
     if (get().syncing) return;
     set({ syncing: true });
     try {
       set({ tools: byTool(await ipc.binariesStatus()) });
-      set({ tools: byTool(await ipc.binariesSync()) });
+      set({ tools: byTool(await ipc.binariesSync(install)) });
     } finally {
       set({ syncing: false });
     }
@@ -40,6 +43,10 @@ export const useBinaries = create<BinariesState>((set, get) => ({
  * downloads. (`ready` without a version is a system-provided tool.)
  */
 export const isUsable = (status: ToolStatus) => status.version !== null || status.state === "ready";
+
+/** Tools with a newer version waiting for the user's go-ahead. */
+export const selectAvailable = (state: BinariesState) =>
+  state.tools ? Object.values(state.tools).filter((status) => status.available !== null) : [];
 
 export const selectAllUsable = (state: BinariesState) =>
   state.tools !== null && Object.values(state.tools).every(isUsable);

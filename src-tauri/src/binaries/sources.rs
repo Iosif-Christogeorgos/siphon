@@ -19,6 +19,8 @@ pub enum Channel {
 pub struct Release {
     /// Identity used to decide "is this newer than what's installed".
     pub version: String,
+    /// Release notes (markdown), when the project publishes any.
+    pub notes: Option<String>,
     pub asset_name: String,
     pub download_url: String,
     pub size: u64,
@@ -29,6 +31,7 @@ pub struct Release {
 #[derive(Deserialize)]
 struct GithubRelease {
     tag_name: String,
+    body: Option<String>,
     assets: Vec<GithubAsset>,
 }
 
@@ -143,6 +146,7 @@ pub async fn latest(http: &reqwest::Client, tool: Tool, channel: Channel) -> Res
 
     Ok(Release {
         version,
+        notes: release.body.clone().filter(|body| !body.trim().is_empty()),
         asset_name: asset.name.clone(),
         download_url: asset.browser_download_url.clone(),
         size: asset.size,

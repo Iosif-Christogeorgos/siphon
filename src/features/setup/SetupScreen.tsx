@@ -3,14 +3,11 @@ import { AnimatePresence, motion } from "motion/react";
 import { LogoTile } from "@/components/Logo";
 import { Button } from "@/components/ui/button";
 import { riseIn, spring } from "@/lib/motion";
+import { TOOL_NAMES, TOOL_ORDER, TOOL_ROLES } from "@/lib/tools";
 import { isUsable, useBinaries } from "@/stores/binaries";
-import type { Tool, ToolStatus } from "@/types";
+import type { ToolStatus } from "@/types";
 
-const TOOLS: { tool: Tool; name: string; role: string }[] = [
-  { tool: "yt_dlp", name: "yt-dlp", role: "Finds and downloads the video" },
-  { tool: "ffmpeg", name: "FFmpeg", role: "Merges and converts" },
-  { tool: "deno", name: "Deno", role: "Runs the scripts YouTube needs" },
-];
+const TOOLS = TOOL_ORDER.map((tool) => ({ tool, name: TOOL_NAMES[tool], role: TOOL_ROLES[tool] }));
 
 /** First-run screen: shown until every managed binary is installed. */
 export function SetupScreen() {

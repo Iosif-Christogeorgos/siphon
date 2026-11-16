@@ -9,6 +9,8 @@ use crate::ytdlp::progress::{DownloadTick, PlannedStream};
 pub enum Stage {
     /// Waiting for a free slot in the queue.
     Queued,
+    /// The site refused the download; yt-dlp is being updated before a second try.
+    Updating,
     Preparing,
     DownloadingVideo,
     DownloadingAudio,
@@ -67,6 +69,16 @@ impl Tracker {
     pub fn queued() -> Progress {
         Progress {
             stage: Stage::Queued,
+            fraction: 0.0,
+            speed: None,
+            eta: None,
+        }
+    }
+
+    /// What a job reports while yt-dlp is updated for a second attempt.
+    pub fn updating() -> Progress {
+        Progress {
+            stage: Stage::Updating,
             fraction: 0.0,
             speed: None,
             eta: None,

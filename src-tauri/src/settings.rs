@@ -6,6 +6,8 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
+use crate::binaries::sources::Channel;
+use crate::binaries::UpdatePolicy;
 use crate::error::{AppError, Result};
 
 /// How downloaded files are named. The extension is always added by Siphon.
@@ -38,6 +40,14 @@ impl FilenameStyle {
     }
 }
 
+/// Whether newer versions of yt-dlp, FFmpeg and Deno are installed without asking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateMode {
+    Auto,
+    Ask,
+}
+
 pub const MAX_CONCURRENT_LIMIT: usize = 6;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -50,6 +60,9 @@ pub struct Settings {
     pub custom_template: String,
     /// How many downloads run at once; the rest wait in the queue.
     pub max_concurrent: usize,
+    /// yt-dlp's release channel. Nightly gets site fixes sooner.
+    pub update_channel: Channel,
+    pub update_mode: UpdateMode,
 }
 
 impl Default for Settings {
@@ -59,6 +72,8 @@ impl Default for Settings {
             filename: FilenameStyle::TitleId,
             custom_template: "%(title)s [%(id)s]".into(),
             max_concurrent: 3,
+            update_channel: Channel::Stable,
+            update_mode: UpdateMode::Auto,
         }
     }
 }
@@ -82,6 +97,13 @@ impl Settings {
             }
         }
         Ok(self)
+    }
+
+    pub fn update_policy(&self) -> UpdatePolicy {
+        match self.update_mode {
+            UpdateMode::Auto => UpdatePolicy::Install,
+            UpdateMode::Ask => UpdatePolicy::Ask,
+        }
     }
 
     /// The yt-dlp output template for file names, without extension.

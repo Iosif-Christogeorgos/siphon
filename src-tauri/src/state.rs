@@ -21,6 +21,11 @@ impl MediaCache {
         self.0.lock().unwrap().get(url).cloned()
     }
 
+    /// Drops a cached lookup, so the next use fetches it afresh.
+    pub fn forget(&self, url: &str) {
+        self.0.lock().unwrap().remove(url);
+    }
+
     /// Stores a video under its canonical URL and the URL the user pasted.
     pub fn insert(&self, requested_url: &str, video: Arc<VideoInfo>) {
         let mut cache = self.0.lock().unwrap();

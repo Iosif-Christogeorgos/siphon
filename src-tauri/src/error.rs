@@ -23,6 +23,8 @@ pub enum ErrorKind {
     Cancelled,
     /// A managed binary is missing or broken.
     Setup,
+    /// Can't be done right now because something else is using it.
+    Busy,
     Internal,
 }
 

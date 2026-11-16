@@ -12,21 +12,28 @@
 //! ```
 
 mod install;
+mod notes;
 pub mod sources;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::error::{AppError, Result};
+use crate::error::{AppError, ErrorKind, Result};
 use sources::Channel;
 
 /// Event carrying a [`ToolStatus`] whenever a tool's state or progress changes.
 pub const STATUS_EVENT: &str = "binaries://status";
+
+/// Event carrying an [`UpdateNotice`] after a tool was updated.
+pub const UPDATED_EVENT: &str = "binaries://updated";
+
+/// How often to look for new versions.
+pub const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// ffmpeg's rolling builds change daily but rarely matter; refresh monthly.
 const FFMPEG_REFRESH_AFTER: Duration = Duration::from_secs(30 * 24 * 60 * 60);
@@ -103,6 +110,34 @@ pub struct ToolStatus {
     pub progress: Option<f64>,
     /// Plain-language reason when `state` is `failed`.
     pub error: Option<String>,
+    /// A newer version that is waiting for the user's go-ahead ("ask first").
+    pub available: Option<Available>,
+}
+
+/// A newer release of a tool.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Available {
+    pub version: String,
+    /// One line about what it changes, from the release notes.
+    pub summary: String,
+}
+
+/// Sent to the frontend after an update, for the toast.
+#[derive(Debug, Clone, Serialize)]
+pub struct UpdateNotice {
+    pub tool: Tool,
+    /// `None` on a first install.
+    pub from: Option<String>,
+    pub to: String,
+    pub summary: String,
+}
+
+/// What to do about newer versions. Missing tools are always installed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdatePolicy {
+    Install,
+    /// Only report them (see [`ToolStatus::available`]).
+    Ask,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -116,6 +151,9 @@ struct Installed {
 struct Manifest {
     #[serde(default)]
     tools: HashMap<Tool, Installed>,
+    /// When versions were last compared with GitHub, in Unix seconds.
+    #[serde(default)]
+    last_check: u64,
 }
 
 pub struct BinaryManager {
@@ -126,6 +164,10 @@ pub struct BinaryManager {
     statuses: Mutex<HashMap<Tool, ToolStatus>>,
     /// Serialises syncs so two checks can never swap the same folder at once.
     sync_lock: tokio::sync::Mutex<()>,
+    /// Held shared by everything that runs a tool, and exclusively for the
+    /// moment a tool's folder is swapped: a download never has its yt-dlp
+    /// pulled out from under it, and never starts one mid-swap.
+    use_gate: Arc<tokio::sync::RwLock<()>>,
 }
 
 impl BinaryManager {
@@ -155,6 +197,7 @@ impl BinaryManager {
             manifest: Mutex::new(manifest),
             statuses: Mutex::new(HashMap::new()),
             sync_lock: tokio::sync::Mutex::new(()),
+            use_gate: Arc::default(),
         };
         for tool in Tool::ALL {
             let status = manager.initial_status(tool);
@@ -217,6 +260,7 @@ impl BinaryManager {
             version: None,
             progress: None,
             error: None,
+            available: None,
         };
         if !sources::is_managed(tool) {
             if find_system_ffmpeg().is_some() {
@@ -262,20 +306,23 @@ impl BinaryManager {
         });
     }
 
-    fn record_installed(&self, tool: Tool, version: &str) -> Result<()> {
+    /// Keep this alive while a yt-dlp, ffmpeg or Deno process runs.
+    pub async fn in_use(&self) -> tokio::sync::OwnedRwLockReadGuard<()> {
+        Arc::clone(&self.use_gate).read_owned().await
+    }
+
+    /// True when it has been a day since versions were last compared.
+    pub fn check_is_due(&self) -> bool {
+        let last = UNIX_EPOCH + Duration::from_secs(self.manifest.lock().unwrap().last_check);
+        SystemTime::now()
+            .duration_since(last)
+            .map_or(true, |since| since >= CHECK_INTERVAL)
+    }
+
+    fn save_manifest(&self, change: impl FnOnce(&mut Manifest)) -> Result<()> {
         let json = {
             let mut manifest = self.manifest.lock().unwrap();
-            let installed_at = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            manifest.tools.insert(
-                tool,
-                Installed {
-                    version: version.to_string(),
-                    installed_at,
-                },
-            );
+            change(&mut manifest);
             serde_json::to_vec_pretty(&*manifest)?
         };
         // Write-then-rename so a crash can't leave a half-written manifest.
@@ -285,18 +332,60 @@ impl BinaryManager {
         Ok(())
     }
 
+    fn record_installed(&self, tool: Tool, version: &str) -> Result<()> {
+        let installed_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let entry = Installed {
+            version: version.to_string(),
+            installed_at,
+        };
+        self.save_manifest(|manifest| {
+            manifest.tools.insert(tool, entry);
+        })
+    }
+
     // ── Install & update ────────────────────────────────────────────────
 
-    /// Installs anything missing and updates anything outdated.
-    /// Per-tool failures are reported through statuses, not as an error.
-    pub async fn sync_all(&self, channel: Channel) -> Vec<ToolStatus> {
+    /// Installs anything missing, and installs or reports newer versions
+    /// according to `policy`. Per-tool failures are reported through
+    /// statuses, not as an error.
+    pub async fn sync_all(&self, channel: Channel, policy: UpdatePolicy) -> Vec<ToolStatus> {
         let _guard = self.sync_lock.lock().await;
         let managed = Tool::ALL.into_iter().filter(|&tool| sources::is_managed(tool));
-        futures_util::future::join_all(managed.map(|tool| self.sync_tool(tool, channel))).await;
+        let outcomes = futures_util::future::join_all(managed.map(|tool| self.sync_tool(tool, channel, policy))).await;
+        // A swap put off because a download was running should be retried
+        // soon, so only a clean round counts as "checked".
+        if outcomes.iter().all(|settled| *settled) {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let _ = self.save_manifest(|manifest| manifest.last_check = now);
+        }
         self.statuses()
     }
 
-    async fn sync_tool(&self, tool: Tool, channel: Channel) {
+    /// Updates one tool to the newest release right away, whatever the
+    /// policy. Returns what changed, or `None` if it was already current.
+    pub async fn update_now(&self, tool: Tool, channel: Channel) -> Result<Option<UpdateNotice>> {
+        let _guard = self.sync_lock.lock().await;
+        let installed = self.installed(tool);
+        let release = sources::latest(&self.http, tool, channel).await?;
+        if installed
+            .as_ref()
+            .is_some_and(|installed| installed.version == release.version)
+        {
+            return Ok(None);
+        }
+        let result = self.install_release(tool, &release, installed.as_ref()).await;
+        self.settle_status(tool, result.as_ref().err());
+        result.map(Some)
+    }
+
+    /// Returns false if this tool should be looked at again soon.
+    async fn sync_tool(&self, tool: Tool, channel: Channel, policy: UpdatePolicy) -> bool {
         let installed = self.installed(tool);
         self.set_state(
             tool,
@@ -307,47 +396,89 @@ impl BinaryManager {
             },
         );
 
-        let outcome = self.install_if_newer(tool, channel, installed.as_ref()).await;
+        let outcome = self.sync_release(tool, channel, policy, installed.as_ref()).await;
+        self.settle_status(tool, outcome.as_ref().err());
+        !matches!(&outcome, Err(error) if error.kind == ErrorKind::Busy)
+    }
 
+    /// Puts a tool's status back to rest after a check or install.
+    fn settle_status(&self, tool: Tool, error: Option<&AppError>) {
         // Whatever happened, a working install (old or new) means "ready".
         // Being offline or a failed update must never block downloads.
         let now_installed = self.installed(tool);
         self.update_status(tool, |status| {
             status.progress = None;
-            status.version = now_installed.as_ref().map(|i| i.version.clone());
-            match (&now_installed, &outcome) {
+            status.version = now_installed.as_ref().map(|installed| installed.version.clone());
+            match (&now_installed, error) {
                 (Some(_), _) => {
                     status.state = ToolState::Ready;
                     status.error = None;
                 }
-                (None, Err(err)) => {
+                (None, Some(error)) => {
                     status.state = ToolState::Failed;
-                    status.error = Some(err.message.clone());
+                    status.error = Some(error.message.clone());
                 }
-                (None, Ok(())) => status.state = ToolState::Missing,
+                (None, None) => status.state = ToolState::Missing,
             }
         });
     }
 
-    async fn install_if_newer(&self, tool: Tool, channel: Channel, installed: Option<&Installed>) -> Result<()> {
+    async fn sync_release(
+        &self,
+        tool: Tool,
+        channel: Channel,
+        policy: UpdatePolicy,
+        installed: Option<&Installed>,
+    ) -> Result<()> {
         let release = sources::latest(&self.http, tool, channel).await?;
 
         if let Some(installed) = installed {
-            if installed.version == release.version {
-                return Ok(());
-            }
+            let mut current = installed.version == release.version;
             if tool == Tool::Ffmpeg {
                 let age = SystemTime::now()
                     .duration_since(UNIX_EPOCH + Duration::from_secs(installed.installed_at))
                     .unwrap_or_default();
-                if age < FFMPEG_REFRESH_AFTER {
-                    return Ok(());
-                }
+                current |= age < FFMPEG_REFRESH_AFTER;
+            }
+            if current {
+                self.update_status(tool, |status| status.available = None);
+                return Ok(());
+            }
+            if policy == UpdatePolicy::Ask {
+                let available = Available {
+                    version: release.version.clone(),
+                    summary: notes::summarize(tool, release.notes.as_deref()),
+                };
+                self.update_status(tool, |status| status.available = Some(available));
+                return Ok(());
             }
         }
 
-        install::install(self, tool, &release).await?;
-        self.record_installed(tool, &release.version)
+        self.install_release(tool, &release, installed).await.map(|_| ())
+    }
+
+    /// Installs `release`, records it, and announces it if it replaced an older version.
+    async fn install_release(
+        &self,
+        tool: Tool,
+        release: &sources::Release,
+        installed: Option<&Installed>,
+    ) -> Result<UpdateNotice> {
+        install::install(self, tool, release).await?;
+        self.record_installed(tool, &release.version)?;
+        self.update_status(tool, |status| status.available = None);
+
+        let notice = UpdateNotice {
+            tool,
+            from: installed.map(|installed| installed.version.clone()),
+            to: release.version.clone(),
+            summary: notes::summarize(tool, release.notes.as_deref()),
+        };
+        // First installs are shown by the setup screen; only updates get a toast.
+        if notice.from.is_some() {
+            let _ = self.app.emit(UPDATED_EVENT, notice.clone());
+        }
+        Ok(notice)
     }
 }
 

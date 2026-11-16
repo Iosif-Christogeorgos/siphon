@@ -2,13 +2,16 @@ import { AnimatePresence } from "motion/react";
 import { useEffect } from "react";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { TitleBar } from "@/components/TitleBar";
+import { Toaster } from "@/components/Toaster";
 import { Home } from "@/features/home/Home";
 import { QueueSheet } from "@/features/queue/QueueSheet";
 import { SettingsSheet } from "@/features/settings/SettingsSheet";
 import { SetupScreen } from "@/features/setup/SetupScreen";
-import { onDownloadEvent, onToolStatus } from "@/lib/ipc";
+import { onDownloadEvent, onToolStatus, onToolUpdated } from "@/lib/ipc";
+import { TOOL_NAMES } from "@/lib/tools";
 import { selectAllUsable, useBinaries } from "@/stores/binaries";
 import { useDownloads } from "@/stores/downloads";
+import { useToasts } from "@/stores/toasts";
 
 export function App() {
   const loaded = useBinaries((state) => state.tools !== null);
@@ -19,8 +22,33 @@ export function App() {
     const subscriptions = [
       onToolStatus(useBinaries.getState().apply),
       onDownloadEvent(useDownloads.getState().apply),
+      // A subtle note when a tool was updated in the background.
+      onToolUpdated((notice) =>
+        useToasts.getState().show({
+          id: `updated-${notice.tool}`,
+          title: `${TOOL_NAMES[notice.tool]} updated to ${notice.to}`,
+          description: notice.summary,
+        }),
+      ),
     ];
-    void useBinaries.getState().sync();
+    void useBinaries
+      .getState()
+      .sync()
+      .then(() => {
+        // In "ask first" mode, newer versions are only reported: offer them.
+        const waiting = Object.values(useBinaries.getState().tools ?? {}).filter((status) => status.available);
+        const first = waiting[0];
+        if (!first?.available) return;
+        useToasts.getState().show({
+          id: "updates-available",
+          title:
+            waiting.length === 1
+              ? `${TOOL_NAMES[first.tool]} ${first.available.version} is available`
+              : `${waiting.length} updates are available`,
+          description: first.available.summary,
+          action: { label: "Update", run: () => void useBinaries.getState().sync(true) },
+        });
+      });
     return () => {
       for (const subscription of subscriptions) void subscription.then((unlisten) => unlisten());
     };
@@ -36,10 +64,12 @@ export function App() {
           <AnimatePresence mode="wait">
             {!loaded ? null : usable ? <Home key="home" /> : <SetupScreen key="setup" />}
           </AnimatePresence>
+          {/* Inside the boundary too: a panel that fails must not blank the window. */}
+          <QueueSheet />
+          <SettingsSheet />
         </ErrorBoundary>
       </main>
-      <QueueSheet />
-      <SettingsSheet />
+      <Toaster />
     </div>
   );
 }

@@ -17,6 +17,23 @@ use std::sync::Arc;
 
 use tauri::Manager;
 
+/// Looks for new versions of the managed tools once a day while the app is
+/// open. (The frontend triggers the check at launch.) Waking hourly keeps
+/// the loop simple and lets a check that was put off, because a download
+/// was running, happen soon after.
+async fn keep_tools_updated(app: tauri::AppHandle) {
+    let mut hourly = tokio::time::interval(std::time::Duration::from_secs(60 * 60));
+    hourly.tick().await; // The first tick fires at once; launch is already covered.
+    loop {
+        hourly.tick().await;
+        let bins = Arc::clone(&app.state::<Arc<binaries::BinaryManager>>());
+        if bins.is_ready() && bins.check_is_due() {
+            let settings = app.state::<settings::SettingsStore>().get();
+            bins.sync_all(settings.update_channel, settings.update_policy()).await;
+        }
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -30,6 +47,7 @@ fn main() {
             app.manage(settings::SettingsStore::load(app.handle())?);
             app.manage(state::MediaCache::default());
             app.manage(state::EncoderCache::default());
+            tauri::async_runtime::spawn(keep_tools_updated(app.handle().clone()));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

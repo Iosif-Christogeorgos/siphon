@@ -9,7 +9,7 @@ use tokio::io::AsyncWriteExt;
 
 use super::sources::{find_sha256, Release};
 use super::{exe, BinaryManager, Tool, ToolState};
-use crate::error::{AppError, Result};
+use crate::error::{AppError, ErrorKind, Result};
 use crate::process;
 
 /// The first launch of a freshly downloaded executable can be slow while
@@ -27,6 +27,18 @@ pub async fn install(manager: &BinaryManager, tool: Tool, release: &Release) -> 
     }
     result?;
 
+    // Swapping needs the tool to itself. If a download is using it, give up
+    // for now (the caller tries again later) instead of making it wait.
+    let Ok(_exclusive) = manager.use_gate.try_write() else {
+        let _ = tokio::fs::remove_dir_all(&staging).await;
+        return Err(AppError::new(
+            ErrorKind::Busy,
+            format!(
+                "{} will be updated once the current downloads have finished.",
+                tool.label()
+            ),
+        ));
+    };
     swap_in(&current, &staging, &previous).await?;
 
     if let Err(err) = self_test(tool, &current).await {

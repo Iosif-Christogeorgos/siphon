@@ -12,12 +12,14 @@ import type {
   SettingsView,
   ToolStatus,
   Trim,
+  UpdateNotice,
 } from "@/types";
 
 /** Typed wrappers around every backend command (see `src-tauri/src/commands.rs`). */
 export const ipc = {
   binariesStatus: () => invoke<ToolStatus[]>("binaries_status"),
-  binariesSync: () => invoke<ToolStatus[]>("binaries_sync"),
+  /** `install` forces updates to be installed even in "ask first" mode. */
+  binariesSync: (install: boolean) => invoke<ToolStatus[]>("binaries_sync", { install }),
   fetchMedia: (url: string) => invoke<Media>("fetch_media", { url }),
   planDownload: (url: string, options: DownloadOptions, trim: Trim | null) =>
     invoke<PlanSummary>("plan_download", { url, options, trim }),
@@ -33,6 +35,9 @@ export const ipc = {
 
 export const onToolStatus = (handler: (status: ToolStatus) => void): Promise<UnlistenFn> =>
   listen<ToolStatus>("binaries://status", (event) => handler(event.payload));
+
+export const onToolUpdated = (handler: (notice: UpdateNotice) => void): Promise<UnlistenFn> =>
+  listen<UpdateNotice>("binaries://updated", (event) => handler(event.payload));
 
 export const onDownloadEvent = (handler: (event: DownloadEvent) => void): Promise<UnlistenFn> =>
   listen<DownloadEvent>("download://event", (event) => handler(event.payload));

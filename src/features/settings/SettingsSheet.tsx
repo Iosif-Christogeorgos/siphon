@@ -1,12 +1,15 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { FolderOpen } from "lucide-react";
+import { FolderOpen, LoaderCircle, RefreshCw } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet } from "@/components/ui/sheet";
 import { ipc, toAppError } from "@/lib/ipc";
+import { TOOL_NAMES, TOOL_ORDER } from "@/lib/tools";
+import { selectAvailable, useBinaries } from "@/stores/binaries";
+import { useToasts } from "@/stores/toasts";
 import { useUi } from "@/stores/ui";
 import type { FilenameStyle, Settings, SettingsView } from "@/types";
 
@@ -139,6 +142,33 @@ function SettingsForm({
         )}
       </Section>
 
+      <Section
+        title="Updates"
+        hint="yt-dlp, FFmpeg and Deno are checked when Siphon starts and once a day. Sites change often, and yt-dlp follows."
+      >
+        <Choice
+          label="yt-dlp releases"
+          group="channel"
+          value={settings.update_channel}
+          options={[
+            { id: "stable", label: "Stable" },
+            { id: "nightly", label: "Nightly" },
+          ]}
+          onChange={(update_channel) => onChange({ update_channel })}
+        />
+        <Choice
+          label="New versions"
+          group="update-mode"
+          value={settings.update_mode}
+          options={[
+            { id: "auto", label: "Install automatically" },
+            { id: "ask", label: "Ask first" },
+          ]}
+          onChange={(update_mode) => onChange({ update_mode })}
+        />
+        <Tools />
+      </Section>
+
       <Section title="At the same time" hint="How many downloads run at once. The rest wait their turn.">
         <div role="radiogroup" aria-label="Simultaneous downloads" className="flex gap-0.5">
           {CONCURRENCY_CHOICES.map((count) => (
@@ -154,6 +184,94 @@ function SettingsForm({
           ))}
         </div>
       </Section>
+    </div>
+  );
+}
+
+/** A labelled either/or choice. */
+function Choice<T extends string>({
+  label,
+  group,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  group: string;
+  value: T;
+  options: { id: T; label: string }[];
+  onChange: (value: T) => void;
+}) {
+  return (
+    <div className="mb-1 flex items-center justify-between gap-3">
+      <span className="text-[13px] text-muted-foreground">{label}</span>
+      <div role="radiogroup" aria-label={label} className="flex gap-0.5">
+        {options.map((option) => (
+          <Chip
+            key={option.id}
+            group={group}
+            tone="soft"
+            selected={value === option.id}
+            onSelect={() => onChange(option.id)}
+          >
+            {option.label}
+          </Chip>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Installed versions of the managed tools, with a manual check. */
+function Tools() {
+  const tools = useBinaries((state) => state.tools);
+  const syncing = useBinaries((state) => state.syncing);
+  const sync = useBinaries((state) => state.sync);
+  // (A boolean, not the list: a selector must return a stable value.)
+  const available = useBinaries((state) => selectAvailable(state).length > 0);
+  if (!tools) return null;
+
+  const run = async () => {
+    await sync(available);
+    // A tool can't be swapped while a download is using it. Say so, or the
+    // button would seem to have done nothing.
+    const stillWaiting = selectAvailable(useBinaries.getState()).length > 0;
+    if (available && stillWaiting) {
+      useToasts.getState().show({
+        id: "update-deferred",
+        title: "The update is waiting for your downloads",
+        description: "It will be installed once they have finished. Press Update now again then, or leave it to the next check.",
+      });
+    }
+  };
+
+  return (
+    <div className="mt-3 rounded-xl border">
+      <ul>
+        {TOOL_ORDER.map((tool) => {
+          const status = tools[tool];
+          return (
+            <li key={tool} className="border-b px-3 py-2 last:border-b-0">
+              <div className="flex items-baseline justify-between gap-3 text-[13px]">
+                <span className="font-medium">{TOOL_NAMES[tool]}</span>
+                <span className="truncate text-xs text-muted-foreground tabular-nums">
+                  {status.version ?? "system"}
+                  {status.available && <span className="text-primary"> → {status.available.version}</span>}
+                </span>
+              </div>
+              {status.available && (
+                <p className="mt-0.5 text-xs text-pretty text-muted-foreground">{status.available.summary}</p>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+      <div className="flex justify-end border-t p-1.5">
+        <Button variant="ghost" size="sm" disabled={syncing} onClick={() => void run()}>
+          {syncing ? <LoaderCircle className="animate-spin" /> : <RefreshCw />}
+          {syncing ? "Checking…" : available ? "Update now" : "Check now"}
+        </Button>
+      </div>
     </div>
   );
 }

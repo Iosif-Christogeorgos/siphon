@@ -154,6 +154,7 @@ async fn download_proxy(app: &AppHandle, bins: &BinaryManager, video: &VideoInfo
     .args(["--output", &format!("{name}.%(ext)s"), "--"])
     .arg(&video.url);
 
+    let _in_use = bins.in_use().await;
     let output = process::output_within(cmd, PROXY_TIMEOUT).await?.ok_or_else(|| {
         AppError::new(
             ErrorKind::Network,
