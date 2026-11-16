@@ -121,7 +121,13 @@ export const useDownloads = create<DownloadsState>((set, get) => {
       switch (event.type) {
         case "progress": {
           const { type: _type, id, ...progress } = event;
-          patch(id, { status: progress.stage === "queued" ? "queued" : "running", progress });
+          // A resumed download reports from zero until yt-dlp finds its partial
+          // file; the bar stays where it was instead of jumping back.
+          const reached = get().byId[id]?.progress.fraction ?? 0;
+          patch(id, {
+            status: progress.stage === "queued" ? "queued" : "running",
+            progress: { ...progress, fraction: Math.max(progress.fraction, reached) },
+          });
           break;
         }
         case "finished":

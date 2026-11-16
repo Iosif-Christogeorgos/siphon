@@ -29,15 +29,22 @@ export function Sheet({
           <Dialog.Portal forceMount>
             <Dialog.Overlay asChild>
               <motion.div
-                className="fixed inset-0 top-11 z-40 bg-black/25 backdrop-blur-[2px]"
+                className="fixed inset-0 top-11 z-40 bg-black/30 backdrop-blur-[1.5px]"
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
                 transition={{ duration: 0.18 }}
               />
             </Dialog.Overlay>
-            {/* Without a description, tell Radix so explicitly (it warns otherwise). */}
-            <Dialog.Content asChild {...(description ? {} : { "aria-describedby": undefined })}>
+            <Dialog.Content
+              asChild
+              {...(description ? {} : { "aria-describedby": undefined })}
+              // Focus the panel itself, not its close button: no focus ring flashes on open.
+              onOpenAutoFocus={(event) => {
+                event.preventDefault();
+                (event.currentTarget as HTMLElement).focus();
+              }}
+            >
               <motion.aside
                 className="fixed top-11 right-0 bottom-0 z-50 flex w-[380px] max-w-[calc(100vw-3rem)] flex-col border-l bg-popover shadow-pop outline-none"
                 initial={{ x: "100%" }}

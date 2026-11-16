@@ -56,7 +56,7 @@ export function PlaylistPane({ playlist }: { playlist: PlaylistInfo }) {
             {playlist.title}
           </h2>
           <p className="mt-0.5 truncate text-[13px] text-muted-foreground">
-            {[playlist.channel, `${entries.length} videos`].filter(Boolean).join(" · ")}
+            {[playlist.channel, `${entries.length} ${entries.length === 1 ? "video" : "videos"}`].filter(Boolean).join(" · ")}
           </p>
         </div>
       </div>
