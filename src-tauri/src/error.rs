@@ -28,12 +28,26 @@ pub enum ErrorKind {
     Internal,
 }
 
+/// Whether doing the same thing again may work, and how soon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Retry {
+    #[default]
+    No,
+    /// A dropped or refused connection: worth another go within seconds.
+    Soon,
+    /// The site is holding requests back: give it a while first.
+    Later,
+}
+
 #[derive(Debug, Clone, Serialize, thiserror::Error)]
 #[error("{message}")]
 pub struct AppError {
     pub kind: ErrorKind,
     pub message: String,
     pub details: Option<String>,
+    /// For the backend's own use; the frontend only sees errors that are final.
+    #[serde(skip)]
+    pub retry: Retry,
 }
 
 pub type Result<T> = std::result::Result<T, AppError>;
@@ -44,7 +58,18 @@ impl AppError {
             kind,
             message: message.into(),
             details: None,
+            // Connections fail for reasons that pass; nothing else does by default.
+            retry: if kind == ErrorKind::Network {
+                Retry::Soon
+            } else {
+                Retry::No
+            },
         }
+    }
+
+    pub fn retrying(mut self, retry: Retry) -> Self {
+        self.retry = retry;
+        self
     }
 
     pub fn internal(message: impl Into<String>) -> Self {

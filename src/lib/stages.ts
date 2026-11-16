@@ -4,6 +4,7 @@ import type { Stage } from "@/types";
 export const STAGE_LABELS: Record<Stage, string> = {
   queued: "Waiting in the queue",
   updating: "Updating the download engine",
+  retrying: "Trying again in a moment",
   preparing: "Preparing",
   downloading_video: "Downloading video",
   downloading_audio: "Downloading audio",
@@ -14,4 +15,5 @@ export const STAGE_LABELS: Record<Stage, string> = {
 };
 
 /** Stages with no measurable progress yet: shown without a percentage. */
-export const isIndeterminate = (stage: Stage) => stage === "queued" || stage === "updating" || stage === "preparing";
+export const isIndeterminate = (stage: Stage) =>
+  stage === "queued" || stage === "updating" || stage === "retrying" || stage === "preparing";

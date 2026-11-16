@@ -11,6 +11,8 @@ pub enum Stage {
     Queued,
     /// The site refused the download; yt-dlp is being updated before a second try.
     Updating,
+    /// The last try failed in a way that may pass; waiting a moment before the next.
+    Retrying,
     Preparing,
     DownloadingVideo,
     DownloadingAudio,
@@ -79,6 +81,16 @@ impl Tracker {
     pub fn updating() -> Progress {
         Progress {
             stage: Stage::Updating,
+            fraction: 0.0,
+            speed: None,
+            eta: None,
+        }
+    }
+
+    /// What a job reports while it waits to try again after a failure.
+    pub fn retrying() -> Progress {
+        Progress {
+            stage: Stage::Retrying,
             fraction: 0.0,
             speed: None,
             eta: None,

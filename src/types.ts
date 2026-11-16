@@ -247,6 +247,8 @@ export type Stage =
   | "queued"
   /** yt-dlp is being updated before a second attempt. */
   | "updating"
+  /** Waiting a moment before trying again after a failure that may pass. */
+  | "retrying"
   | "preparing"
   | "downloading_video"
   | "downloading_audio"

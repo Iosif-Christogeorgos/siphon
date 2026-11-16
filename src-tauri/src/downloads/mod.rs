@@ -20,7 +20,7 @@ use tokio::process::Command;
 use tokio::sync::Notify;
 
 use crate::binaries::{BinaryManager, Tool};
-use crate::error::{AppError, ErrorKind, Result};
+use crate::error::{AppError, ErrorKind, Result, Retry};
 use crate::ffmpeg::{self, encoders::Encoders};
 use crate::plan::{self, DownloadOptions, Recipe, Trim};
 use crate::process;
@@ -36,8 +36,13 @@ pub const EVENT: &str = "download://event";
 /// Keep the tail of the log for the "details" toggle without growing forever.
 const MAX_LOG_LINES: usize = 400;
 
-/// How long to wait before the one retry after a dropped connection.
-const NETWORK_RETRY_DELAY: Duration = Duration::from_secs(2);
+/// How long to wait before each further try at a download that failed in a
+/// way that may pass. A dropped or refused connection gets two more tries,
+/// which also covers Wi-Fi reconnecting; a site that is limiting requests
+/// gets one, after a longer wait. Every try carries on from the files the
+/// last one left, so trying again costs little.
+const RETRY_SOON: &[Duration] = &[Duration::from_secs(2), Duration::from_secs(10)];
+const RETRY_LATER: &[Duration] = &[Duration::from_secs(30)];
 
 #[derive(Debug, Deserialize)]
 pub struct DownloadRequest {
@@ -338,34 +343,67 @@ impl DownloadManager {
                 .with_details(format!("{}: {err}", output_dir.display()))
         })?;
 
-        match self.attempt(job, url, options, trim, &output_dir).await {
+        let mut updated = false;
+        let mut retries = 0;
+        loop {
+            let error = match self.attempt(job, url, options, trim, &output_dir).await {
+                Ok(path) => return Ok(path),
+                Err(error) => error,
+            };
+            if self.stop_of(job.id).is_some() {
+                return Err(error);
+            }
+
             // Sites change, and yt-dlp follows within days. If the failure
-            // looks like that, get the newest yt-dlp and try once more.
-            Err(error) if error.kind == ErrorKind::Outdated && self.stop_of(job.id).is_none() => {
+            // looks like that, get the newest yt-dlp and try again with it.
+            if error.kind == ErrorKind::Outdated && !updated {
+                updated = true;
                 job.emit(Tracker::updating());
-                match job.bins.update_now(Tool::YtDlp, job.settings.update_channel).await {
-                    Ok(Some(_)) => {
-                        // Formats looked up by the old version may be the problem.
-                        job.app.state::<MediaCache>().forget(url);
-                        job.emit(Tracker::new(false).current());
-                        self.attempt(job, url, options, trim, &output_dir).await
-                    }
-                    // Already current (or the update couldn't run): the first error stands.
-                    _ => Err(error),
+                if let Ok(Some(_)) = job.bins.update_now(Tool::YtDlp, job.settings.update_channel).await {
+                    // Formats looked up by the old version may be the problem.
+                    job.app.state::<MediaCache>().forget(url);
+                    job.emit(Tracker::new(false).current());
+                    continue;
                 }
+                // Already current, or the update has to wait for other
+                // downloads: fall through to an ordinary retry, if any.
             }
+
             // Sites refuse or drop a request now and then, and the same
-            // request works a moment later. Try once more before giving up;
-            // the second try carries on from the files the first one left.
-            Err(error) if error.kind == ErrorKind::Network && self.stop_of(job.id).is_none() => {
-                tokio::time::sleep(NETWORK_RETRY_DELAY).await;
-                if self.stop_of(job.id).is_some() {
-                    return Err(error);
-                }
-                job.emit(Tracker::new(false).current());
-                self.attempt(job, url, options, trim, &output_dir).await
+            // request works a little later. Wait, then carry on from the
+            // files this try left.
+            let delays = match error.retry {
+                Retry::No => return Err(error),
+                Retry::Soon => RETRY_SOON,
+                Retry::Later => RETRY_LATER,
+            };
+            let Some(delay) = delays.get(retries) else {
+                return Err(error);
+            };
+            retries += 1;
+            job.emit(Tracker::retrying());
+            if !self.wait_unless_stopped(job.id, *delay).await {
+                return Err(error);
             }
-            outcome => outcome,
+            job.emit(Tracker::new(false).current());
+        }
+    }
+
+    /// Waits for `delay`, or until the job is stopped. Returns false if it was stopped.
+    async fn wait_unless_stopped(&self, id: &str, delay: Duration) -> bool {
+        let delay = tokio::time::sleep(delay);
+        tokio::pin!(delay);
+        loop {
+            // Stopping a job signals the gate (see `stop`). Created before
+            // checking, so a signal between check and await isn't missed.
+            let changed = self.gate_changed.notified();
+            if self.stop_of(id).is_some() {
+                return false;
+            }
+            tokio::select! {
+                _ = &mut delay => return self.stop_of(id).is_none(),
+                _ = changed => {}
+            }
         }
     }
 

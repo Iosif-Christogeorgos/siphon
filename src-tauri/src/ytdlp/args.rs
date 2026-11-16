@@ -9,12 +9,29 @@ use crate::plan::{AudioAction, Recipe};
 pub const SOURCE_MARKER: &str = ".source";
 
 /// For every yt-dlp run that downloads media.
-pub const TRANSFER_ARGS: [&str; 2] = [
+pub const TRANSFER_ARGS: [&str; 11] = [
     // Segmented streams (HLS, DASH), which is what most sites serve, are
     // fetched one piece at a time unless told otherwise. Four at once
     // measured 2.4 times faster (23 → 55 MiB/s); eight added nothing.
     "--concurrent-fragments",
     "4",
+    // When a connection drops, yt-dlp picks the transfer up where it broke.
+    // By default it does so ten times with no pause, which is over within a
+    // second: no use against an outage of any length. Five tries spread over
+    // 1, 2, 4, 8 and 8 seconds ride out a short one, and after that Siphon's
+    // own retry (see `downloads::run`) takes over.
+    "--retries",
+    "5",
+    "--fragment-retries",
+    "5",
+    "--retry-sleep",
+    "http:exp=1:8",
+    "--retry-sleep",
+    "fragment:exp=1:8",
+    // yt-dlp's default is to leave out a piece it couldn't fetch and carry
+    // on, which gives a file with a hole in it. Fail instead, so the download
+    // is tried again and continues from that piece.
+    "--abort-on-unavailable-fragments",
 ];
 
 /// The full output template: the user's naming style (`name`, see
