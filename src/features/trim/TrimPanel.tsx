@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight, Pause, Play, Plus, Trash2, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Pause, Play, Plus, Trash2, X, ZoomIn, ZoomOut } from "lucide-react";
 import { AnimatePresence, motion, useMotionValue, useTransform } from "motion/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -14,7 +14,7 @@ import type { VideoInfo } from "@/types";
 import type { PlayerHandle } from "./player";
 import { Preview } from "./Preview";
 import { TimeField } from "./TimeField";
-import { Timeline } from "./Timeline";
+import { Timeline, type TimelineView } from "./Timeline";
 
 /**
  * The trimmer: a preview player, a timeline with draggable handles, and the
@@ -22,6 +22,7 @@ import { Timeline } from "./Timeline";
  *
  * Keyboard: Space plays/pauses, ←/→ move one second (Shift: five),
  * , and . step one frame, I and O set the start and end at the playhead.
+ * Playback started inside a part stops at its end, so Space previews the clip.
  */
 export function TrimPanel({ video, duration, disabled }: { video: VideoInfo; duration: number; disabled: boolean }) {
   const segments = useTrim((state) => state.segments);
@@ -34,8 +35,18 @@ export function TrimPanel({ video, duration, disabled }: { video: VideoInfo; dur
   const exactCut = useOptions((state) => state.exactCut);
   const setExactCut = useOptions((state) => state.setExactCut);
 
+  const panel = useRef<HTMLDivElement>(null);
   const player = useRef<PlayerHandle>(null);
   const [playing, setPlaying] = useState(false);
+  // null shows the whole video; otherwise the timeline is zoomed to this stretch.
+  const [zoom, setZoom] = useState<TimelineView | null>(null);
+  const view = zoom ?? { start: 0, end: duration };
+
+  // The panel opens below the fold on smaller windows; bring it into view.
+  useEffect(() => {
+    // (Braces matter: scrollIntoView returns a promise, which is not a valid effect cleanup.)
+    void panel.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, []);
   // A motion value, not state: the position changes every frame while playing.
   const time = useMotionValue(0);
   const timeLabel = useTransform(time, formatTimecode);
@@ -53,6 +64,26 @@ export function TrimPanel({ video, duration, disabled }: { video: VideoInfo; dur
     },
     [duration, time],
   );
+  /** Follows playback, and pauses at the end of the part it started in. */
+  const onTime = useCallback(
+    (seconds: number) => {
+      const previous = time.get();
+      time.set(seconds);
+      const { segments, activeId } = useTrim.getState();
+      const end = segments.find((segment) => segment.id === activeId)?.end;
+      if (end !== undefined && end < duration && previous < end && seconds >= end && seconds - previous < 1) {
+        player.current?.pause();
+      }
+    },
+    [duration, time],
+  );
+  /** Zooms the timeline in on the active part, or back out to the whole video. */
+  const toggleZoom = () => {
+    const active = segments.find((segment) => segment.id === activeId);
+    if (zoom || !active) return setZoom(null);
+    const margin = Math.max((active.end - active.start) * 0.75, 2);
+    setZoom({ start: Math.max(0, active.start - margin), end: Math.min(duration, active.end + margin) });
+  };
   const togglePlay = useCallback(() => {
     if (playing) player.current?.pause();
     else player.current?.play();
@@ -93,14 +124,14 @@ export function TrimPanel({ video, duration, disabled }: { video: VideoInfo; dur
   }, [frame, seek, setEdge, time, togglePlay]);
 
   return (
-    <div className="space-y-3 rounded-[1.25rem] border bg-card p-3 shadow-card">
+    <div ref={panel} className="scroll-my-3 space-y-3 rounded-[1.25rem] border bg-card p-3 shadow-card">
       <div className="overflow-hidden rounded-xl bg-black">
         <div className="mx-auto max-h-80" style={{ aspectRatio: aspect, maxWidth: `${20 * aspect}rem` }}>
           <Preview
             video={video}
             ref={player}
             onReady={() => seek(useTrim.getState().segments[0]?.start ?? 0)}
-            onTime={(seconds) => time.set(seconds)}
+            onTime={onTime}
             onPlaying={setPlaying}
           />
         </div>
@@ -137,6 +168,11 @@ export function TrimPanel({ video, duration, disabled }: { video: VideoInfo; dur
               Set end
             </Button>
           </Hint>
+          <Hint label={zoom ? "Show the whole video" : "Zoom the timeline in on this part"}>
+            <Button variant="ghost" size="icon-sm" onClick={toggleZoom} aria-label={zoom ? "Zoom out" : "Zoom in"}>
+              {zoom ? <ZoomOut /> : <ZoomIn />}
+            </Button>
+          </Hint>
           <Hint label="Close the trimmer and download the whole video">
             <Button variant="ghost" size="icon-sm" disabled={disabled} onClick={close} aria-label="Close trimmer">
               <X />
@@ -145,7 +181,7 @@ export function TrimPanel({ video, duration, disabled }: { video: VideoInfo; dur
         </div>
       </div>
 
-      <Timeline duration={duration} time={time} onSeek={seek} />
+      <Timeline duration={duration} view={view} time={time} onSeek={seek} />
 
       <ul className="space-y-1">
         <AnimatePresence initial={false}>

@@ -48,7 +48,7 @@ export function TimeField({
       onBlur={commit}
       onKeyDown={(event) => {
         if (event.key === "Enter") {
-          commit();
+          // Blurring commits (see onBlur); committing here too would do it twice.
           event.currentTarget.blur();
         } else if (event.key === "Escape") {
           setDraft(null);

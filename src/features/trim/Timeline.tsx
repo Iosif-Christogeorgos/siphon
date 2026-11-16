@@ -4,8 +4,16 @@ import { formatTimecode } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { type Segment, useTrim } from "@/stores/trim";
 
+/** The stretch of the video the timeline currently shows, in seconds. */
+export interface TimelineView {
+  start: number;
+  end: number;
+}
+
 interface TimelineProps {
   duration: number;
+  /** The whole video by default; narrower when zoomed in on a part. */
+  view: TimelineView;
   /** Playback position in seconds. */
   time: MotionValue<number>;
   onSeek: (seconds: number) => void;
@@ -15,19 +23,26 @@ interface TimelineProps {
  * The scrub bar: click or drag anywhere to move the playhead, drag a part's
  * edges to set where it starts and ends.
  */
-export function Timeline({ duration, time, onSeek }: TimelineProps) {
+export function Timeline({ duration, view, time, onSeek }: TimelineProps) {
   const track = useRef<HTMLDivElement>(null);
   const segments = useTrim((state) => state.segments);
   const activeId = useTrim((state) => state.activeId);
   const setRange = useTrim((state) => state.setRange);
   const setActive = useTrim((state) => state.setActive);
 
-  const playhead = useTransform(time, (seconds) => `${(seconds / duration) * 100}%`);
+  const span = view.end - view.start;
+  const percent = (seconds: number) => ((seconds - view.start) / span) * 100;
+  const playhead = useTransform(time, (seconds) => `${percent(seconds)}%`);
+  // The playhead sits outside the clipped layer (its knob pokes above the
+  // track), so hide it by hand when it is outside the zoomed view.
+  const playheadOpacity = useTransform(time, (seconds) =>
+    seconds < view.start - 0.001 || seconds > view.end + 0.001 ? 0 : 1,
+  );
 
   const timeAt = (clientX: number) => {
     const rect = track.current?.getBoundingClientRect();
-    if (!rect) return 0;
-    return Math.min(Math.max((clientX - rect.left) / rect.width, 0), 1) * duration;
+    if (!rect) return view.start;
+    return view.start + Math.min(Math.max((clientX - rect.left) / rect.width, 0), 1) * span;
   };
 
   /** Follows the pointer from press to release, wherever it goes. */
@@ -37,13 +52,13 @@ export function Timeline({ duration, time, onSeek }: TimelineProps) {
     const target = event.currentTarget;
     target.setPointerCapture(event.pointerId);
     move(timeAt(event.clientX));
-    const onMove = (moveEvent: PointerEvent) => move(timeAt(moveEvent.clientX));
+    const onMove = (moveEvent: Event) => move(timeAt((moveEvent as PointerEvent).clientX));
     const stop = () => {
-      target.removeEventListener("pointermove", onMove as EventListener);
+      target.removeEventListener("pointermove", onMove);
       target.removeEventListener("pointerup", stop);
       target.removeEventListener("pointercancel", stop);
     };
-    target.addEventListener("pointermove", onMove as EventListener);
+    target.addEventListener("pointermove", onMove);
     target.addEventListener("pointerup", stop);
     target.addEventListener("pointercancel", stop);
   };
@@ -63,29 +78,32 @@ export function Timeline({ duration, time, onSeek }: TimelineProps) {
         onPointerDown={(event) => drag(event, onSeek)}
         className="relative h-11 cursor-pointer touch-none rounded-lg bg-secondary"
       >
-        {segments.map((segment) => {
-          const active = segment.id === activeId;
-          return (
-            <div
-              key={segment.id}
-              onPointerDown={() => setActive(segment.id)}
-              style={{
-                left: `${(segment.start / duration) * 100}%`,
-                width: `${((segment.end - segment.start) / duration) * 100}%`,
-              }}
-              className={cn(
-                "absolute inset-y-0 rounded-md border-y-2 transition-colors duration-150",
-                active ? "z-10 border-primary bg-primary/20" : "border-primary/40 bg-primary/10",
-              )}
-            >
-              <Handle side="left" active={active} onPointerDown={dragEdge(segment, "start")} />
-              <Handle side="right" active={active} onPointerDown={dragEdge(segment, "end")} />
-            </div>
-          );
-        })}
+        <div className="absolute inset-0 overflow-hidden rounded-lg">
+          {segments.map((segment) => {
+            const active = segment.id === activeId;
+            return (
+              <div
+                key={segment.id}
+                onPointerDown={() => setActive(segment.id)}
+                style={{
+                  left: `${percent(segment.start)}%`,
+                  width: `${percent(segment.end) - percent(segment.start)}%`,
+                }}
+                className={cn(
+                  // min-w keeps both grips reachable when the part is tiny on screen.
+                  "absolute inset-y-0 min-w-5 rounded-md border-y-2 transition-colors duration-150",
+                  active ? "z-10 border-primary bg-primary/20" : "border-primary/40 bg-primary/10",
+                )}
+              >
+                <Handle side="left" active={active} onPointerDown={dragEdge(segment, "start")} />
+                <Handle side="right" active={active} onPointerDown={dragEdge(segment, "end")} />
+              </div>
+            );
+          })}
+        </div>
 
         <motion.div
-          style={{ left: playhead }}
+          style={{ left: playhead, opacity: playheadOpacity }}
           className="pointer-events-none absolute -inset-y-1 z-20 w-0.5 -translate-x-1/2 rounded-full bg-foreground shadow-[0_0_0_1px_var(--background)]"
         >
           <div className="absolute -top-1 left-1/2 size-2.5 -translate-x-1/2 rounded-full bg-foreground shadow-[0_0_0_1px_var(--background)]" />
@@ -93,8 +111,8 @@ export function Timeline({ duration, time, onSeek }: TimelineProps) {
       </div>
 
       <div className="mt-1.5 flex justify-between text-[11px] text-subtle-foreground tabular-nums">
-        <span>{formatTimecode(0)}</span>
-        <span>{formatTimecode(duration)}</span>
+        <span>{formatTimecode(view.start)}</span>
+        <span>{formatTimecode(view.end)}</span>
       </div>
     </div>
   );
@@ -113,19 +131,18 @@ function Handle({
     <div
       onPointerDown={onPointerDown}
       className={cn(
-        // A wide invisible hit area around a slim visible grip.
-        "group absolute inset-y-0 z-10 flex w-4 cursor-ew-resize touch-none items-center justify-center",
-        side === "left" ? "-left-2" : "-right-2",
+        "group absolute inset-y-0 z-10 flex w-2.5 cursor-ew-resize touch-none",
+        side === "left" ? "left-0" : "right-0",
       )}
     >
       <div
         className={cn(
-          "h-full w-2 transition-[background-color,transform] duration-150 group-hover:scale-x-125 group-active:scale-x-125",
+          "flex size-full items-center justify-center transition-colors duration-150",
           side === "left" ? "rounded-l-md" : "rounded-r-md",
-          active ? "bg-primary" : "bg-primary/50",
+          active ? "bg-primary group-hover:bg-primary-hover" : "bg-primary/50",
         )}
       >
-        <div className="mx-auto mt-3.5 h-4 w-0.5 rounded-full bg-primary-foreground/70" />
+        <div className="h-4 w-0.5 rounded-full bg-primary-foreground/70" />
       </div>
     </div>
   );
