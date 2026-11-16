@@ -29,6 +29,7 @@ Why Siphon works the way it does, and what is known not to be right yet. Progres
 - **The queue is first in, first out behind one gate.** A job runs when it is first in line and fewer than the configured number are running. The limit is read each time, so changing it in Settings takes effect at once.
 - **Settings live in the backend** (`settings.json`), not in browser storage, because the backend is what uses them. The choice of preset and other per-download options stay in the frontend.
 - **Custom file names can't contain folders or `..`** and must contain at least one yt-dlp field. The folder is its own setting, and a name without fields would make every download overwrite the last.
+- **A network error gets one automatic retry**, two seconds later (`run` in `src-tauri/src/downloads/mod.rs`). Sites refuse or drop a request now and then and the same request works a moment later. Only one retry, so being offline still fails quickly. An "outdated" error is handled separately: yt-dlp is updated first, then the download is tried again.
 - **The download list is not saved between sessions.** A finished file may have been moved or deleted since, and a half-finished one is simply started again.
 
 ### Managed binaries
@@ -65,7 +66,7 @@ Why Siphon works the way it does, and what is known not to be right yet. Progres
 
 ## Known issues
 
-- **Intermittent HTTP 403 on section downloads.** A trimmed YouTube download once failed with `ffmpeg exited with code 3436169992`, which is ffmpeg's `AVERROR_HTTP_FORBIDDEN`. The same request succeeded on every retry and from a shell, so it is YouTube refusing a request now and then. It is reported as "The site dropped the connection … Try again"; it is not retried automatically yet. (The update-and-retry for "outdated" errors does not cover it, because it is classed as a network error.)
+- **Intermittent HTTP 403 on section downloads.** A trimmed YouTube download once failed with `ffmpeg exited with code 3436169992`, which is ffmpeg's `AVERROR_HTTP_FORBIDDEN`. The same request succeeded on every retry and from a shell, so it is YouTube refusing a request now and then. After 0.5.0 (not released yet) a download that fails with a network error is tried once more after two seconds, which covers this; if the second try fails too, the error is shown ("The site dropped the connection … Try again").
 - **YouTube draws its own overlay on the paused preview.** With the official embedded player, a paused frame is partly covered by the video title, a play button and "More videos". The API offers no way to hide them. Scrubbing still shows the frame underneath.
 - **The YouTube embed can stall in "buffering" after a seek.** `YouTubePlayer.tsx` nudges it out with a second seek.
 - **Downloading the same video twice with the same settings overwrites the first file.**

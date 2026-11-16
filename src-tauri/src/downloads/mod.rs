@@ -36,6 +36,9 @@ pub const EVENT: &str = "download://event";
 /// Keep the tail of the log for the "details" toggle without growing forever.
 const MAX_LOG_LINES: usize = 400;
 
+/// How long to wait before the one retry after a dropped connection.
+const NETWORK_RETRY_DELAY: Duration = Duration::from_secs(2);
+
 #[derive(Debug, Deserialize)]
 pub struct DownloadRequest {
     /// Chosen by the frontend so it can match events to its own records.
@@ -331,6 +334,16 @@ impl DownloadManager {
                     // Already current (or the update couldn't run): the first error stands.
                     _ => Err(error),
                 }
+            }
+            // Sites refuse or drop a request now and then, and the same
+            // request works a moment later. Try once more before giving up.
+            Err(error) if error.kind == ErrorKind::Network && self.stop_of(job.id).is_none() => {
+                tokio::time::sleep(NETWORK_RETRY_DELAY).await;
+                if self.stop_of(job.id).is_some() {
+                    return Err(error);
+                }
+                job.emit(Tracker::new(false).current());
+                self.attempt(job, url, options, trim, &output_dir).await
             }
             outcome => outcome,
         }

@@ -122,6 +122,7 @@ Every download joins a queue. A set number run at once (three by default) and th
 
 - **Pause** stops the download but keeps what it has fetched; **Resume** carries on from there.
 - **Cancel** stops it and deletes the partial files.
+- A download that fails because the connection dropped is tried once more on its own before the error is shown.
 - Closing the app pauses whatever is running, so no yt-dlp or ffmpeg process is left behind. The list itself is not kept between sessions.
 
 A playlist link shows its videos with checkboxes. The ones you select are added to the queue with the current preset, and the best format is worked out for each video when its turn comes. A YouTube video link that also names a playlist offers a way to the whole playlist.
