@@ -436,6 +436,7 @@ impl DownloadManager {
     ) -> Result<PathBuf> {
         let mut cmd = ytdlp::command(job.bins);
         cmd.args(progress::template_args())
+            .args(args::TRANSFER_ARGS)
             .args(args::recipe_args(recipe, section_request_size))
             .args([
                 "--no-playlist",

@@ -8,6 +8,15 @@ use crate::plan::{AudioAction, Recipe};
 /// The marker keeps the intermediate apart from the finished file.
 pub const SOURCE_MARKER: &str = ".source";
 
+/// For every yt-dlp run that downloads media.
+pub const TRANSFER_ARGS: [&str; 2] = [
+    // Segmented streams (HLS, DASH), which is what most sites serve, are
+    // fetched one piece at a time unless told otherwise. Four at once
+    // measured 2.4 times faster (23 → 55 MiB/s); eight added nothing.
+    "--concurrent-fragments",
+    "4",
+];
+
 /// The full output template: the user's naming style (`name`, see
 /// `Settings::filename_template`) plus what Siphon adds itself.
 pub fn output_template(recipe: &Recipe, name: &str) -> String {

@@ -136,23 +136,24 @@ async fn download_proxy(app: &AppHandle, bins: &BinaryManager, video: &VideoInfo
     }
 
     let mut cmd = ytdlp::command(bins);
-    cmd.args([
-        "--no-playlist",
-        "--no-warnings",
-        // The smallest thing a webview plays everywhere: ≤360p H.264 + AAC in MP4.
-        "--format-sort",
-        "res:360,vcodec:h264,acodec:aac",
-        "--format",
-        "bv*+ba/b",
-        "--merge-output-format",
-        "mp4",
-        "--remux-video",
-        "mp4",
-    ])
-    .arg("--paths")
-    .arg(&dir)
-    .args(["--output", &format!("{name}.%(ext)s"), "--"])
-    .arg(&video.url);
+    cmd.args(ytdlp::args::TRANSFER_ARGS)
+        .args([
+            "--no-playlist",
+            "--no-warnings",
+            // The smallest thing a webview plays everywhere: ≤360p H.264 + AAC in MP4.
+            "--format-sort",
+            "res:360,vcodec:h264,acodec:aac",
+            "--format",
+            "bv*+ba/b",
+            "--merge-output-format",
+            "mp4",
+            "--remux-video",
+            "mp4",
+        ])
+        .arg("--paths")
+        .arg(&dir)
+        .args(["--output", &format!("{name}.%(ext)s"), "--"])
+        .arg(&video.url);
 
     let _in_use = bins.in_use().await;
     let output = process::output_within(cmd, PROXY_TIMEOUT).await?.ok_or_else(|| {
