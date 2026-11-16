@@ -70,5 +70,5 @@ Why Siphon works the way it does, and what is known not to be right yet. Progres
 - **YouTube draws its own overlay on the paused preview.** With the official embedded player, a paused frame is partly covered by the video title, a play button and "More videos". The API offers no way to hide them. Scrubbing still shows the frame underneath.
 - **The YouTube embed can stall in "buffering" after a seek.** `YouTubePlayer.tsx` nudges it out with a second seek.
 - **Downloading the same video twice with the same settings overwrites the first file.**
-- **macOS is untested.** The platform branches exist (VideoToolbox, system FFmpeg, native window buttons), but nothing has been built or run there.
+- **macOS has never been run.** The release workflow compiles and bundles it (Apple silicon only, first for v0.5.0), so the code builds, but nobody has started the app there. The platform branches (VideoToolbox, system FFmpeg, native window buttons) are untested, and the bundle is not notarised, so macOS will warn before opening it.
 - **The shadcn CLI mis-resolves the `@/` alias.** It writes `import { cn } from "cn"` and installs a package called `cn`. After `npx shadcn add …`, change the import to `@/lib/utils` and run `npm uninstall cn`.
