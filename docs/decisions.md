@@ -36,6 +36,7 @@ Why Siphon works the way it does, and what is known not to be right yet. Progres
 ## Known issues
 
 - **Intermittent HTTP 403 on section downloads.** A trimmed YouTube download once failed with `ffmpeg exited with code 3436169992`, which is ffmpeg's `AVERROR_HTTP_FORBIDDEN`. The same request succeeded on every retry and from a shell, so it is YouTube refusing a request now and then. It is reported as "The site dropped the connection … Try again"; it is not retried automatically yet.
+- **YouTube draws its own overlay on the paused preview.** With the official embedded player, a paused frame is partly covered by the video title, a play button and "More videos". The API offers no way to hide them. Scrubbing still shows the frame underneath.
 - **Binary updates can race a download.** The update check at launch may swap yt-dlp's folder while a download is starting.
 - **Downloading the same video twice with the same settings overwrites the first file.**
 - **`open_file` and `reveal_file` accept any existing path** from the webview. Acceptable for a personal tool, but worth restricting to known download paths.

@@ -6,13 +6,13 @@ Siphon is a personal-use tool. It does not bypass DRM; protected videos get a cl
 
 ## Status
 
-Siphon is being built in phases. This is **v0.2.0**.
+Siphon is being built in phases. This is **v0.3.0**.
 
 | Phase | Scope | State |
 | --- | --- | --- |
 | 1 | App shell, managed binaries, link → metadata → best-quality download with progress | Done |
 | 2 | Device presets and manual format selection | Done |
-| 3 | Trim with live preview | Planned |
+| 3 | Trim with live preview | Done |
 | 4 | Download queue, playlists, settings | Planned |
 | 5 | Design polish, background auto-updates, app self-update | Planned |
 
@@ -86,6 +86,26 @@ When a conversion is needed, Siphon runs its own ffmpeg pass with a hardware enc
 
 What each device can play, and the sources for it, are in [docs/device-support.md](docs/device-support.md).
 
+### Trimming
+
+**Trim** on the video card opens a preview player with a timeline. Drag the two handles, type the times, or use the keyboard, and add more parts if you want several clips. Each part is downloaded as its own file.
+
+| Key | Action |
+| --- | --- |
+| Space | Play or pause (playback stops at the end of the part) |
+| ← / → | Move one second (with Shift: five) |
+| , / . | Step one frame back or forward |
+| I / O | Set the start or end of the part at the playhead |
+
+The preview comes from YouTube's embedded player for YouTube links, from a low-resolution stream for other sites, and from a small downloaded copy if neither plays.
+
+Only the selected part is downloaded (`--download-sections`). There are two ways to cut it:
+
+- **Exact cut** lands on the precise frames. The video is re-encoded once with a hardware encoder; the audio is left untouched.
+- **Fast cut** keeps the original streams and takes no extra time, but starts on a key frame, which can be a few seconds early.
+
+Why Siphon makes exact cuts itself instead of using yt-dlp's `--force-keyframes-at-cuts` is explained in [docs/decisions.md](docs/decisions.md#trimming).
+
 ### Talking to yt-dlp
 
 All yt-dlp commands are built in Rust and passed as argument arrays, never as shell strings. Links are validated as plain `http(s)` URLs and placed after a `--` separator, so user input can't be read as an option.
@@ -97,9 +117,9 @@ Progress comes from `--progress-template` lines that the backend parses and fold
 ```
 src/                     React + TypeScript frontend
   components/            Shared UI (title bar, error card, shadcn/ui primitives)
-  features/              One folder per feature: setup, link, video, options, download, home
+  features/              One folder per feature: setup, link, video, options, trim, download, home
   lib/                   IPC wrappers, formatting, motion presets
-  stores/                Zustand stores (binaries, downloads, options)
+  stores/                Zustand stores (binaries, downloads, options, trim)
   types.ts               Types mirrored from the Rust backend
 src-tauri/               Rust backend (Tauri 2)
   src/binaries/          Download, verify, install and update the managed tools
@@ -107,6 +127,7 @@ src-tauri/               Rust backend (Tauri 2)
   src/plan/              Presets, codec rules and the planner (options → recipe → summary)
   src/ffmpeg/            Hardware encoder detection and conversion arguments
   src/downloads/         Download jobs and progress tracking
+  src/preview.rs         Where the trim preview plays from (embed, stream or cached copy)
   src/commands.rs        The IPC surface
 docs/device-support.md   What each preset assumes about its device, with sources
 docs/decisions.md        Why things work the way they do, and known issues
