@@ -88,6 +88,10 @@ pub struct Format {
     /// Direct media URL, used only for the trim preview.
     #[serde(skip)]
     pub stream_url: Option<String>,
+    /// Bytes per request the site expects. YouTube slows a stream to about
+    /// playback speed when more is asked for at once.
+    #[serde(skip)]
+    pub http_chunk_size: Option<u64>,
     pub note: Option<String>,
 }
 
@@ -207,6 +211,9 @@ struct RawFormat {
     audio_ext: Option<String>,
     #[serde(default)]
     has_drm: Option<Value>,
+    /// How the site wants the stream fetched, e.g. `{"http_chunk_size": 10485760}`.
+    #[serde(default)]
+    downloader_options: Option<Value>,
 }
 
 /// A number, or a string holding one; anything else becomes `None`.
@@ -346,6 +353,12 @@ fn format(raw: RawFormat) -> Option<Format> {
             .is_some_and(|protocol| protocol.starts_with("m3u8")),
         note: raw.format_note,
         stream_url: raw.url.filter(|url| url.starts_with("http")),
+        http_chunk_size: raw
+            .downloader_options
+            .as_ref()
+            .and_then(|options| options.get("http_chunk_size"))
+            .and_then(Value::as_u64)
+            .filter(|size| *size > 0),
         video_codec: None,
         audio_codec: None,
     };
@@ -428,6 +441,16 @@ mod tests {
         // What archive.org and direct file links look like.
         let file = r#"{"format_id": "1", "ext": "mp4", "video_ext": "mp4", "audio_ext": "none", "height": 360}"#;
         assert_eq!(kind_of(file), Some(FormatKind::Muxed));
+    }
+
+    #[test]
+    fn reads_the_request_size_a_site_asks_for() {
+        let chunked = r#"{"format_id": "137", "ext": "mp4", "vcodec": "avc1", "acodec": "none",
+            "downloader_options": {"http_chunk_size": 10485760}}"#;
+        let plain = r#"{"format_id": "1", "ext": "mp4", "vcodec": "avc1", "acodec": "none"}"#;
+        let size = |json: &str| format(serde_json::from_str(json).unwrap()).unwrap().http_chunk_size;
+        assert_eq!(size(chunked), Some(10_485_760));
+        assert_eq!(size(plain), None);
     }
 
     #[test]

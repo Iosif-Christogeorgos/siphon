@@ -1,5 +1,6 @@
 //! Translates a [`Recipe`] into yt-dlp arguments.
 
+use super::metadata::VideoInfo;
 use crate::plan::codecs::{AudioCodec, Container, VideoCodec};
 use crate::plan::{AudioAction, Recipe};
 
@@ -28,10 +29,28 @@ fn clock(seconds: f64) -> String {
     }
 }
 
+/// The request size the site expects for the streams this recipe downloads,
+/// when it names one (YouTube does: 10 MB).
+pub fn request_size(recipe: &Recipe, video: &VideoInfo) -> Option<u64> {
+    let chosen = [
+        recipe.video.as_ref().map(|step| step.format_id.as_str()),
+        recipe.audio.as_ref().and_then(|step| step.format_id.as_deref()),
+    ];
+    video
+        .formats
+        .iter()
+        .filter(|format| chosen.contains(&Some(format.id.as_str())))
+        .filter_map(|format| format.http_chunk_size)
+        .min()
+}
+
 /// The arguments that select streams and do the lossless post-processing
 /// (merge, remux, audio extraction). Conversions are not yt-dlp's job; see
 /// `crate::ffmpeg`.
-pub fn recipe_args(recipe: &Recipe) -> Vec<String> {
+///
+/// `section_request_size` is the size of the requests ffmpeg should fetch a
+/// trimmed part in; `None` leaves ffmpeg to ask for everything at once.
+pub fn recipe_args(recipe: &Recipe, section_request_size: Option<u64>) -> Vec<String> {
     let mut args: Vec<String> = vec!["--format".into(), recipe.format_selector()];
     let mut push = |values: &[&str]| args.extend(values.iter().map(|value| value.to_string()));
 
@@ -45,9 +64,21 @@ pub fn recipe_args(recipe: &Recipe) -> Vec<String> {
         // Exact cuts are made afterwards in `crate::ffmpeg` instead: one
         // hardware-accelerated encode of the video, audio left untouched.
         push(&["--download-sections", &format!("*{}-{}", trim.start, trim.end)]);
+
+        // yt-dlp hands a section to ffmpeg; this is what ffmpeg is told about its inputs.
+        let mut input_args: Vec<String> = Vec::new();
         if recipe.exact_cut().is_some() {
             // Keep the original timestamps so the exact cut can find its frames.
-            push(&["--downloader-args", "ffmpeg_i:-copyts"]);
+            input_args.push("-copyts".into());
+        }
+        if let Some(size) = section_request_size {
+            // Left alone, ffmpeg asks for the rest of the stream in one request,
+            // and YouTube answers that at about twice playback speed. Measured
+            // on a five-minute 1080p part: 172 s that way, 6 s in 10 MB requests.
+            input_args.push(format!("-request_size {size}"));
+        }
+        if !input_args.is_empty() {
+            push(&["--downloader-args", &format!("ffmpeg_i:{}", input_args.join(" "))]);
         }
     }
 

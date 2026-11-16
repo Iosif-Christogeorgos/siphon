@@ -8,10 +8,24 @@ pub mod encoders;
 
 use std::ffi::OsString;
 use std::path::Path;
+use std::time::Duration;
 
 use crate::plan::codecs::{AudioCodec, Container, VideoCodec};
 use crate::plan::{AudioAction, Recipe, Trim, VideoAction, VideoEncode, VideoStep};
+use crate::process;
 use encoders::{Encoders, Hardware};
+
+/// Whether this ffmpeg can fetch a stream in requests of a set size
+/// (`-request_size`). Builds from before the option existed stop with
+/// "Unrecognized option" when given it, so it is only passed after this check.
+pub async fn supports_request_size(ffmpeg: &Path) -> bool {
+    let mut cmd = process::command(ffmpeg);
+    cmd.args(["-hide_banner", "-h", "protocol=http"]);
+    match process::output_within(cmd, Duration::from_secs(20)).await {
+        Ok(Some(output)) => String::from_utf8_lossy(&output.stdout).contains("-request_size"),
+        _ => false,
+    }
+}
 
 /// Builds the ffmpeg arguments that turn the downloaded `input` into the
 /// file the recipe describes. Every value is its own argument; nothing is

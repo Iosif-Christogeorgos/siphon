@@ -49,6 +49,7 @@ fn main() {
             app.manage(settings::SettingsStore::load(app.handle())?);
             app.manage(state::MediaCache::default());
             app.manage(state::EncoderCache::default());
+            app.manage(state::ChunkedRequests::default());
             tauri::async_runtime::spawn(keep_tools_updated(app.handle().clone()));
             Ok(())
         })

@@ -28,6 +28,7 @@ fn video(id: &str, vcodec: &str, height: u32, fps: f64, kbps: f64) -> Format {
         language_preference: None,
         segmented: false,
         stream_url: None,
+        http_chunk_size: None,
         note: None,
         video_codec: None,
         audio_codec: None,

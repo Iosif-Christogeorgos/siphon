@@ -4,7 +4,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use crate::binaries::BinaryManager;
-use crate::ffmpeg::encoders::{self, Encoders};
+use crate::ffmpeg::{
+    self,
+    encoders::{self, Encoders},
+};
 use crate::ytdlp::metadata::VideoInfo;
 
 /// Enough for a long session; the cache is simply emptied when it fills up.
@@ -49,6 +52,26 @@ impl EncoderCache {
                 match bins.ffmpeg() {
                     Some(ffmpeg) => encoders::detect(&ffmpeg).await,
                     None => Encoders::SOFTWARE,
+                }
+            })
+            .await
+    }
+}
+
+/// Whether the installed ffmpeg can fetch a stream in requests of a set size,
+/// checked once on first use (see `ffmpeg::supports_request_size`).
+#[derive(Default)]
+pub struct ChunkedRequests(tokio::sync::OnceCell<bool>);
+
+impl ChunkedRequests {
+    pub async fn supported(&self, bins: &BinaryManager) -> bool {
+        *self
+            .0
+            .get_or_init(|| async {
+                let _in_use = bins.in_use().await;
+                match bins.ffmpeg() {
+                    Some(ffmpeg) => ffmpeg::supports_request_size(&ffmpeg).await,
+                    None => false,
                 }
             })
             .await

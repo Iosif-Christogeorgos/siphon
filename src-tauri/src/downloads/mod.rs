@@ -25,7 +25,7 @@ use crate::ffmpeg::{self, encoders::Encoders};
 use crate::plan::{self, DownloadOptions, Recipe, Trim};
 use crate::process;
 use crate::settings::{Settings, SettingsStore};
-use crate::state::{EncoderCache, MediaCache};
+use crate::state::{ChunkedRequests, EncoderCache, MediaCache};
 use crate::ytdlp::metadata::{self, Media, VideoInfo};
 use crate::ytdlp::{self, args, errors, progress};
 use tracker::{Progress, Tracker};
@@ -362,8 +362,14 @@ impl DownloadManager {
         let recipe = plan::plan(&video, options, trim)?;
         let mut tracker = Tracker::new(recipe.needs_ffmpeg_pass());
 
+        // A trimmed part is fetched by ffmpeg, which needs telling how much to
+        // ask the site for at a time (and has to be new enough to be told).
+        let section_request_size = match (recipe.trim, args::request_size(&recipe, &video)) {
+            (Some(_), Some(size)) if job.app.state::<ChunkedRequests>().supported(job.bins).await => Some(size),
+            _ => None,
+        };
         let downloaded = self
-            .fetch_streams(job, &video.url, &recipe, output_dir, &mut tracker)
+            .fetch_streams(job, &video.url, &recipe, section_request_size, output_dir, &mut tracker)
             .await?;
         if !recipe.needs_ffmpeg_pass() {
             return Ok(downloaded);
@@ -424,12 +430,13 @@ impl DownloadManager {
         job: &JobContext<'_>,
         url: &str,
         recipe: &Recipe,
+        section_request_size: Option<u64>,
         output_dir: &Path,
         tracker: &mut Tracker,
     ) -> Result<PathBuf> {
         let mut cmd = ytdlp::command(job.bins);
         cmd.args(progress::template_args())
-            .args(args::recipe_args(recipe))
+            .args(args::recipe_args(recipe, section_request_size))
             .args([
                 "--no-playlist",
                 // Stamp the file with the time it was downloaded, not uploaded.
