@@ -15,5 +15,11 @@
         "visible": false
       }
     ]
+  },
+  "bundle": {
+    "targets": [
+      "dmg",
+      "app"
+    ]
   }
 }
