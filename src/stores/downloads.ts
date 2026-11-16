@@ -36,7 +36,7 @@ interface DownloadsState {
   pause: (id: string) => void;
   /** Continues a paused download where it stopped. */
   resume: (id: string) => void;
-  /** Starts a failed download again from scratch. */
+  /** Starts a failed download again; it carries on from what it had fetched. */
   retry: (id: string) => void;
   /** Takes a download off the list, stopping it and deleting partial files if needed. */
   remove: (id: string) => void;
@@ -61,11 +61,15 @@ export const useDownloads = create<DownloadsState>((set, get) => {
       order: get().order.filter((id) => !gone.has(id)),
     });
   };
-  /** Hands a download to the backend; `resume` continues from its partial files. */
-  const submit = (download: Download, resume: boolean) => {
+  /**
+   * Hands a download to the backend. Under an id it has seen before, the
+   * backend carries on from the files that download left when it was paused
+   * or failed.
+   */
+  const submit = (download: Download) => {
     const { id, url, options, trim } = download;
     ipc
-      .startDownload({ id, url, options, trim, resume })
+      .startDownload({ id, url, options, trim })
       .catch((error) => patch(id, { status: "failed", error: toAppError(error) }));
   };
 
@@ -86,7 +90,7 @@ export const useDownloads = create<DownloadsState>((set, get) => {
         error: null,
       };
       set({ byId: { ...get().byId, [download.id]: download }, order: [...get().order, download.id] });
-      submit(download, false);
+      submit(download);
       return download.id;
     },
 
@@ -97,21 +101,25 @@ export const useDownloads = create<DownloadsState>((set, get) => {
       if (download?.status !== "paused") return;
       // Keep the fraction it reached, so the bar doesn't jump back while it waits.
       patch(id, { status: "queued", progress: { ...download.progress, stage: "queued", speed: null, eta: null } });
-      submit(download, true);
+      submit(download);
     },
 
     retry: (id) => {
       const download = get().byId[id];
       if (download?.status !== "failed") return;
-      patch(id, { status: "queued", progress: WAITING, error: null });
-      submit(download, false);
+      patch(id, {
+        status: "queued",
+        progress: { ...download.progress, stage: "queued", speed: null, eta: null },
+        error: null,
+      });
+      submit(download);
     },
 
     remove: (id) => {
       const download = get().byId[id];
       if (!download) return;
-      // The backend stops it if it runs, and deletes what a paused one left behind.
-      if (isActive(download) || download.status === "paused") void ipc.cancelDownload(id);
+      // The backend stops it if it runs, and deletes what a paused or failed one left behind.
+      if (download.status !== "finished") void ipc.cancelDownload(id);
       drop([id]);
     },
 

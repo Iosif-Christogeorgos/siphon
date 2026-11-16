@@ -270,8 +270,6 @@ export interface DownloadRequest {
   url: string;
   options: DownloadOptions;
   trim: Trim | null;
-  /** True when continuing a paused download. */
-  resume: boolean;
 }
 
 export type DownloadEvent =

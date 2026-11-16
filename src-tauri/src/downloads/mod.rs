@@ -48,10 +48,6 @@ pub struct DownloadRequest {
     /// Download only this part of the video.
     #[serde(default)]
     pub trim: Option<Trim>,
-    /// True when continuing a paused download: files already on disk are
-    /// picked up where they stopped instead of being fetched again.
-    #[serde(default)]
-    pub resume: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -102,13 +98,27 @@ struct Gate {
     running: usize,
 }
 
-/// Files a paused download leaves on disk, removed if it is cancelled later.
+/// A file one stream is downloaded to.
+#[derive(Debug, Clone, PartialEq)]
+struct StreamFile {
+    path: PathBuf,
+    /// One of several streams waiting to be merged, so the file itself can
+    /// go. Otherwise it carries the finished file's own name, which may
+    /// belong to an older download: only its `.part` companions are ours.
+    intermediate: bool,
+}
+
+/// What a paused or failed download left on disk. The next try at the same
+/// download carries on from these files; cancelling it removes them.
 #[derive(Default)]
 struct Leftovers {
-    stream_files: Vec<PathBuf>,
-    multi_stream: bool,
+    stream_files: Vec<StreamFile>,
     /// Anything else: a section's `.part` file, a downloaded source awaiting conversion.
     others: Vec<PathBuf>,
+    /// A file with the finished name was already there when this download
+    /// first started. yt-dlp would take that file for the result of a
+    /// continued download, so this one starts over each time instead.
+    replaces_existing: bool,
 }
 
 impl Leftovers {
@@ -116,7 +126,7 @@ impl Leftovers {
         for file in &self.others {
             let _ = tokio::fs::remove_file(file).await;
         }
-        remove_partial_files(&self.stream_files, self.multi_stream).await;
+        remove_partial_files(&self.stream_files).await;
     }
 }
 
@@ -127,7 +137,8 @@ pub struct DownloadManager {
     /// Signalled whenever the gate may let someone through: a slot was
     /// freed, a waiting job was stopped, or the limit changed.
     gate_changed: Notify,
-    paused: Mutex<HashMap<String, Leftovers>>,
+    /// By download id, for the downloads that are paused or have failed.
+    leftovers: Mutex<HashMap<String, Leftovers>>,
     /// Files finished this session: the only ones the UI may open or reveal.
     finished: Mutex<HashSet<PathBuf>>,
 }
@@ -138,7 +149,6 @@ struct JobContext<'a> {
     bins: &'a BinaryManager,
     id: &'a str,
     settings: Settings,
-    resume: bool,
 }
 
 impl JobContext<'_> {
@@ -179,7 +189,6 @@ impl DownloadManager {
                     id: &id,
                     // Read once the job starts, so changes made while it queued apply.
                     settings: app.state::<SettingsStore>().get(),
-                    resume: request.resume,
                 };
                 let outcome = manager.run(&job, &url, &request.options, request.trim).await;
                 manager.gate.lock().unwrap().running -= 1;
@@ -190,6 +199,10 @@ impl DownloadManager {
             };
 
             let stop = manager.jobs.lock().unwrap().remove(&id).and_then(|job| job.stop);
+            if stop == Some(Stop::Cancel) {
+                // Including what an earlier try left, if it was cancelled between tries.
+                manager.discard_leftovers(&id).await;
+            }
             let event = match (stop, outcome) {
                 (Some(Stop::Cancel), _) => DownloadEvent::Cancelled { id },
                 (Some(Stop::Pause), _) => DownloadEvent::Paused { id },
@@ -253,14 +266,22 @@ impl DownloadManager {
     }
 
     /// Stops a download for good and removes its partial files.
-    /// Also discards the files of a download that was paused earlier.
+    /// Also discards the files of a download that was paused or failed earlier.
     pub async fn cancel(&self, id: &str) {
         if !self.stop(id, Stop::Cancel).await {
-            let leftovers = self.paused.lock().unwrap().remove(id);
-            if let Some(leftovers) = leftovers {
-                leftovers.remove().await;
-            }
+            self.discard_leftovers(id).await;
         }
+    }
+
+    async fn discard_leftovers(&self, id: &str) {
+        let leftovers = self.leftovers.lock().unwrap().remove(id);
+        if let Some(leftovers) = leftovers {
+            leftovers.remove().await;
+        }
+    }
+
+    fn keep_leftovers(&self, id: &str, leftovers: Leftovers) {
+        self.leftovers.lock().unwrap().insert(id.to_string(), leftovers);
     }
 
     /// Stops a download but keeps what it has fetched, so it can be resumed.
@@ -307,8 +328,6 @@ impl DownloadManager {
         trim: Option<Trim>,
     ) -> Result<PathBuf> {
         job.emit(Tracker::new(false).current());
-        // A resumed job starts clean: whatever it left is either reused or replaced.
-        self.paused.lock().unwrap().remove(job.id);
 
         let output_dir = match &job.settings.output_dir {
             Some(dir) => dir.clone(),
@@ -336,7 +355,8 @@ impl DownloadManager {
                 }
             }
             // Sites refuse or drop a request now and then, and the same
-            // request works a moment later. Try once more before giving up.
+            // request works a moment later. Try once more before giving up;
+            // the second try carries on from the files the first one left.
             Err(error) if error.kind == ErrorKind::Network && self.stop_of(job.id).is_none() => {
                 tokio::time::sleep(NETWORK_RETRY_DELAY).await;
                 if self.stop_of(job.id).is_some() {
@@ -397,7 +417,7 @@ impl DownloadManager {
                 others: vec![downloaded],
                 ..Leftovers::default()
             };
-            self.paused.lock().unwrap().insert(job.id.to_string(), leftovers);
+            self.keep_leftovers(job.id, leftovers);
         } else {
             let _ = tokio::fs::remove_file(&downloaded).await;
         }
@@ -443,11 +463,28 @@ impl DownloadManager {
                 // Stamp the file with the time it was downloaded, not uploaded.
                 "--no-mtime",
             ]);
-        if !job.resume {
-            // The same video may be fetched again with other settings; the
-            // newest request wins. (A resumed job instead reuses its files.)
+
+        // What an earlier try at this download left: it was paused, or it failed.
+        let previous = self.leftovers.lock().unwrap().remove(job.id);
+        let continues = previous.as_ref().is_some_and(|left| !left.replaces_existing);
+        let Leftovers {
+            mut stream_files,
+            others: earlier_files,
+            mut replaces_existing,
+        } = previous.unwrap_or_default();
+        if !continues {
+            // A new download replaces whatever has its name: the same video
+            // may be fetched again with other settings, and the newest request
+            // wins. This also makes yt-dlp ignore partial files, which is why
+            // a later try leaves it out and carries on from them instead.
             cmd.arg("--force-overwrites");
         }
+        // The name yt-dlp checks before it decides a file is already there.
+        let finished_ext = if recipe.needs_ffmpeg_pass() {
+            "mkv"
+        } else {
+            recipe.container.ext()
+        };
         cmd.arg("--paths")
             .arg(output_dir)
             .args([
@@ -458,7 +495,6 @@ impl DownloadManager {
             .arg(url);
 
         let mut output_file: Option<PathBuf> = None;
-        let mut stream_files: Vec<PathBuf> = Vec::new();
         // Section downloads go through ffmpeg, which stays silent until it is
         // done. For those, progress is read off the growing ".part" file.
         let mut part_file: Option<PathBuf> = None;
@@ -473,12 +509,22 @@ impl DownloadManager {
                     }
                 }
                 ChildEvent::Line(line) => match progress::parse(line) {
-                    Some(progress::Line::Target(path)) => part_file = Some(PathBuf::from(format!("{path}.part"))),
+                    Some(progress::Line::Target(path)) => {
+                        let target = PathBuf::from(&path);
+                        if !continues && (target.exists() || target.with_extension(finished_ext).exists()) {
+                            replaces_existing = true;
+                        }
+                        part_file = Some(PathBuf::from(format!("{path}.part")));
+                    }
                     Some(progress::Line::Plan(plan)) => tracker.set_plan(plan),
                     Some(progress::Line::Download(tick)) => {
-                        if let Some(name) = tick.filename.as_deref().map(PathBuf::from) {
-                            if !stream_files.contains(&name) {
-                                stream_files.push(name);
+                        if let Some(path) = tick.filename.as_deref().map(PathBuf::from) {
+                            if !stream_files.iter().any(|file| file.path == path) {
+                                stream_files.push(StreamFile {
+                                    path,
+                                    // A trimmed part arrives as one file, already under its final name.
+                                    intermediate: tracker.is_multi_stream() && recipe.trim.is_none(),
+                                });
                             }
                         }
                         job.emit(tracker.on_tick(&tick));
@@ -492,25 +538,34 @@ impl DownloadManager {
             })
             .await;
 
-        let leftovers = || Leftovers {
-            stream_files: stream_files.clone(),
-            multi_stream: tracker.is_multi_stream(),
-            others: part_file.iter().cloned().collect(),
+        let failure = match result {
+            Ok(log) => {
+                // An earlier try may have left files this one had no use for
+                // (the streams picked can differ from one try to the next).
+                stream_files.retain(|file| Some(&file.path) != output_file.as_ref());
+                remove_partial_files(&stream_files).await;
+                return output_file.ok_or_else(|| {
+                    AppError::internal("The download finished but the file couldn't be located.").with_details(log)
+                });
+            }
+            Err(failure) => failure,
         };
-        match result {
-            Ok(log) => output_file.ok_or_else(|| {
-                AppError::internal("The download finished but the file couldn't be located.").with_details(log)
-            }),
-            Err(Failure::Stopped(Stop::Cancel)) => {
-                leftovers().remove().await;
-                Err(AppError::cancelled())
-            }
-            Err(Failure::Stopped(Stop::Pause)) => {
-                self.paused.lock().unwrap().insert(job.id.to_string(), leftovers());
-                Err(AppError::cancelled())
-            }
-            Err(Failure::Exited(log)) => Err(errors::classify(&log)),
-            Err(Failure::Spawn(error)) => Err(error),
+
+        let leftovers = Leftovers {
+            stream_files,
+            others: earlier_files.into_iter().chain(part_file).collect(),
+            replaces_existing,
+        };
+        if let Failure::Stopped(Stop::Cancel) = failure {
+            leftovers.remove().await;
+            return Err(AppError::cancelled());
+        }
+        // Kept for the next try, automatic or by hand, to carry on from.
+        self.keep_leftovers(job.id, leftovers);
+        match failure {
+            Failure::Stopped(_) => Err(AppError::cancelled()),
+            Failure::Exited(log) => Err(errors::classify(&log)),
+            Failure::Spawn(error) => Err(error),
         }
     }
 
@@ -668,12 +723,11 @@ async fn collect_lines(stream: impl AsyncRead + Unpin) -> String {
 ///
 /// `stream_files` are the per-stream targets yt-dlp reported. Their `.part`,
 /// `.ytdl` and fragment companions are always safe to delete. The targets
-/// themselves are only deleted for multi-stream downloads, where they are
-/// intermediates awaiting a merge; for a single-stream download the target
-/// is the user's final file and may predate this run.
-async fn remove_partial_files(stream_files: &[PathBuf], multi_stream: bool) {
+/// themselves are only deleted when they are intermediates awaiting a merge;
+/// otherwise the target is the user's final file and may predate this run.
+async fn remove_partial_files(stream_files: &[StreamFile]) {
     for file in stream_files {
-        let (Some(dir), Some(name)) = (file.parent(), file.file_name().and_then(|name| name.to_str())) else {
+        let (Some(dir), Some(name)) = (file.path.parent(), file.path.file_name().and_then(|name| name.to_str())) else {
             continue;
         };
         let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
@@ -687,7 +741,7 @@ async fn remove_partial_files(stream_files: &[PathBuf], multi_stream: bool) {
             let is_companion = entry_name
                 .strip_prefix(name)
                 .is_some_and(|rest| rest.starts_with(".part") || rest == ".ytdl");
-            if is_companion || (multi_stream && entry_name == name) {
+            if is_companion || (file.intermediate && entry_name == name) {
                 let _ = tokio::fs::remove_file(entry.path()).await;
             }
         }
