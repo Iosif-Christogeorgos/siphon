@@ -3,6 +3,7 @@
 
 mod binaries;
 mod commands;
+mod downloads;
 mod error;
 mod process;
 mod ytdlp;
@@ -19,12 +20,17 @@ fn main() {
         .setup(|app| {
             let binaries = binaries::BinaryManager::new(app.handle())?;
             app.manage(Arc::new(binaries));
+            app.manage(Arc::new(downloads::DownloadManager::default()));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             commands::binaries_status,
             commands::binaries_sync,
             commands::fetch_media,
+            commands::start_download,
+            commands::cancel_download,
+            commands::open_file,
+            commands::reveal_file,
         ])
         .run(tauri::generate_context!())
         .expect("failed to start Siphon");

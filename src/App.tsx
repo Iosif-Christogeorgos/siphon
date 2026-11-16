@@ -3,16 +3,20 @@ import { useEffect } from "react";
 import { TitleBar } from "@/components/TitleBar";
 import { Home } from "@/features/home/Home";
 import { SetupScreen } from "@/features/setup/SetupScreen";
-import { onToolStatus } from "@/lib/ipc";
+import { onDownloadEvent, onToolStatus } from "@/lib/ipc";
 import { selectAllUsable, useBinaries } from "@/stores/binaries";
+import { useDownloads } from "@/stores/downloads";
 
 export function App() {
   const loaded = useBinaries((state) => state.tools !== null);
   const usable = useBinaries(selectAllUsable);
 
-  // Wire backend events into the store, then check the managed binaries.
+  // Wire backend events into the stores, then check the managed binaries.
   useEffect(() => {
-    const subscriptions = [onToolStatus(useBinaries.getState().apply)];
+    const subscriptions = [
+      onToolStatus(useBinaries.getState().apply),
+      onDownloadEvent(useDownloads.getState().apply),
+    ];
     void useBinaries.getState().sync();
     return () => {
       for (const subscription of subscriptions) void subscription.then((unlisten) => unlisten());

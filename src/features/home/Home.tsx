@@ -4,6 +4,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useState } from "react";
 import { ErrorCard } from "@/components/ErrorCard";
 import { Button } from "@/components/ui/button";
+import { DownloadPanel } from "@/features/download/DownloadPanel";
 import { ClipboardOffer } from "@/features/link/ClipboardOffer";
 import { LinkInput } from "@/features/link/LinkInput";
 import { useClipboardLink } from "@/features/link/useClipboardLink";
@@ -107,7 +108,10 @@ export function Home() {
               className="mt-4 space-y-3"
             >
               {media.isPending ? (
-                <VideoCardSkeleton />
+                <>
+                  <VideoCardSkeleton />
+                  <div className="skeleton h-13 rounded-2xl" />
+                </>
               ) : media.isError ? (
                 <ErrorCard
                   error={toAppError(media.error)}
@@ -118,7 +122,10 @@ export function Home() {
                   }
                 />
               ) : media.data.type === "video" ? (
-                <VideoCard video={media.data} />
+                <>
+                  <VideoCard video={media.data} />
+                  <DownloadPanel video={media.data} />
+                </>
               ) : (
                 <PlaylistNotice playlist={media.data} />
               )}
