@@ -35,18 +35,29 @@ Why Siphon works the way it does, and what is known not to be right yet. Progres
 
 - **FFmpeg uses the `-shared` build** (a 91 MB download rather than 200 MB) and is refreshed at most every 30 days.
 - **Each tool lives in its own folder**, so an update is a folder rename and a rollback is the reverse.
+- **A tool is never swapped while it is in use.** Everything that runs a tool holds a shared lock (`BinaryManager::in_use`); the swap needs it exclusively and gives up at once if it can't have it.
+- **An update that can't swap right away is put off, not queued.** Making it wait would also block new downloads behind it. The daily loop retries within the hour, because a round with a deferred swap doesn't count as "checked".
+- **Ask-first mode still installs missing tools.** Only newer versions wait for a go-ahead; without the tools the app can't work at all.
+- **Release-note summaries are derived, not copied.** For yt-dlp: the sites listed under "Extractor changes" ("Fixes for youtube, tiktok and 3 more sites."). For Deno: the first bullet. FFmpeg builds have no notes. See `src-tauri/src/binaries/notes.rs`.
+- **Only updates get a toast.** First installs are shown by the setup screen.
 
-### Product
+### Interface
 
 - **The accent colour is aqua/teal.**
-- **App self-update will use GitHub Releases from a public repository.** The repository is private until its owner says otherwise.
+- **The download list is ordered as a queue:** running, then waiting in start order, then paused, failed and finished (newest first).
+- **The slide-over panels sit inside the error boundary**, so a panel that fails to render shows an error card instead of blanking the window. This came from a real crash: a Zustand selector that returned a new array on every call.
+- **`scrollIntoView()` returns a promise**, so it must not be the return value of a `useEffect` (React would call it as a cleanup).
+- **`open_file` and `reveal_file` only accept files downloaded this session**, so the webview can't use them to launch arbitrary paths.
+
+### Distribution
+
+- **App self-update uses GitHub Releases from the public repository.**
 
 ## Known issues
 
-- **Intermittent HTTP 403 on section downloads.** A trimmed YouTube download once failed with `ffmpeg exited with code 3436169992`, which is ffmpeg's `AVERROR_HTTP_FORBIDDEN`. The same request succeeded on every retry and from a shell, so it is YouTube refusing a request now and then. It is reported as "The site dropped the connection … Try again"; it is not retried automatically yet.
+- **Intermittent HTTP 403 on section downloads.** A trimmed YouTube download once failed with `ffmpeg exited with code 3436169992`, which is ffmpeg's `AVERROR_HTTP_FORBIDDEN`. The same request succeeded on every retry and from a shell, so it is YouTube refusing a request now and then. It is reported as "The site dropped the connection … Try again"; it is not retried automatically yet. (The update-and-retry for "outdated" errors does not cover it, because it is classed as a network error.)
 - **YouTube draws its own overlay on the paused preview.** With the official embedded player, a paused frame is partly covered by the video title, a play button and "More videos". The API offers no way to hide them. Scrubbing still shows the frame underneath.
-- **Binary updates can race a download.** The update check at launch may swap yt-dlp's folder while a download is starting.
+- **The YouTube embed can stall in "buffering" after a seek.** `YouTubePlayer.tsx` nudges it out with a second seek.
 - **Downloading the same video twice with the same settings overwrites the first file.**
-- **`open_file` and `reveal_file` accept any existing path** from the webview. Acceptable for a personal tool, but worth restricting to known download paths.
 - **macOS is untested.** The platform branches exist (VideoToolbox, system FFmpeg, native window buttons), but nothing has been built or run there.
 - **The shadcn CLI mis-resolves the `@/` alias.** It writes `import { cn } from "cn"` and installs a package called `cn`. After `npx shadcn add …`, change the import to `@/lib/utils` and run `npm uninstall cn`.
