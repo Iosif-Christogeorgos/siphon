@@ -112,6 +112,19 @@ impl Tracker {
         self.current()
     }
 
+    /// Progress measured from the size of the file on disk. Section downloads
+    /// go through ffmpeg, which reports nothing until it is done.
+    pub fn on_bytes(&mut self, written: u64, expected: u64) -> Progress {
+        let within = if expected > 0 {
+            (written as f64 / expected as f64).min(0.99)
+        } else {
+            0.0
+        };
+        self.progress.stage = Stage::Downloading;
+        self.progress.fraction = self.progress.fraction.max(within * self.download_share);
+        self.current()
+    }
+
     pub fn on_postprocess(&mut self, name: &str) -> Progress {
         self.progress.stage = match name {
             "Merger" => Stage::Merging,

@@ -4,7 +4,7 @@
 //! update, then parse those lines here. Missing values arrive as "NA".
 
 /// Args that make yt-dlp report progress in the format [`parse`] understands.
-pub fn template_args() -> [&'static str; 13] {
+pub fn template_args() -> [&'static str; 15] {
     [
         // One line per update instead of redrawing with carriage returns.
         "--newline",
@@ -21,6 +21,9 @@ pub fn template_args() -> [&'static str; 13] {
         // Which streams were picked and how big they are, before any bytes move.
         "--print",
         "before_dl:SIPHON_PLAN|%(filesize,filesize_approx)s|%(requested_formats.:.{format_id,filesize,filesize_approx})j",
+        // Where the download is being written (its ".part" file can be watched).
+        "--print",
+        "before_dl:SIPHON_TARGET|%(filename)s",
         // Where the finished file ended up.
         "--print",
         "after_move:SIPHON_FILE|%(filepath)s",
@@ -36,6 +39,8 @@ pub enum Line {
         started: bool,
         name: String,
     },
+    /// Path the download will be written to.
+    Target(String),
     /// Final path of the finished file.
     File(String),
 }
@@ -95,6 +100,9 @@ pub fn parse(line: &str) -> Option<Line> {
         // The JSON goes last because it may itself contain pipes.
         let (single_size, streams) = rest.split_once('|')?;
         return Some(Line::Plan(plan(single_size, streams)));
+    }
+    if let Some(path) = line.strip_prefix("SIPHON_TARGET|") {
+        return Some(Line::Target(path.to_string()));
     }
     line.strip_prefix("SIPHON_FILE|")
         .map(|path| Line::File(path.to_string()))

@@ -10,6 +10,7 @@ use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
@@ -19,7 +20,7 @@ use tokio::process::Command;
 use crate::binaries::BinaryManager;
 use crate::error::{AppError, ErrorKind, Result};
 use crate::ffmpeg::{self, encoders::Encoders};
-use crate::plan::{self, DownloadOptions, Recipe};
+use crate::plan::{self, DownloadOptions, Recipe, Trim};
 use crate::process;
 use crate::state::{EncoderCache, MediaCache};
 use crate::ytdlp::metadata::{self, Media, VideoInfo};
@@ -38,6 +39,9 @@ pub struct DownloadRequest {
     pub id: String,
     pub url: String,
     pub options: DownloadOptions,
+    /// Download only this part of the video.
+    #[serde(default)]
+    pub trim: Option<Trim>,
     /// Defaults to the user's Downloads folder.
     pub output_dir: Option<String>,
 }
@@ -117,7 +121,9 @@ impl DownloadManager {
                 bins: &bins,
                 id: &id,
             };
-            let outcome = manager.run(&job, &url, &request.options, &output_dir).await;
+            let outcome = manager
+                .run(&job, &url, &request.options, request.trim, &output_dir)
+                .await;
             let cancelled = manager
                 .jobs
                 .lock()
@@ -162,12 +168,13 @@ impl DownloadManager {
         job: &JobContext<'_>,
         url: &str,
         options: &DownloadOptions,
+        trim: Option<Trim>,
         output_dir: &Path,
     ) -> Result<PathBuf> {
         job.emit(Tracker::new(false).current());
 
         let video = self.video_info(job, url).await?;
-        let recipe = plan::plan(&video, options)?;
+        let recipe = plan::plan(&video, options, trim)?;
         let mut tracker = Tracker::new(recipe.needs_ffmpeg_pass());
 
         let downloaded = self
@@ -243,20 +250,36 @@ impl DownloadManager {
 
         let mut output_file: Option<PathBuf> = None;
         let mut stream_files: Vec<PathBuf> = Vec::new();
+        // Section downloads go through ffmpeg, which stays silent until it is
+        // done. For those, progress is read off the growing ".part" file.
+        let mut part_file: Option<PathBuf> = None;
+        let expected_bytes = recipe.trim.and(recipe.estimated_source_bytes());
         let result = self
-            .run_child(job.id, cmd, |line| match progress::parse(line) {
-                Some(progress::Line::Plan(plan)) => tracker.set_plan(plan),
-                Some(progress::Line::Download(tick)) => {
-                    if let Some(name) = tick.filename.as_deref().map(PathBuf::from) {
-                        if !stream_files.contains(&name) {
-                            stream_files.push(name);
+            .run_child(job.id, cmd, |event| match event {
+                ChildEvent::Tick => {
+                    if let (Some(part), Some(expected)) = (&part_file, expected_bytes) {
+                        if let Ok(meta) = std::fs::metadata(part) {
+                            job.emit(tracker.on_bytes(meta.len(), expected));
                         }
                     }
-                    job.emit(tracker.on_tick(&tick));
                 }
-                Some(progress::Line::PostProcess { started: true, name }) => job.emit(tracker.on_postprocess(&name)),
-                Some(progress::Line::File(path)) => output_file = Some(PathBuf::from(path)),
-                Some(progress::Line::PostProcess { started: false, .. }) | None => {}
+                ChildEvent::Line(line) => match progress::parse(line) {
+                    Some(progress::Line::Target(path)) => part_file = Some(PathBuf::from(format!("{path}.part"))),
+                    Some(progress::Line::Plan(plan)) => tracker.set_plan(plan),
+                    Some(progress::Line::Download(tick)) => {
+                        if let Some(name) = tick.filename.as_deref().map(PathBuf::from) {
+                            if !stream_files.contains(&name) {
+                                stream_files.push(name);
+                            }
+                        }
+                        job.emit(tracker.on_tick(&tick));
+                    }
+                    Some(progress::Line::PostProcess { started: true, name }) => {
+                        job.emit(tracker.on_postprocess(&name))
+                    }
+                    Some(progress::Line::File(path)) => output_file = Some(PathBuf::from(path)),
+                    Some(progress::Line::PostProcess { started: false, .. }) | None => {}
+                },
             })
             .await;
 
@@ -265,6 +288,9 @@ impl DownloadManager {
                 AppError::internal("The download finished but the file couldn't be located.").with_details(log)
             }),
             Err(Failure::Cancelled) => {
+                if let Some(part) = &part_file {
+                    let _ = tokio::fs::remove_file(part).await;
+                }
                 remove_partial_files(&stream_files, tracker.is_multi_stream()).await;
                 Err(AppError::cancelled())
             }
@@ -292,7 +318,8 @@ impl DownloadManager {
 
         job.emit(tracker.on_convert(0.0));
         let result = self
-            .run_child(job.id, cmd, |line| {
+            .run_child(job.id, cmd, |event| {
+                let ChildEvent::Line(line) = event else { return };
                 if let (Some(done), Some(total)) = (ffmpeg::parse_progress(line), recipe.duration) {
                     job.emit(tracker.on_convert(done / total));
                 }
@@ -310,12 +337,13 @@ impl DownloadManager {
     }
 
     /// Runs a child process for a job: registers it for cancellation, feeds
-    /// each stdout line to `on_line`, and returns the stderr log on success.
+    /// each stdout line (and a tick four times a second) to `on_event`, and
+    /// returns the stderr log on success.
     async fn run_child(
         &self,
         id: &str,
         mut cmd: Command,
-        mut on_line: impl FnMut(&str),
+        mut on_event: impl FnMut(ChildEvent<'_>),
     ) -> std::result::Result<String, Failure> {
         let mut child = cmd
             .stdout(Stdio::piped())
@@ -330,13 +358,21 @@ impl DownloadManager {
 
         let stderr_log = tokio::spawn(collect_lines(child.stderr.take().expect("stderr is piped")));
         let mut stdout = BufReader::new(child.stdout.take().expect("stdout is piped"));
+        let mut ticker = tokio::time::interval(Duration::from_millis(250));
         let mut buffer = Vec::new();
         loop {
-            buffer.clear();
-            match stdout.read_until(b'\n', &mut buffer).await {
-                Ok(0) | Err(_) => break,
-                // Lossy on purpose: a stray byte in a title must not end the download.
-                Ok(_) => on_line(&String::from_utf8_lossy(&buffer)),
+            tokio::select! {
+                // If the tick wins, the bytes read so far stay in `buffer` and
+                // the next read carries on from there, so no output is lost.
+                read = stdout.read_until(b'\n', &mut buffer) => match read {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {
+                        // Lossy on purpose: a stray byte in a title must not end the download.
+                        on_event(ChildEvent::Line(&String::from_utf8_lossy(&buffer)));
+                        buffer.clear();
+                    }
+                },
+                _ = ticker.tick() => on_event(ChildEvent::Tick),
             }
         }
 
@@ -354,6 +390,14 @@ impl DownloadManager {
             Err(Failure::Exited(log))
         }
     }
+}
+
+/// What `run_child` reports while the process runs.
+enum ChildEvent<'a> {
+    /// One line of stdout.
+    Line(&'a str),
+    /// A regular heartbeat, for progress that has to be polled.
+    Tick,
 }
 
 /// How a child process run can go wrong.
@@ -444,6 +488,8 @@ mod tests {
             hints: Vec::new(),
             qualities: Vec::new(),
             duration: None,
+            trim: None,
+            source_fraction: 1.0,
         };
         let path = converted_path(Path::new("/videos/A clip [abc].source.mkv"), &recipe);
         assert_eq!(path, Path::new("/videos/A clip [abc].mp4"));

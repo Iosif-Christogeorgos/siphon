@@ -96,6 +96,13 @@ const RULES: &[(&[&str], ErrorKind, &str)] = &[
         "There isn't enough free disk space to finish this download.",
     ),
     (
+        // yt-dlp hands section downloads to ffmpeg, which reports a refused
+        // or dropped connection only as an exit code.
+        &["ffmpeg exited with code"],
+        ErrorKind::Network,
+        "The site dropped the connection while sending the video. Try again; it usually works the second time.",
+    ),
+    (
         &[
             "getaddrinfo failed",
             "name or service not known",

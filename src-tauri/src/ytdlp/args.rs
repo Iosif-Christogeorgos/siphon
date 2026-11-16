@@ -10,7 +10,21 @@ pub const SOURCE_MARKER: &str = ".source";
 /// File name template. The title is capped in bytes so paths stay within OS limits.
 pub fn output_template(recipe: &Recipe) -> String {
     let marker = if recipe.needs_ffmpeg_pass() { SOURCE_MARKER } else { "" };
-    format!("%(title).180B [%(id)s]{marker}.%(ext)s")
+    // Clips say which part they are, so several from one video don't collide.
+    let clip = match recipe.trim {
+        Some(trim) => format!(" ({}-{})", clock(trim.start), clock(trim.end)),
+        None => String::new(),
+    };
+    format!("%(title).180B [%(id)s]{clip}{marker}.%(ext)s")
+}
+
+/// 75.4 → "1m15s". File-name safe (no colons) and free of yt-dlp's "%".
+fn clock(seconds: f64) -> String {
+    let total = seconds.max(0.0).floor() as u64;
+    match (total / 3600, total % 3600 / 60, total % 60) {
+        (0, minutes, seconds) => format!("{minutes}m{seconds:02}s"),
+        (hours, minutes, seconds) => format!("{hours}h{minutes:02}m{seconds:02}s"),
+    }
 }
 
 /// The arguments that select streams and do the lossless post-processing
@@ -19,6 +33,22 @@ pub fn output_template(recipe: &Recipe) -> String {
 pub fn recipe_args(recipe: &Recipe) -> Vec<String> {
     let mut args: Vec<String> = vec!["--format".into(), recipe.format_selector()];
     let mut push = |values: &[&str]| args.extend(values.iter().map(|value| value.to_string()));
+
+    if let Some(trim) = recipe.trim {
+        // Fetch only the selected part. yt-dlp cuts the streams without
+        // re-encoding them, starting at the key frame before `start`.
+        //
+        // Deliberately not using --force-keyframes-at-cuts: it makes yt-dlp
+        // re-encode video *and* audio with ffmpeg's defaults (for example VP9
+        // at CRF 32 and Opus at 96 kbit/s), on the CPU, with no progress.
+        // Exact cuts are made afterwards in `crate::ffmpeg` instead: one
+        // hardware-accelerated encode of the video, audio left untouched.
+        push(&["--download-sections", &format!("*{}-{}", trim.start, trim.end)]);
+        if recipe.exact_cut().is_some() {
+            // Keep the original timestamps so the exact cut can find its frames.
+            push(&["--downloader-args", "ffmpeg_i:-copyts"]);
+        }
+    }
 
     if recipe.needs_ffmpeg_pass() {
         // Matroska holds any codec, so it is a safe stopover before converting.

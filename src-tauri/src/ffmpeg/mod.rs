@@ -10,7 +10,7 @@ use std::ffi::OsString;
 use std::path::Path;
 
 use crate::plan::codecs::{AudioCodec, Container, VideoCodec};
-use crate::plan::{AudioAction, Recipe, VideoAction, VideoEncode, VideoStep};
+use crate::plan::{AudioAction, Recipe, Trim, VideoAction, VideoEncode, VideoStep};
 use encoders::{Encoders, Hardware};
 
 /// Builds the ffmpeg arguments that turn the downloaded `input` into the
@@ -21,6 +21,13 @@ pub fn convert_args(recipe: &Recipe, encoders: &Encoders, input: &Path, output: 
     let mut push = |values: &[&str]| args.extend(values.iter().map(OsString::from));
 
     push(&["-hide_banner", "-nostdin", "-y", "-loglevel", "error"]);
+    let cut = recipe.exact_cut();
+    if cut.is_some() {
+        // The section was downloaded with its original timestamps (see
+        // `ytdlp::args`), starting at a key frame somewhere before the cut.
+        // Keeping those timestamps lets the trim filter find the exact frames.
+        push(&["-copyts"]);
+    }
     // Machine-readable progress on stdout (see `parse_progress`).
     push(&["-progress", "pipe:1", "-nostats", "-i"]);
     args.push(input.into());
@@ -44,7 +51,7 @@ pub fn convert_args(recipe: &Recipe, encoders: &Encoders, input: &Path, output: 
             }
             VideoAction::Encode(encode) => {
                 let hardware = encoders.for_codec(encode.codec);
-                for arg in video_encode_args(video, encode, hardware) {
+                for arg in video_encode_args(video, encode, hardware, cut) {
                     push(&[&arg]);
                 }
             }
@@ -62,6 +69,10 @@ pub fn convert_args(recipe: &Recipe, encoders: &Encoders, input: &Path, output: 
         }
     }
 
+    if let Some(cut) = cut {
+        // Shift everything back so the clip starts at zero.
+        push(&["-output_ts_offset", &format!("-{}", cut.start)]);
+    }
     if matches!(recipe.container, Container::Mp4 | Container::Mov) {
         // Put the index at the front so playback can start before the whole file is read.
         push(&["-movflags", "+faststart"]);
@@ -70,12 +81,16 @@ pub fn convert_args(recipe: &Recipe, encoders: &Encoders, input: &Path, output: 
     args
 }
 
-fn video_encode_args(video: &VideoStep, encode: &VideoEncode, hardware: Hardware) -> Vec<String> {
+fn video_encode_args(video: &VideoStep, encode: &VideoEncode, hardware: Hardware, cut: Option<Trim>) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
     let mut push = |values: &[&str]| args.extend(values.iter().map(|value| value.to_string()));
 
     // Filters: downscale (never up) and cap the frame rate.
     let mut filters: Vec<String> = Vec::new();
+    if let Some(cut) = cut {
+        // Keep exactly the frames inside the selection (times are absolute, thanks to -copyts).
+        filters.push(format!("trim=start={}:end={}", cut.start, cut.end));
+    }
     if let Some(lines) = encode.scale_lines.filter(|lines| *lines < video.lines) {
         // The short side becomes `lines`; -2 keeps the aspect ratio with an even size.
         let portrait = matches!((video.width, video.height), (Some(w), Some(h)) if w < h);

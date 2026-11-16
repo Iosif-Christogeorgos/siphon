@@ -11,7 +11,7 @@ use crate::binaries::{BinaryManager, ToolStatus};
 use crate::downloads::{DownloadManager, DownloadRequest};
 use crate::error::{AppError, ErrorKind, Result};
 use crate::plan::explain::{self, PlanSummary};
-use crate::plan::{self, DownloadOptions};
+use crate::plan::{self, DownloadOptions, Trim};
 use crate::state::{EncoderCache, MediaCache};
 use crate::ytdlp::metadata::{self, Media};
 
@@ -50,11 +50,12 @@ pub async fn plan_download(
     encoders: State<'_, EncoderCache>,
     url: String,
     options: DownloadOptions,
+    trim: Option<Trim>,
 ) -> Result<PlanSummary> {
     let video = cache
         .get(&url)
         .ok_or_else(|| AppError::internal("Siphon lost track of this video. Paste the link again."))?;
-    let recipe = plan::plan(&video, &options)?;
+    let recipe = plan::plan(&video, &options, trim)?;
     Ok(explain::summarize(&recipe, &encoders.get(&bins).await))
 }
 

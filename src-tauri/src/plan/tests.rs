@@ -115,7 +115,7 @@ fn manual(content: Content) -> ManualOptions {
 
 #[test]
 fn iphone_copies_the_best_native_streams() {
-    let recipe = plan(&youtube_4k(), &preset(PresetId::Iphone)).unwrap();
+    let recipe = plan(&youtube_4k(), &preset(PresetId::Iphone), None).unwrap();
     assert_eq!(recipe.format_selector(), "137+140");
     assert_eq!(recipe.container, Container::Mp4);
     assert!(!recipe.needs_ffmpeg_pass());
@@ -135,7 +135,7 @@ fn iphone_copies_the_best_native_streams() {
 
 #[test]
 fn iphone_converts_4k_to_hevc_only_when_asked() {
-    let recipe = plan(&youtube_4k(), &preset_at(PresetId::Iphone, 2160)).unwrap();
+    let recipe = plan(&youtube_4k(), &preset_at(PresetId::Iphone, 2160), None).unwrap();
     let step = recipe.video.as_ref().unwrap();
     assert_eq!(step.lines, 2160);
     assert!(matches!(&step.action, VideoAction::Encode(encode) if encode.codec == VideoCodec::Hevc));
@@ -147,7 +147,7 @@ fn iphone_converts_4k_to_hevc_only_when_asked() {
 
 #[test]
 fn android_plays_vp9_so_4k_needs_no_conversion() {
-    let recipe = plan(&youtube_4k(), &preset(PresetId::Android)).unwrap();
+    let recipe = plan(&youtube_4k(), &preset(PresetId::Android), None).unwrap();
     assert_eq!(recipe.video.as_ref().unwrap().format_id, "313");
     assert!(!recipe.needs_ffmpeg_pass());
     assert_eq!(recipe.container, Container::Mp4);
@@ -155,21 +155,21 @@ fn android_plays_vp9_so_4k_needs_no_conversion() {
 
 #[test]
 fn windows_puts_vp9_in_webm_with_opus() {
-    let recipe = plan(&youtube_4k(), &preset(PresetId::Windows)).unwrap();
+    let recipe = plan(&youtube_4k(), &preset(PresetId::Windows), None).unwrap();
     // H.264 tops out at 1080p; 4K is VP9 (preferred over AV1 on Windows).
     assert_eq!(recipe.format_selector(), "313+251");
     assert_eq!(recipe.container, Container::Webm);
     assert!(!recipe.needs_ffmpeg_pass());
     assert!(recipe.hints.iter().any(|hint| hint.text.contains("VP9")));
 
-    let hd = plan(&youtube_4k(), &preset_at(PresetId::Windows, 1080)).unwrap();
+    let hd = plan(&youtube_4k(), &preset_at(PresetId::Windows, 1080), None).unwrap();
     assert_eq!(hd.format_selector(), "137+140");
     assert_eq!(hd.container, Container::Mp4);
 }
 
 #[test]
 fn max_quality_takes_the_most_efficient_codec_and_skips_drc_audio() {
-    let recipe = plan(&youtube_4k(), &preset(PresetId::Max)).unwrap();
+    let recipe = plan(&youtube_4k(), &preset(PresetId::Max), None).unwrap();
     assert_eq!(recipe.format_selector(), "401+251");
     assert!(!recipe.needs_ffmpeg_pass());
     // AV1 fits MP4, but Opus is at home in WebM.
@@ -178,7 +178,7 @@ fn max_quality_takes_the_most_efficient_codec_and_skips_drc_audio() {
 
 #[test]
 fn audio_preset_keeps_the_original_codec() {
-    let recipe = plan(&youtube_4k(), &preset(PresetId::Audio)).unwrap();
+    let recipe = plan(&youtube_4k(), &preset(PresetId::Audio), None).unwrap();
     assert_eq!(recipe.format_selector(), "251");
     assert_eq!(recipe.container, Container::Opus);
     assert!(!recipe.encodes_audio());
@@ -186,7 +186,7 @@ fn audio_preset_keeps_the_original_codec() {
 
 #[test]
 fn editing_makes_constant_frame_rate_dnxhr_at_1080p_by_default() {
-    let recipe = plan(&youtube_4k(), &preset(PresetId::Editing)).unwrap();
+    let recipe = plan(&youtube_4k(), &preset(PresetId::Editing), None).unwrap();
     let step = recipe.video.as_ref().unwrap();
     assert_eq!(step.lines, 1080);
     assert!(matches!(&step.action, VideoAction::Encode(e) if e.codec == VideoCodec::Dnxhr && e.constant_frame_rate));
@@ -211,7 +211,7 @@ fn share_copies_a_stream_that_already_fits() {
         max_lines: None,
         size_limit_mb: Some(500),
     };
-    let recipe = plan(&youtube_4k(), &options).unwrap();
+    let recipe = plan(&youtube_4k(), &options, None).unwrap();
     assert_eq!(recipe.format_selector(), "137+140");
     assert!(!recipe.needs_ffmpeg_pass());
 }
@@ -225,7 +225,7 @@ fn share_prefers_a_modest_audio_track() {
         max_lines: None,
         size_limit_mb: Some(500),
     };
-    let recipe = plan(&info(formats), &options).unwrap();
+    let recipe = plan(&info(formats), &options, None).unwrap();
     assert_eq!(recipe.format_selector(), "137+140");
 }
 
@@ -236,7 +236,7 @@ fn share_converts_to_a_bitrate_that_fits() {
         max_lines: None,
         size_limit_mb: Some(10),
     };
-    let recipe = plan(&youtube_4k(), &options).unwrap();
+    let recipe = plan(&youtube_4k(), &options, None).unwrap();
     let step = recipe.video.as_ref().unwrap();
     let VideoAction::Encode(encode) = &step.action else {
         panic!("should convert")
@@ -252,14 +252,19 @@ fn share_converts_to_a_bitrate_that_fits() {
 
 #[test]
 fn a_site_with_one_combined_file_downloads_just_that() {
-    let recipe = plan(&info(vec![muxed("mp4-720", 720, 2000.0)]), &preset(PresetId::Iphone)).unwrap();
+    let recipe = plan(
+        &info(vec![muxed("mp4-720", 720, 2000.0)]),
+        &preset(PresetId::Iphone),
+        None,
+    )
+    .unwrap();
     assert_eq!(recipe.format_selector(), "mp4-720");
     assert!(!recipe.needs_ffmpeg_pass());
 }
 
 #[test]
 fn audio_only_sources_ignore_video_presets() {
-    let recipe = plan(&info(vec![audio("mp3", "mp3", 128.0)]), &preset(PresetId::Iphone)).unwrap();
+    let recipe = plan(&info(vec![audio("mp3", "mp3", 128.0)]), &preset(PresetId::Iphone), None).unwrap();
     assert!(recipe.video.is_none());
     assert_eq!(recipe.container, Container::Mp3);
 }
@@ -270,7 +275,7 @@ fn manual_lossless_conversion_warns_that_it_only_adds_size() {
         audio_codec: Some(AudioCodec::Flac),
         ..manual(Content::AudioOnly)
     };
-    let recipe = plan(&youtube_4k(), &DownloadOptions::Manual(options)).unwrap();
+    let recipe = plan(&youtube_4k(), &DownloadOptions::Manual(options), None).unwrap();
     assert_eq!(recipe.container, Container::Flac);
     assert!(recipe.encodes_audio());
     let hint = recipe
@@ -290,7 +295,7 @@ fn manual_container_forces_compatible_codecs() {
         container: Some(Container::Mov),
         ..manual(Content::VideoAudio)
     };
-    let recipe = plan(&youtube_4k(), &DownloadOptions::Manual(options)).unwrap();
+    let recipe = plan(&youtube_4k(), &DownloadOptions::Manual(options), None).unwrap();
     assert_eq!(recipe.video_codec(), Some(VideoCodec::H264));
     assert_eq!(recipe.audio_codec(), Some(AudioCodec::Aac));
     assert!(recipe.needs_ffmpeg_pass());
@@ -298,7 +303,12 @@ fn manual_container_forces_compatible_codecs() {
 
 #[test]
 fn manual_defaults_copy_everything() {
-    let recipe = plan(&youtube_4k(), &DownloadOptions::Manual(manual(Content::VideoAudio))).unwrap();
+    let recipe = plan(
+        &youtube_4k(),
+        &DownloadOptions::Manual(manual(Content::VideoAudio)),
+        None,
+    )
+    .unwrap();
     assert_eq!(recipe.format_selector(), "401+251");
     assert!(!recipe.needs_ffmpeg_pass());
     assert!(recipe.hints.is_empty());
@@ -310,7 +320,7 @@ fn manual_video_only_strips_audio_from_a_combined_stream() {
         video_format: Some("18".into()),
         ..manual(Content::VideoOnly)
     };
-    let recipe = plan(&youtube_4k(), &DownloadOptions::Manual(options)).unwrap();
+    let recipe = plan(&youtube_4k(), &DownloadOptions::Manual(options), None).unwrap();
     assert!(recipe.strip_audio);
     assert_eq!(recipe.audio_codec(), None);
     assert!(recipe.needs_ffmpeg_pass());
@@ -344,9 +354,86 @@ fn plain_described_streams_beat_segmented_and_unknown_ones() {
             format.language_preference = Some(-1);
         }
     }
-    let recipe = plan(&info(formats), &preset(PresetId::Windows)).unwrap();
+    let recipe = plan(&info(formats), &preset(PresetId::Windows), None).unwrap();
     assert_eq!(recipe.format_selector(), "313+251");
     assert!(!recipe.needs_ffmpeg_pass());
+}
+
+fn cut(start: f64, end: f64, exact: bool) -> Option<Trim> {
+    Some(Trim { start, end, exact })
+}
+
+#[test]
+fn an_exact_cut_re_encodes_in_the_same_codec_and_keeps_the_audio() {
+    let recipe = plan(&youtube_4k(), &preset(PresetId::Iphone), cut(60.0, 90.0, true)).unwrap();
+    let step = recipe.video.as_ref().unwrap();
+    // Same stream the preset would pick untrimmed …
+    assert_eq!(recipe.format_selector(), "137+140");
+    // … re-encoded as H.264 so the cut can land on any frame.
+    assert!(matches!(&step.action, VideoAction::Encode(encode) if encode.codec == VideoCodec::H264));
+    assert!(!recipe.encodes_audio());
+    assert_eq!(recipe.exact_cut(), cut(60.0, 90.0, true));
+    assert!(recipe.reason.as_deref().unwrap().contains("exact cut"));
+    assert_eq!(recipe.duration, Some(30.0));
+}
+
+#[test]
+fn a_fast_cut_copies_the_streams_and_scales_the_size_estimate() {
+    let whole = plan(&youtube_4k(), &preset(PresetId::Iphone), None).unwrap();
+    let recipe = plan(&youtube_4k(), &preset(PresetId::Iphone), cut(0.0, 60.0, false)).unwrap();
+    assert!(!recipe.needs_ffmpeg_pass());
+    assert_eq!(recipe.exact_cut(), None);
+    // One minute out of ten.
+    let (part, full) = (recipe.estimated_size().unwrap(), whole.estimated_size().unwrap());
+    assert!((part as f64 / full as f64 - 0.1).abs() < 0.001);
+}
+
+#[test]
+fn an_exact_cut_of_vp9_on_windows_becomes_h264_in_mp4() {
+    let recipe = plan(&youtube_4k(), &preset(PresetId::Windows), cut(10.0, 20.0, true)).unwrap();
+    let step = recipe.video.as_ref().unwrap();
+    // Still 4K: cutting doesn't change the resolution the preset picks.
+    assert_eq!(step.lines, 2160);
+    assert_eq!(recipe.video_codec(), Some(VideoCodec::H264));
+    assert_eq!(recipe.container, Container::Mp4);
+    assert_eq!(recipe.audio.as_ref().unwrap().format_id.as_deref(), Some("140"));
+    assert!(!recipe.encodes_audio());
+}
+
+#[test]
+fn an_exact_cut_at_max_quality_keeps_opus_by_using_mkv() {
+    let recipe = plan(&youtube_4k(), &preset(PresetId::Max), cut(10.0, 20.0, true)).unwrap();
+    assert_eq!(recipe.video_codec(), Some(VideoCodec::Hevc));
+    assert_eq!(recipe.audio_codec(), Some(AudioCodec::Opus));
+    assert_eq!(recipe.container, Container::Mkv);
+}
+
+#[test]
+fn share_budgets_for_the_trimmed_length() {
+    // 30 seconds into 10 MB leaves ~2.5 Mbit/s: comfortable 720p, no warning.
+    let options = DownloadOptions::Preset {
+        preset: PresetId::Share,
+        max_lines: None,
+        size_limit_mb: Some(10),
+    };
+    let recipe = plan(&youtube_4k(), &options, cut(0.0, 30.0, true)).unwrap();
+    let VideoAction::Encode(encode) = &recipe.video.as_ref().unwrap().action else {
+        panic!("should convert")
+    };
+    assert!(encode.bitrate_kbps.unwrap() > 2000);
+    assert!(recipe.hints.iter().all(|hint| hint.level != HintLevel::Warning));
+}
+
+#[test]
+fn audio_only_cuts_need_no_conversion() {
+    let recipe = plan(&youtube_4k(), &preset(PresetId::Audio), cut(5.0, 15.0, true)).unwrap();
+    assert_eq!(recipe.exact_cut(), None);
+    assert!(!recipe.needs_ffmpeg_pass());
+}
+
+#[test]
+fn empty_cuts_are_rejected() {
+    assert!(plan(&youtube_4k(), &preset(PresetId::Max), cut(20.0, 20.0, true)).is_err());
 }
 
 #[test]
@@ -355,5 +442,5 @@ fn unknown_stream_ids_are_rejected() {
         video_format: Some("nope".into()),
         ..manual(Content::VideoAudio)
     };
-    assert!(plan(&youtube_4k(), &DownloadOptions::Manual(options)).is_err());
+    assert!(plan(&youtube_4k(), &DownloadOptions::Manual(options), None).is_err());
 }
