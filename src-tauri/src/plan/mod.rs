@@ -294,6 +294,13 @@ impl Video<'_> {
     fn has_audio(&self) -> bool {
         self.format.kind == FormatKind::Muxed
     }
+
+    /// Tie-breaker between streams of the same resolution and codec: a plain
+    /// file beats a segmented stream (faster, and its size is known), then
+    /// the higher bitrate wins.
+    fn bitrate_rank(&self) -> (bool, f64) {
+        (!self.format.segmented, self.format.tbr.unwrap_or(0.0))
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -304,10 +311,17 @@ struct Audio<'a> {
 }
 
 impl Audio<'_> {
-    /// Original-language, non-compressed-dynamics tracks first, then bitrate.
-    fn rank(&self) -> (i32, bool, f64) {
+    /// Original-language tracks first, then ones without levelled ("DRC")
+    /// volume, then plain files over segmented streams, then bitrate.
+    fn rank(&self) -> (i32, bool, bool, f64) {
         let drc = self.format.id.contains("drc");
-        (self.format.language_preference.unwrap_or(0), !drc, self.kbps)
+        // yt-dlp scores unmarked tracks -1, the same as "not the original language".
+        (
+            self.format.language_preference.unwrap_or(-1),
+            !drc,
+            !self.format.segmented,
+            self.kbps,
+        )
     }
 }
 
@@ -504,8 +518,8 @@ impl<'a> Planner<'a> {
         }
         // A copyable track beats a slightly higher-bitrate one that needs converting.
         let best = max_by_key(self.audios.iter().copied(), |audio| {
-            let (language, plain, kbps) = audio.rank();
-            (language, plain, accepted.contains(&audio.codec), kbps)
+            let (language, plain, direct, kbps) = audio.rank();
+            (language, plain, accepted.contains(&audio.codec), direct, kbps)
         })?;
         Some(step(
             Some(best.format.id.clone()),
@@ -532,14 +546,7 @@ impl<'a> Planner<'a> {
         // Highest resolution and frame rate among natively playable streams …
         let native = max_by_key(
             candidates.iter().copied().filter(|v| native_rank(v).is_some()),
-            |video| {
-                (
-                    video.lines,
-                    video.fps as u32,
-                    native_rank(video),
-                    video.format.tbr.unwrap_or(0.0),
-                )
-            },
+            |video| (video.lines, video.fps as u32, native_rank(video), video.bitrate_rank()),
         );
         // … otherwise the best stream of any kind, to be converted.
         let any = max_by_key(candidates.iter().copied(), |video| {
@@ -547,7 +554,7 @@ impl<'a> Planner<'a> {
                 video.lines,
                 video.fps as u32,
                 video.codec.efficiency(),
-                video.format.tbr.unwrap_or(0.0),
+                video.bitrate_rank(),
             )
         });
 
@@ -632,7 +639,7 @@ impl<'a> Planner<'a> {
                 video.fps as u32,
                 video.hdr,
                 video.codec.efficiency(),
-                video.format.tbr.unwrap_or(0.0),
+                video.bitrate_rank(),
             )
         })
         .expect("plan() checks that videos exist");
@@ -708,7 +715,7 @@ impl<'a> Planner<'a> {
                 video.lines,
                 video.fps as u32,
                 video.codec.efficiency(),
-                video.format.tbr.unwrap_or(0.0),
+                video.bitrate_rank(),
             )
         })
         .expect("plan() checks that videos exist");
@@ -745,9 +752,22 @@ impl<'a> Planner<'a> {
         let mut recipe = self.recipe(Container::Mp4, promise);
         let pool = self.pool(1080, 60.0);
 
+        // Sharing wants a small stereo track, not a 384 kbps surround mix that eats the budget.
+        let modest: Vec<Audio> = self
+            .audios
+            .iter()
+            .copied()
+            .filter(|audio| audio.kbps <= 160.0)
+            .collect();
+        let lean = Planner {
+            videos: Vec::new(),
+            audios: if modest.is_empty() { self.audios.clone() } else { modest },
+            duration: self.duration,
+        };
+
         // First choice: an H.264 + AAC combination that already fits. No conversion at all.
         let aac = max_by_key(
-            self.audios.iter().copied().filter(|a| a.codec == AudioCodec::Aac),
+            lean.audios.iter().copied().filter(|a| a.codec == AudioCodec::Aac),
             Audio::rank,
         );
         let fits = pool
@@ -762,12 +782,10 @@ impl<'a> Planner<'a> {
                 };
                 total.is_some_and(|total| total as f64 <= budget)
             });
-        if let Some(video) = max_by_key(fits, |video| {
-            (video.lines, video.fps as u32, video.format.tbr.unwrap_or(0.0))
-        }) {
+        if let Some(video) = max_by_key(fits, |video| (video.lines, video.fps as u32, video.bitrate_rank())) {
             // Don't settle for a postage stamp when converting would look far better.
             if video.lines >= 480 || video.lines >= pool.iter().map(|v| v.lines).max().unwrap_or(0) {
-                recipe.audio = self.audio_for(&video, &[AudioCodec::Aac], AudioCodec::Aac);
+                recipe.audio = lean.audio_for(&video, &[AudioCodec::Aac], AudioCodec::Aac);
                 recipe.video = Some(Self::video_step(&video, VideoAction::Copy));
                 return recipe;
             }
@@ -775,9 +793,9 @@ impl<'a> Planner<'a> {
 
         // Otherwise convert to a bitrate that lands under the limit.
         let Some(duration) = self.duration else {
-            let video = max_by_key(Self::at_resolution(&pool, 480), |video| video.format.tbr.unwrap_or(0.0))
+            let video = max_by_key(Self::at_resolution(&pool, 480), |video| video.bitrate_rank())
                 .expect("plan() checks that videos exist");
-            recipe.audio = self.audio_for(&video, &[AudioCodec::Aac], AudioCodec::Aac);
+            recipe.audio = lean.audio_for(&video, &[AudioCodec::Aac], AudioCodec::Aac);
             recipe.video = Some(Self::video_step(&video, VideoAction::Copy));
             recipe.promise = "A small version of the video".into();
             recipe.hints.push(warning(format!(
@@ -817,12 +835,12 @@ impl<'a> Planner<'a> {
             (
                 video.fps <= max_fps + 0.5,
                 video.codec == VideoCodec::H264,
-                video.format.tbr.unwrap_or(0.0),
+                video.bitrate_rank(),
             )
         })
         .expect("plan() checks that videos exist");
 
-        recipe.audio = self.audio_for(&video, &[], AudioCodec::Aac).map(|mut audio| {
+        recipe.audio = lean.audio_for(&video, &[], AudioCodec::Aac).map(|mut audio| {
             audio.action = AudioAction::Encode {
                 codec: AudioCodec::Aac,
                 bitrate_kbps: Some(audio_kbps),
@@ -903,7 +921,7 @@ impl<'a> Planner<'a> {
                     video.lines,
                     video.fps as u32,
                     video.codec.efficiency(),
-                    video.format.tbr.unwrap_or(0.0),
+                    video.bitrate_rank(),
                 )
             })
             .expect("videos is not empty"),

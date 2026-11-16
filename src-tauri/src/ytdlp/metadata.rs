@@ -8,6 +8,7 @@ use serde_json::Value;
 use super::{command, errors, validate_url};
 use crate::binaries::BinaryManager;
 use crate::error::{AppError, ErrorKind, Result};
+use crate::plan::codecs::{AudioCodec, VideoCodec};
 use crate::process;
 
 const FETCH_TIMEOUT: Duration = Duration::from_secs(90);
@@ -52,8 +53,13 @@ pub struct Format {
     pub ext: String,
     pub kind: FormatKind,
     /// Raw codec strings as reported by the site, e.g. "avc1.640028", "opus".
+    #[serde(skip)]
     pub vcodec: Option<String>,
+    #[serde(skip)]
     pub acodec: Option<String>,
+    /// The codecs as Siphon classifies them; `None` when the stream has no such track.
+    pub video_codec: Option<VideoCodec>,
+    pub audio_codec: Option<AudioCodec>,
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub fps: Option<f64>,
@@ -73,6 +79,9 @@ pub struct Format {
     pub language: Option<String>,
     /// yt-dlp's ranking of audio tracks: the original language scores highest.
     pub language_preference: Option<i32>,
+    /// True for segmented streams (HLS). Sites often list the same video both
+    /// ways; the plain file downloads faster and reports its size.
+    pub segmented: bool,
     pub note: Option<String>,
 }
 
@@ -179,6 +188,13 @@ struct RawFormat {
     language_preference: Option<f64>,
     #[serde(default, deserialize_with = "text")]
     format_note: Option<String>,
+    #[serde(default, deserialize_with = "text")]
+    protocol: Option<String>,
+    /// "none" when the stream has no video / audio, even if the codec is unknown.
+    #[serde(default, deserialize_with = "text")]
+    video_ext: Option<String>,
+    #[serde(default, deserialize_with = "text")]
+    audio_ext: Option<String>,
     #[serde(default)]
     has_drm: Option<Value>,
 }
@@ -277,8 +293,13 @@ fn video(raw: RawInfo, requested_url: &str) -> Result<VideoInfo> {
 
 fn format(raw: RawFormat) -> Option<Format> {
     // yt-dlp writes the string "none" for "this stream has no video/audio".
-    let has_video = raw.vcodec.as_deref() != Some("none");
-    let has_audio = raw.acodec.as_deref() != Some("none");
+    // When the codec is unknown, `video_ext` / `audio_ext` still say whether the track exists.
+    let present = |codec: &Option<String>, ext: &Option<String>| match codec.as_deref() {
+        Some(codec) => codec != "none",
+        None => ext.as_deref() != Some("none"),
+    };
+    let has_video = present(&raw.vcodec, &raw.video_ext);
+    let has_audio = present(&raw.acodec, &raw.audio_ext);
     let kind = match (has_video, has_audio) {
         (true, true) => FormatKind::Muxed,
         (true, false) => FormatKind::Video,
@@ -295,7 +316,7 @@ fn format(raw: RawFormat) -> Option<Format> {
     let whole = |value: Option<f64>| value.filter(|n| *n > 0.0).map(|n| n.round() as u32);
     let rate = |value: Option<f64>| value.filter(|n| *n > 0.0);
 
-    Some(Format {
+    let mut format = Format {
         id: raw.format_id?,
         ext,
         kind,
@@ -314,8 +335,17 @@ fn format(raw: RawFormat) -> Option<Format> {
         dynamic_range: raw.dynamic_range,
         language: raw.language,
         language_preference: raw.language_preference.map(|n| n as i32),
+        segmented: raw
+            .protocol
+            .as_deref()
+            .is_some_and(|protocol| protocol.starts_with("m3u8")),
         note: raw.format_note,
-    })
+        video_codec: None,
+        audio_codec: None,
+    };
+    format.video_codec = (kind != FormatKind::Audio).then(|| VideoCodec::of(&format));
+    format.audio_codec = (kind != FormatKind::Video).then(|| AudioCodec::of(&format));
+    Some(format)
 }
 
 fn playlist(raw: RawInfo, requested_url: &str) -> PlaylistInfo {

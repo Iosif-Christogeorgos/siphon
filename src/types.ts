@@ -55,8 +55,9 @@ export interface Format {
   id: string;
   ext: string;
   kind: FormatKind;
-  vcodec: string | null;
-  acodec: string | null;
+  /** null when the stream has no such track. */
+  video_codec: VideoCodec | null;
+  audio_codec: AudioCodec | null;
   width: number | null;
   height: number | null;
   fps: number | null;
@@ -72,6 +73,8 @@ export interface Format {
   dynamic_range: string | null;
   language: string | null;
   language_preference: number | null;
+  /** True for segmented (HLS) streams. */
+  segmented: boolean;
   note: string | null;
 }
 

@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::ytdlp::metadata::Format;
+use crate::ytdlp::metadata::{Format, FormatKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -82,9 +82,14 @@ pub enum AudioCodec {
 impl AudioCodec {
     pub fn of(format: &Format) -> Self {
         let Some(raw) = format.acodec.as_deref().map(str::to_ascii_lowercase) else {
+            // Guess from the extension only where it is safe: a video file's
+            // usual companion, or an extension that names one codec. A bare
+            // .m4a or .webm audio track could hold several, so it stays unknown.
+            let with_video = format.kind != FormatKind::Audio;
             return match format.ext.as_str() {
-                "mp4" | "m4a" | "m4v" | "mov" => AudioCodec::Aac,
-                "webm" | "opus" => AudioCodec::Opus,
+                "mp4" | "m4v" | "mov" if with_video => AudioCodec::Aac,
+                "webm" if with_video => AudioCodec::Opus,
+                "opus" => AudioCodec::Opus,
                 "mp3" => AudioCodec::Mp3,
                 "ogg" => AudioCodec::Vorbis,
                 "flac" => AudioCodec::Flac,

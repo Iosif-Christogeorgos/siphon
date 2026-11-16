@@ -26,7 +26,10 @@ fn video(id: &str, vcodec: &str, height: u32, fps: f64, kbps: f64) -> Format {
         dynamic_range: Some("SDR".into()),
         language: None,
         language_preference: None,
+        segmented: false,
         note: None,
+        video_codec: None,
+        audio_codec: None,
     }
 }
 
@@ -214,6 +217,19 @@ fn share_copies_a_stream_that_already_fits() {
 }
 
 #[test]
+fn share_prefers_a_modest_audio_track() {
+    let mut formats = youtube_4k().formats;
+    formats.push(audio("258", "mp4a.40.2", 388.0));
+    let options = DownloadOptions::Preset {
+        preset: PresetId::Share,
+        max_lines: None,
+        size_limit_mb: Some(500),
+    };
+    let recipe = plan(&info(formats), &options).unwrap();
+    assert_eq!(recipe.format_selector(), "137+140");
+}
+
+#[test]
 fn share_converts_to_a_bitrate_that_fits() {
     let options = DownloadOptions::Preset {
         preset: PresetId::Share,
@@ -298,6 +314,39 @@ fn manual_video_only_strips_audio_from_a_combined_stream() {
     assert!(recipe.strip_audio);
     assert_eq!(recipe.audio_codec(), None);
     assert!(recipe.needs_ffmpeg_pass());
+}
+
+/// Regression: YouTube lists HLS copies of each stream (higher nominal bitrate,
+/// no size) and audio tracks without codec or language information. Neither
+/// may beat the plain, fully described streams.
+#[test]
+fn plain_described_streams_beat_segmented_and_unknown_ones() {
+    let mut formats = youtube_4k().formats;
+    formats.push(Format {
+        segmented: true,
+        filesize: None,
+        ..video("628", "vp09.00.51.08", 2160, 30.0, 28000.0)
+    });
+    formats.push(Format {
+        segmented: true,
+        acodec: None,
+        abr: None,
+        tbr: None,
+        ext: "mp4".into(),
+        ..audio("234", "x", 0.0)
+    });
+    formats.push(Format {
+        acodec: None,
+        ..audio("773", "x", 336.0)
+    });
+    for format in &mut formats {
+        if format.kind == FormatKind::Audio && format.acodec.is_some() {
+            format.language_preference = Some(-1);
+        }
+    }
+    let recipe = plan(&info(formats), &preset(PresetId::Windows)).unwrap();
+    assert_eq!(recipe.format_selector(), "313+251");
+    assert!(!recipe.needs_ffmpeg_pass());
 }
 
 #[test]
