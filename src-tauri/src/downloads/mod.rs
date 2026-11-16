@@ -345,8 +345,10 @@ impl DownloadManager {
 
         let mut updated = false;
         let mut retries = 0;
+        // Look the video up again instead of trusting what this session remembers.
+        let mut refresh = false;
         loop {
-            let error = match self.attempt(job, url, options, trim, &output_dir).await {
+            let error = match self.attempt(job, url, options, trim, &output_dir, refresh).await {
                 Ok(path) => return Ok(path),
                 Err(error) => error,
             };
@@ -356,12 +358,15 @@ impl DownloadManager {
 
             // Sites change, and yt-dlp follows within days. If the failure
             // looks like that, get the newest yt-dlp and try again with it.
+            if error.kind == ErrorKind::Outdated {
+                // The formats looked up earlier may be the problem, whether
+                // the site has changed since or an older yt-dlp read them.
+                refresh = true;
+            }
             if error.kind == ErrorKind::Outdated && !updated {
                 updated = true;
                 job.emit(Tracker::updating());
                 if let Ok(Some(_)) = job.bins.update_now(Tool::YtDlp, job.settings.update_channel).await {
-                    // Formats looked up by the old version may be the problem.
-                    job.app.state::<MediaCache>().forget(url);
                     job.emit(Tracker::new(false).current());
                     continue;
                 }
@@ -415,8 +420,9 @@ impl DownloadManager {
         options: &DownloadOptions,
         trim: Option<Trim>,
         output_dir: &Path,
+        refresh: bool,
     ) -> Result<PathBuf> {
-        let video = self.video_info(job, url).await?;
+        let video = self.video_info(job, url, refresh).await?;
         let recipe = plan::plan(&video, options, trim)?;
         let mut tracker = Tracker::new(recipe.needs_ffmpeg_pass());
 
@@ -464,9 +470,11 @@ impl DownloadManager {
 
     /// The video's metadata: from this session's cache, or looked up now
     /// (playlist items are queued without having been looked up first).
-    async fn video_info(&self, job: &JobContext<'_>, url: &str) -> Result<Arc<VideoInfo>> {
+    /// `refresh` looks it up even if it is cached; the cached copy stays in
+    /// place if that fails, so the open video keeps working.
+    async fn video_info(&self, job: &JobContext<'_>, url: &str, refresh: bool) -> Result<Arc<VideoInfo>> {
         let cache = job.app.state::<MediaCache>();
-        if let Some(video) = cache.get(url) {
+        if let Some(video) = cache.get(url).filter(|_| !refresh) {
             return Ok(video);
         }
         match metadata::fetch(job.bins, url).await? {
