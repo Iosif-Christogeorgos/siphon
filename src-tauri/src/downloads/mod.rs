@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
@@ -43,6 +43,9 @@ const MAX_LOG_LINES: usize = 400;
 /// last one left, so trying again costs little.
 const RETRY_SOON: &[Duration] = &[Duration::from_secs(2), Duration::from_secs(10)];
 const RETRY_LATER: &[Duration] = &[Duration::from_secs(30)];
+
+/// How long closing the app waits for running downloads to remove their files.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Deserialize)]
 pub struct DownloadRequest {
@@ -294,12 +297,24 @@ impl DownloadManager {
         self.stop(id, Stop::Pause).await;
     }
 
-    /// Stops every running and waiting download, keeping their partial files.
-    /// Used when the app closes, so no yt-dlp or ffmpeg process is left behind.
-    pub async fn pause_all(&self) {
+    /// Stops every download and removes what they left on disk. For when the
+    /// app closes: no yt-dlp or ffmpeg process may outlive it, and since the
+    /// list is not kept between sessions and a new download starts afresh,
+    /// nothing would ever pick the partial files up again.
+    pub async fn shut_down(&self) {
         let ids: Vec<String> = self.jobs.lock().unwrap().keys().cloned().collect();
         for id in ids {
-            self.pause(&id).await;
+            self.stop(&id, Stop::Cancel).await;
+        }
+        // Each job removes its own files once its process has ended.
+        let deadline = Instant::now() + SHUTDOWN_GRACE;
+        while !self.is_idle() && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        // What is left belongs to downloads that were paused or had failed.
+        let leftovers: Vec<Leftovers> = self.leftovers.lock().unwrap().drain().map(|(_, left)| left).collect();
+        for left in leftovers {
+            left.remove().await;
         }
     }
 

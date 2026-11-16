@@ -72,10 +72,11 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("failed to start Siphon")
         .run(|app, event| {
-            // Closing the app must not leave yt-dlp or ffmpeg running behind it.
+            // Closing the app must not leave yt-dlp or ffmpeg running behind
+            // it, nor half-finished files that nothing will pick up again.
             if let tauri::RunEvent::Exit = event {
                 let downloads = Arc::clone(&app.state::<Arc<downloads::DownloadManager>>());
-                tauri::async_runtime::block_on(downloads.pause_all());
+                tauri::async_runtime::block_on(downloads.shut_down());
             }
         });
 }
