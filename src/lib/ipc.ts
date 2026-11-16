@@ -8,6 +8,8 @@ import type {
   Media,
   PlanSummary,
   Preview,
+  Settings,
+  SettingsView,
   ToolStatus,
   Trim,
 } from "@/types";
@@ -22,6 +24,9 @@ export const ipc = {
   previewSource: (url: string, level: number) => invoke<Preview>("preview_source", { url, level }),
   startDownload: (request: DownloadRequest) => invoke<void>("start_download", { request }),
   cancelDownload: (id: string) => invoke<void>("cancel_download", { id }),
+  pauseDownload: (id: string) => invoke<void>("pause_download", { id }),
+  getSettings: () => invoke<SettingsView>("get_settings"),
+  setSettings: (settings: Settings) => invoke<SettingsView>("set_settings", { settings }),
   openFile: (path: string) => invoke<void>("open_file", { path }),
   revealFile: (path: string) => invoke<void>("reveal_file", { path }),
 };

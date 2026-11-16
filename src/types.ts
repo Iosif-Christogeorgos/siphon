@@ -192,6 +192,25 @@ export interface PlanSummary {
   ext: string;
 }
 
+// ── settings.rs ────────────────────────────────────────────────────────
+
+export type FilenameStyle = "title" | "title_id" | "channel_title" | "date_title" | "custom";
+
+export interface Settings {
+  /** Where downloads are saved; null means the system Downloads folder. */
+  output_dir: string | null;
+  filename: FilenameStyle;
+  /** A yt-dlp output template without extension; used when `filename` is "custom". */
+  custom_template: string;
+  /** How many downloads run at once. */
+  max_concurrent: number;
+}
+
+/** What `get_settings` returns: the settings plus facts for displaying them. */
+export interface SettingsView extends Settings {
+  default_output_dir: string | null;
+}
+
 // ── preview.rs ─────────────────────────────────────────────────────────
 
 export type PreviewSource =
@@ -208,6 +227,8 @@ export interface Preview {
 // ── downloads ───────────────────────────────────────────────────────────
 
 export type Stage =
+  /** Waiting for a free slot in the queue. */
+  | "queued"
   | "preparing"
   | "downloading_video"
   | "downloading_audio"
@@ -231,11 +252,13 @@ export interface DownloadRequest {
   url: string;
   options: DownloadOptions;
   trim: Trim | null;
-  output_dir: string | null;
+  /** True when continuing a paused download. */
+  resume: boolean;
 }
 
 export type DownloadEvent =
   | ({ type: "progress"; id: string } & Progress)
   | { type: "finished"; id: string; path: string; size: number | null }
   | { type: "failed"; id: string; error: AppError }
+  | { type: "paused"; id: string }
   | { type: "cancelled"; id: string };

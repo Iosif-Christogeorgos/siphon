@@ -32,7 +32,7 @@ export function VideoPane({ video }: { video: VideoInfo }) {
   const download = useDownloadGroup(downloadIds);
   const start = useDownloads((state) => state.start);
   // Choices are locked while a download runs: it was started with the ones shown.
-  const running = download?.status === "running";
+  const running = download !== undefined && download.status !== "finished" && download.status !== "failed";
 
   // Resolution, stream picks and trim ranges belong to the previous video.
   useEffect(() => {
@@ -58,7 +58,12 @@ export function VideoPane({ video }: { video: VideoInfo }) {
   const choices = JSON.stringify([options, trims]);
   useEffect(() => {
     setDownloadIds((ids) =>
-      ids.some((id) => useDownloads.getState().byId[id]?.status === "running") ? ids : [],
+      ids.some((id) => {
+        const download = useDownloads.getState().byId[id];
+        return download !== undefined && download.status !== "finished" && download.status !== "failed";
+      })
+        ? ids
+        : [],
     );
   }, [choices]);
 

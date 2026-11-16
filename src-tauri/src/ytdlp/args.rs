@@ -7,15 +7,16 @@ use crate::plan::{AudioAction, Recipe};
 /// The marker keeps the intermediate apart from the finished file.
 pub const SOURCE_MARKER: &str = ".source";
 
-/// File name template. The title is capped in bytes so paths stay within OS limits.
-pub fn output_template(recipe: &Recipe) -> String {
+/// The full output template: the user's naming style (`name`, see
+/// `Settings::filename_template`) plus what Siphon adds itself.
+pub fn output_template(recipe: &Recipe, name: &str) -> String {
     let marker = if recipe.needs_ffmpeg_pass() { SOURCE_MARKER } else { "" };
     // Clips say which part they are, so several from one video don't collide.
     let clip = match recipe.trim {
         Some(trim) => format!(" ({}-{})", clock(trim.start), clock(trim.end)),
         None => String::new(),
     };
-    format!("%(title).180B [%(id)s]{clip}{marker}.%(ext)s")
+    format!("{name}{clip}{marker}.%(ext)s")
 }
 
 /// 75.4 → "1m15s". File-name safe (no colons) and free of yt-dlp's "%".

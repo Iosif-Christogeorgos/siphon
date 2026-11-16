@@ -1,0 +1,190 @@
+import { CircleAlert, FolderOpen, ImageOff, Inbox, Pause, Play, RotateCw, Trash2, X } from "lucide-react";
+import { AnimatePresence, motion } from "motion/react";
+import type { ReactNode } from "react";
+import { Button } from "@/components/ui/button";
+import { Sheet } from "@/components/ui/sheet";
+import { Hint } from "@/components/ui/tooltip";
+import { formatBytes, formatEta, formatSpeed } from "@/lib/format";
+import { ipc } from "@/lib/ipc";
+import { spring } from "@/lib/motion";
+import { isIndeterminate, STAGE_LABELS } from "@/lib/stages";
+import { formatTimecode } from "@/lib/time";
+import { cn } from "@/lib/utils";
+import { type Download, useDownloads } from "@/stores/downloads";
+import { useUi } from "@/stores/ui";
+
+/** The download queue: everything started this session, newest first. */
+export function QueueSheet() {
+  const open = useUi((state) => state.panel === "downloads");
+  const closePanel = useUi((state) => state.closePanel);
+  const order = useDownloads((state) => state.order);
+  const byId = useDownloads((state) => state.byId);
+  const clearFinished = useDownloads((state) => state.clearFinished);
+
+  const downloads = order.map((id) => byId[id]).filter((download) => download !== undefined);
+  const hasFinished = downloads.some((download) => download.status === "finished");
+
+  return (
+    <Sheet open={open} onOpenChange={(next) => !next && closePanel()} title="Downloads">
+      {downloads.length === 0 ? (
+        <div className="flex flex-col items-center gap-2 pt-24 text-center text-muted-foreground">
+          <Inbox className="size-6 text-subtle-foreground" strokeWidth={1.5} />
+          <p className="text-[13px]">Nothing here yet. Downloads you start show up in this list.</p>
+        </div>
+      ) : (
+        <>
+          <ul className="-mx-2">
+            <AnimatePresence initial={false}>
+              {[...downloads].reverse().map((download) => (
+                <motion.li
+                  key={download.id}
+                  layout
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: "auto" }}
+                  exit={{ opacity: 0, height: 0 }}
+                  transition={spring}
+                  className="overflow-hidden"
+                >
+                  <QueueItem download={download} />
+                </motion.li>
+              ))}
+            </AnimatePresence>
+          </ul>
+          {hasFinished && (
+            <div className="mt-3 flex justify-end">
+              <Button variant="ghost" size="sm" onClick={clearFinished}>
+                Clear finished
+              </Button>
+            </div>
+          )}
+        </>
+      )}
+    </Sheet>
+  );
+}
+
+function QueueItem({ download }: { download: Download }) {
+  const { pause, resume, retry, remove } = useDownloads.getState();
+  const { status, progress } = download;
+  const active = status === "queued" || status === "running";
+
+  return (
+    <div className="group relative flex gap-3 rounded-xl px-2 py-2.5 transition-colors hover:bg-accent">
+      <div className="relative aspect-video w-16 shrink-0 self-start overflow-hidden rounded-md bg-muted">
+        {download.thumbnail ? (
+          <img
+            src={download.thumbnail}
+            alt=""
+            draggable={false}
+            referrerPolicy="no-referrer"
+            className="size-full object-cover"
+          />
+        ) : (
+          <div className="grid size-full place-items-center text-subtle-foreground">
+            <ImageOff className="size-3.5" />
+          </div>
+        )}
+      </div>
+
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-[13px] font-medium">{download.title}</p>
+        <p
+          className={cn(
+            "truncate text-xs tabular-nums",
+            status === "failed" ? "text-destructive" : "text-muted-foreground",
+          )}
+        >
+          {statusLine(download)}
+        </p>
+        {/* Hairline progress; it parks where it stopped when paused. */}
+        {(active || status === "paused") && (
+          <div className="mt-1.5 h-0.5 overflow-hidden rounded-full bg-border-strong">
+            <motion.div
+              className={cn("h-full origin-left", status === "paused" ? "bg-subtle-foreground" : "bg-primary")}
+              initial={false}
+              animate={{ scaleX: progress.fraction }}
+              transition={{ type: "spring", stiffness: 70, damping: 22 }}
+            />
+          </div>
+        )}
+      </div>
+
+      <div className="flex shrink-0 items-start">
+        {active && (
+          <Action label="Pause" onClick={() => pause(download.id)}>
+            <Pause />
+          </Action>
+        )}
+        {status === "paused" && (
+          <Action label="Resume" onClick={() => resume(download.id)}>
+            <Play />
+          </Action>
+        )}
+        {status === "failed" && (
+          <Action label="Try again" onClick={() => retry(download.id)}>
+            <RotateCw />
+          </Action>
+        )}
+        {status === "finished" && download.path && (
+          <>
+            <Action label="Open" onClick={() => void ipc.openFile(download.path as string)}>
+              <Play />
+            </Action>
+            <Action label="Show in folder" onClick={() => void ipc.revealFile(download.path as string)}>
+              <FolderOpen />
+            </Action>
+          </>
+        )}
+        <Action
+          label={active ? "Cancel" : status === "paused" ? "Cancel and delete what was downloaded" : "Remove from the list"}
+          onClick={() => remove(download.id)}
+        >
+          {active || status === "paused" ? <X /> : <Trash2 />}
+        </Action>
+      </div>
+    </div>
+  );
+}
+
+function statusLine(download: Download): ReactNode {
+  const { status, progress, trim } = download;
+  const clip = trim ? `${formatTimecode(trim.start)} – ${formatTimecode(trim.end)}` : null;
+  switch (status) {
+    case "finished":
+      return ["Done", download.size != null && formatBytes(download.size), clip].filter(Boolean).join(" · ");
+    case "failed":
+      return (
+        <span className="inline-flex items-center gap-1">
+          <CircleAlert className="size-3 shrink-0" />
+          {download.error?.message ?? "Failed"}
+        </span>
+      );
+    case "paused":
+      return ["Paused", `${Math.floor(progress.fraction * 100)}%`, clip].filter(Boolean).join(" · ");
+    default:
+      return [
+        STAGE_LABELS[progress.stage],
+        !isIndeterminate(progress.stage) && `${Math.floor(progress.fraction * 100)}%`,
+        formatSpeed(progress.speed),
+        formatEta(progress.eta),
+        clip,
+      ]
+        .filter(Boolean)
+        .join(" · ");
+  }
+}
+
+function Action({ label, onClick, children }: { label: string; onClick: () => void; children: ReactNode }) {
+  return (
+    <Hint label={label}>
+      <button
+        type="button"
+        aria-label={label}
+        onClick={onClick}
+        className="grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-border-strong hover:text-foreground [&_svg]:size-3.5"
+      >
+        {children}
+      </button>
+    </Hint>
+  );
+}

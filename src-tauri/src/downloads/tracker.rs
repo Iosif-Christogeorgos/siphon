@@ -7,6 +7,8 @@ use crate::ytdlp::progress::{DownloadTick, PlannedStream};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Stage {
+    /// Waiting for a free slot in the queue.
+    Queued,
     Preparing,
     DownloadingVideo,
     DownloadingAudio,
@@ -58,6 +60,16 @@ impl Tracker {
                 speed: None,
                 eta: None,
             },
+        }
+    }
+
+    /// What a job reports while it waits in the queue.
+    pub fn queued() -> Progress {
+        Progress {
+            stage: Stage::Queued,
+            fraction: 0.0,
+            speed: None,
+            eta: None,
         }
     }
 

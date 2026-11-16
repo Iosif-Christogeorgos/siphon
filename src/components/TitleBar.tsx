@@ -1,8 +1,13 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Minus, Square, X } from "lucide-react";
+import { ArrowDownToLine, Minus, Settings, Square, X } from "lucide-react";
+import { AnimatePresence, motion } from "motion/react";
 import type { ReactNode } from "react";
 import { LogoGlyph } from "@/components/Logo";
+import { Hint } from "@/components/ui/tooltip";
+import { spring } from "@/lib/motion";
 import { cn } from "@/lib/utils";
+import { selectActiveCount, useDownloads } from "@/stores/downloads";
+import { useUi } from "@/stores/ui";
 
 // macOS keeps its native traffic lights (see tauri.macos.conf.json);
 // everywhere else the window is frameless and we draw the controls.
@@ -10,6 +15,9 @@ const isMac = navigator.userAgent.includes("Mac");
 
 export function TitleBar() {
   const appWindow = getCurrentWindow();
+  const openPanel = useUi((state) => state.openPanel);
+  const activeDownloads = useDownloads(selectActiveCount);
+  const anyDownloads = useDownloads((state) => state.order.length > 0);
   return (
     <header
       data-tauri-drag-region
@@ -21,6 +29,38 @@ export function TitleBar() {
         Siphon
       </div>
 
+      <div className="flex h-full items-center">
+        <div className="mr-1.5 flex items-center gap-0.5">
+          <Hint label="Downloads">
+            <button
+              type="button"
+              aria-label="Downloads"
+              onClick={() => openPanel("downloads")}
+              className={cn(toolButton, anyDownloads && "text-foreground")}
+            >
+              <ArrowDownToLine className="size-4" strokeWidth={1.75} />
+              <AnimatePresence>
+                {activeDownloads > 0 && (
+                  <motion.span
+                    key="badge"
+                    initial={{ scale: 0 }}
+                    animate={{ scale: 1 }}
+                    exit={{ scale: 0 }}
+                    transition={spring}
+                    className="absolute -top-0.5 -right-0.5 grid h-3.5 min-w-3.5 place-items-center rounded-full bg-primary px-1 text-[9px] leading-none font-semibold text-primary-foreground tabular-nums"
+                  >
+                    {activeDownloads}
+                  </motion.span>
+                )}
+              </AnimatePresence>
+            </button>
+          </Hint>
+          <Hint label="Settings">
+            <button type="button" aria-label="Settings" onClick={() => openPanel("settings")} className={toolButton}>
+              <Settings className="size-4" strokeWidth={1.75} />
+            </button>
+          </Hint>
+        </div>
       {!isMac && (
         <div className="flex h-full">
           <WindowButton label="Minimize" onClick={() => appWindow.minimize()}>
@@ -34,9 +74,13 @@ export function TitleBar() {
           </WindowButton>
         </div>
       )}
+      </div>
     </header>
   );
 }
+
+const toolButton =
+  "relative grid size-7 place-items-center rounded-md text-muted-foreground transition-colors duration-100 hover:bg-accent hover:text-foreground";
 
 function WindowButton({
   label,

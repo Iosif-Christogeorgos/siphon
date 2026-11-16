@@ -8,12 +8,12 @@ import { ClipboardOffer } from "@/features/link/ClipboardOffer";
 import { LinkInput } from "@/features/link/LinkInput";
 import { useClipboardLink } from "@/features/link/useClipboardLink";
 import { VideoCardSkeleton } from "@/features/video/VideoCard";
+import { PlaylistPane } from "@/features/playlist/PlaylistPane";
 import { VideoPane } from "@/features/video/VideoPane";
 import { ipc, toAppError } from "@/lib/ipc";
 import { gentleSpring, riseIn } from "@/lib/motion";
-import { parseVideoUrl } from "@/lib/url";
+import { parseVideoUrl, playlistUrlOf } from "@/lib/url";
 import { cn } from "@/lib/utils";
-import type { PlaylistInfo } from "@/types";
 
 export function Home() {
   const [url, setUrl] = useState<string | null>(null);
@@ -37,6 +37,7 @@ export function Home() {
   }, []);
 
   const empty = url === null;
+  const playlistUrl = url ? playlistUrlOf(url) : null;
 
   return (
     <motion.div
@@ -122,32 +123,26 @@ export function Home() {
                   }
                 />
               ) : media.data.type === "video" ? (
-                <VideoPane video={media.data} />
+                <>
+                  <VideoPane video={media.data} />
+                  {playlistUrl && (
+                    <button
+                      type="button"
+                      onClick={() => setUrl(playlistUrl)}
+                      className="mx-auto flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[13px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                    >
+                      <ListVideo className="size-3.5" />
+                      This video is part of a playlist. Show all of it
+                    </button>
+                  )}
+                </>
               ) : (
-                <PlaylistNotice playlist={media.data} />
+                <PlaylistPane playlist={media.data} />
               )}
             </motion.section>
           )}
         </AnimatePresence>
       </div>
     </motion.div>
-  );
-}
-
-/** Playlists are recognised already; choosing videos from them arrives with the queue. */
-function PlaylistNotice({ playlist }: { playlist: PlaylistInfo }) {
-  return (
-    <div className="flex gap-3.5 rounded-[1.25rem] border bg-card p-4 shadow-card">
-      <div className="grid size-9 shrink-0 place-items-center rounded-xl bg-primary-soft text-primary">
-        <ListVideo className="size-4.5" />
-      </div>
-      <div className="min-w-0">
-        <h2 className="truncate font-semibold tracking-tight">{playlist.title}</h2>
-        <p className="mt-0.5 text-[13px] text-muted-foreground">
-          A playlist with {playlist.entries.length} videos. Picking videos from a playlist isn’t
-          available yet — paste a single video link for now.
-        </p>
-      </div>
-    </div>
   );
 }

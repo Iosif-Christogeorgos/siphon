@@ -15,6 +15,22 @@ export function parseVideoUrl(text: string | null | undefined): string | null {
   }
 }
 
+/**
+ * For a YouTube video link that also names a playlist (`watch?v=…&list=…`),
+ * the link to the whole playlist. Null for anything else.
+ */
+export function playlistUrlOf(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    const list = parsed.searchParams.get("list");
+    const isYoutube = /(^|\.)youtube\.com$/.test(parsed.hostname) || parsed.hostname === "youtu.be";
+    if (!isYoutube || !list || parsed.pathname === "/playlist") return null;
+    return `https://www.youtube.com/playlist?list=${encodeURIComponent(list)}`;
+  } catch {
+    return null;
+  }
+}
+
 /** "www.youtube.com" → "youtube.com", for compact display. */
 export function displayHost(url: string): string {
   try {

@@ -1,6 +1,8 @@
 //! The IPC surface: every function the frontend can call.
 
 use std::path::PathBuf;
+
+use serde::Serialize;
 use std::sync::Arc;
 
 use tauri::{AppHandle, State};
@@ -8,11 +10,12 @@ use tauri_plugin_opener::OpenerExt;
 
 use crate::binaries::sources::Channel;
 use crate::binaries::{BinaryManager, ToolStatus};
-use crate::downloads::{DownloadManager, DownloadRequest};
+use crate::downloads::{self, DownloadManager, DownloadRequest};
 use crate::error::{AppError, ErrorKind, Result};
 use crate::plan::explain::{self, PlanSummary};
 use crate::plan::{self, DownloadOptions, Trim};
 use crate::preview::{self, Preview};
+use crate::settings::{Settings, SettingsStore};
 use crate::state::{EncoderCache, MediaCache};
 use crate::ytdlp::metadata::{self, Media};
 
@@ -87,10 +90,55 @@ pub fn start_download(
     downloads.start(app, request)
 }
 
+/// Stops a download for good and deletes its partial files.
 #[tauri::command]
 pub async fn cancel_download(downloads: Downloads<'_>, id: String) -> Result<()> {
     downloads.cancel(&id).await;
     Ok(())
+}
+
+/// Stops a download but keeps its partial files; start it again with `resume: true`.
+#[tauri::command]
+pub async fn pause_download(downloads: Downloads<'_>, id: String) -> Result<()> {
+    downloads.pause(&id).await;
+    Ok(())
+}
+
+/// The settings, plus the facts the settings screen needs to show them.
+#[derive(Serialize)]
+pub struct SettingsView {
+    #[serde(flatten)]
+    settings: Settings,
+    /// Where downloads go when no folder is chosen.
+    default_output_dir: Option<String>,
+}
+
+fn settings_view(app: &AppHandle, settings: Settings) -> SettingsView {
+    let default_output_dir = downloads::default_output_dir(app)
+        .ok()
+        .map(|dir| dir.to_string_lossy().into_owned());
+    SettingsView {
+        settings,
+        default_output_dir,
+    }
+}
+
+#[tauri::command]
+pub fn get_settings(app: AppHandle, store: State<'_, SettingsStore>) -> SettingsView {
+    settings_view(&app, store.get())
+}
+
+#[tauri::command]
+pub fn set_settings(
+    app: AppHandle,
+    store: State<'_, SettingsStore>,
+    downloads: Downloads<'_>,
+    settings: Settings,
+) -> Result<SettingsView> {
+    let saved = store.set(settings)?;
+    // The number of simultaneous downloads may have changed.
+    downloads.refresh_queue();
+    Ok(settings_view(&app, saved))
 }
 
 /// Opens a downloaded file in its default app.

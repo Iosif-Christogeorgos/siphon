@@ -3,6 +3,8 @@ import { useEffect } from "react";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { TitleBar } from "@/components/TitleBar";
 import { Home } from "@/features/home/Home";
+import { QueueSheet } from "@/features/queue/QueueSheet";
+import { SettingsSheet } from "@/features/settings/SettingsSheet";
 import { SetupScreen } from "@/features/setup/SetupScreen";
 import { onDownloadEvent, onToolStatus } from "@/lib/ipc";
 import { selectAllUsable, useBinaries } from "@/stores/binaries";
@@ -36,6 +38,8 @@ export function App() {
           </AnimatePresence>
         </ErrorBoundary>
       </main>
+      <QueueSheet />
+      <SettingsSheet />
     </div>
   );
 }

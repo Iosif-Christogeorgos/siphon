@@ -1,4 +1,4 @@
-import { ArrowDownToLine, FolderOpen, Play, RotateCw, X } from "lucide-react";
+import { ArrowDownToLine, FolderOpen, Pause, Play, RotateCw, X } from "lucide-react";
 import {
   AnimatePresence,
   motion,
@@ -14,24 +14,14 @@ import { Hint } from "@/components/ui/tooltip";
 import { formatBytes, formatEta, formatSpeed } from "@/lib/format";
 import { ipc } from "@/lib/ipc";
 import { riseIn, spring } from "@/lib/motion";
+import { isIndeterminate, STAGE_LABELS } from "@/lib/stages";
 import { cn } from "@/lib/utils";
 import { type DownloadGroup, useDownloads } from "@/stores/downloads";
-import type { Stage } from "@/types";
 import { CompletionMark } from "./CompletionMark";
-
-const STAGE_LABELS: Record<Stage, string> = {
-  preparing: "Preparing",
-  downloading_video: "Downloading video",
-  downloading_audio: "Downloading audio",
-  downloading: "Downloading",
-  merging: "Merging",
-  converting: "Converting",
-  finishing: "Finishing up",
-};
 
 /**
  * The big button under the video card. It morphs in place:
- * Download → live progress → "Downloaded" with open/reveal actions.
+ * Download → live progress (or paused) → "Downloaded" with open/reveal actions.
  */
 export function DownloadPanel({
   download,
@@ -47,7 +37,7 @@ export function DownloadPanel({
   /** Button text: "Download", "Download clip", … */
   label: string;
 }) {
-  const cancel = useDownloads((state) => state.cancel);
+  const store = useDownloads.getState();
   // The bar is allowed to glide to 100% before the finished state takes over.
   const [filled, setFilled] = useState(false);
   const downloadId = download?.id;
@@ -56,9 +46,11 @@ export function DownloadPanel({
   const view =
     !download || download.status === "failed"
       ? "idle"
-      : download.status === "finished" && filled
-        ? "finished"
-        : "running";
+      : download.status === "paused"
+        ? "paused"
+        : download.status === "finished" && filled
+          ? "finished"
+          : "running";
 
   return (
     <div className="space-y-3">
@@ -66,7 +58,7 @@ export function DownloadPanel({
         className={cn(
           "relative h-13 overflow-hidden rounded-2xl transition-[background-color,box-shadow] duration-300",
           view === "idle" && "bg-primary shadow-[0_8px_24px_-10px_var(--primary)]",
-          view === "running" && "bg-secondary",
+          (view === "running" || view === "paused") && "bg-secondary",
           view === "finished" && "bg-card shadow-card ring-1 ring-border",
         )}
       >
@@ -75,7 +67,7 @@ export function DownloadPanel({
             <Face key="idle">
               <button
                 type="button"
-                onClick={onStart}
+                onClick={download ? () => download.ids.forEach(store.retry) : onStart}
                 disabled={disabled}
                 className="group flex size-full items-center justify-center gap-2.5 text-[15px] font-semibold text-primary-foreground transition-[background-color,transform] duration-150 hover:bg-primary-hover active:scale-[0.985] disabled:pointer-events-none disabled:opacity-60"
               >
@@ -92,8 +84,18 @@ export function DownloadPanel({
             <Face key="running">
               <Running
                 download={download}
-                onCancel={() => download.ids.forEach(cancel)}
+                onPause={() => download.ids.forEach(store.pause)}
+                onCancel={() => download.ids.forEach(store.remove)}
                 onFilled={() => setFilled(true)}
+              />
+            </Face>
+          )}
+          {view === "paused" && download && (
+            <Face key="paused">
+              <Paused
+                fraction={download.progress.fraction}
+                onResume={() => download.ids.forEach(store.resume)}
+                onCancel={() => download.ids.forEach(store.remove)}
               />
             </Face>
           )}
@@ -131,12 +133,17 @@ function Face({ children }: { children: ReactNode }) {
   );
 }
 
+const iconButton =
+  "relative grid size-9 shrink-0 place-items-center rounded-xl text-muted-foreground transition-colors hover:bg-accent hover:text-foreground";
+
 function Running({
   download,
+  onPause,
   onCancel,
   onFilled,
 }: {
   download: DownloadGroup;
+  onPause: () => void;
   onCancel: () => void;
   onFilled: () => void;
 }) {
@@ -157,14 +164,15 @@ function Running({
     if (done && smooth.get() >= 0.995) onFilled();
   }, [done, smooth, onFilled]);
 
-  const waiting = stage === "preparing";
+  // No percentage until there is something to measure (a resumed download keeps its own).
+  const waiting = isIndeterminate(stage) && fraction === 0;
   const detail = [formatSpeed(speed), formatEta(eta)].filter(Boolean).join(" · ");
 
   return (
     <div className="relative flex size-full items-center gap-3 pr-2 pl-5">
       <motion.div className="absolute inset-0 origin-left bg-primary/15" style={{ scaleX: smooth }} />
       <motion.div className="absolute inset-x-0 bottom-0 h-0.5 origin-left bg-primary" style={{ scaleX: smooth }} />
-      {waiting && (
+      {stage === "preparing" && (
         <div className="absolute inset-0 animate-shimmer bg-[linear-gradient(100deg,transparent_35%,var(--primary-soft)_50%,transparent_65%)] bg-size-[200%_100%] motion-reduce:animate-none" />
       )}
 
@@ -182,18 +190,50 @@ function Running({
             transition={spring}
           >
             {STAGE_LABELS[stage]}
-            {waiting && "…"}
+            {stage === "preparing" && "…"}
           </motion.span>
         </AnimatePresence>
       </div>
       <span className="relative shrink-0 text-[13px] text-muted-foreground tabular-nums">{detail}</span>
-      <Hint label="Cancel">
-        <button
-          type="button"
-          aria-label="Cancel download"
-          onClick={onCancel}
-          className="relative grid size-9 shrink-0 place-items-center rounded-xl text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-        >
+      {!done && (
+        <div className="relative flex">
+          <Hint label="Pause">
+            <button type="button" aria-label="Pause download" onClick={onPause} className={iconButton}>
+              <Pause className="size-4" />
+            </button>
+          </Hint>
+          <Hint label="Cancel">
+            <button type="button" aria-label="Cancel download" onClick={onCancel} className={iconButton}>
+              <X className="size-4" />
+            </button>
+          </Hint>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Paused({
+  fraction,
+  onResume,
+  onCancel,
+}: {
+  fraction: number;
+  onResume: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="relative flex size-full items-center gap-3 pr-2 pl-5">
+      <div className="absolute inset-0 origin-left bg-foreground/5" style={{ transform: `scaleX(${fraction})` }} />
+      <span className="relative w-11 text-[15px] font-semibold text-muted-foreground tabular-nums">
+        {Math.floor(fraction * 100)}%
+      </span>
+      <span className="relative flex-1 text-[15px] font-medium">Paused</span>
+      <Button size="sm" className="relative" onClick={onResume}>
+        <Play className="fill-current" /> Resume
+      </Button>
+      <Hint label="Cancel and delete what was downloaded">
+        <button type="button" aria-label="Cancel download" onClick={onCancel} className={iconButton}>
           <X className="size-4" />
         </button>
       </Hint>

@@ -1,8 +1,9 @@
 //! Runs downloads and streams their progress to the frontend.
 //!
-//! A job has up to three steps: look the video up (unless it is cached),
-//! let yt-dlp fetch and merge the streams the recipe names, then, only if
-//! the recipe converts anything, run Siphon's own ffmpeg pass.
+//! A job waits in the queue for a free slot, then has up to three steps:
+//! look the video up (unless it is cached), let yt-dlp fetch and merge the
+//! streams the recipe names, then, only if the recipe converts anything,
+//! run Siphon's own ffmpeg pass.
 
 mod tracker;
 
@@ -16,12 +17,14 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::Command;
+use tokio::sync::Notify;
 
 use crate::binaries::BinaryManager;
 use crate::error::{AppError, ErrorKind, Result};
 use crate::ffmpeg::{self, encoders::Encoders};
 use crate::plan::{self, DownloadOptions, Recipe, Trim};
 use crate::process;
+use crate::settings::{Settings, SettingsStore};
 use crate::state::{EncoderCache, MediaCache};
 use crate::ytdlp::metadata::{self, Media, VideoInfo};
 use crate::ytdlp::{self, args, errors, progress};
@@ -42,8 +45,10 @@ pub struct DownloadRequest {
     /// Download only this part of the video.
     #[serde(default)]
     pub trim: Option<Trim>,
-    /// Defaults to the user's Downloads folder.
-    pub output_dir: Option<String>,
+    /// True when continuing a paused download: files already on disk are
+    /// picked up where they stopped instead of being fetched again.
+    #[serde(default)]
+    pub resume: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -64,21 +69,62 @@ pub enum DownloadEvent {
         id: String,
         error: AppError,
     },
+    /// Stopped for now; its partial files are kept so it can be resumed.
+    Paused {
+        id: String,
+    },
     Cancelled {
         id: String,
     },
+}
+
+/// Why the user stopped a job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stop {
+    Cancel,
+    Pause,
 }
 
 #[derive(Default)]
 struct Job {
     /// The child process currently working for this job, if any.
     pid: Option<u32>,
-    cancelled: bool,
+    stop: Option<Stop>,
+}
+
+/// Who may run: jobs take a slot in the order they were added.
+#[derive(Default)]
+struct Gate {
+    waiting: VecDeque<String>,
+    running: usize,
+}
+
+/// Files a paused download leaves on disk, removed if it is cancelled later.
+#[derive(Default)]
+struct Leftovers {
+    stream_files: Vec<PathBuf>,
+    multi_stream: bool,
+    /// Anything else: a section's `.part` file, a downloaded source awaiting conversion.
+    others: Vec<PathBuf>,
+}
+
+impl Leftovers {
+    async fn remove(self) {
+        for file in &self.others {
+            let _ = tokio::fs::remove_file(file).await;
+        }
+        remove_partial_files(&self.stream_files, self.multi_stream).await;
+    }
 }
 
 #[derive(Default)]
 pub struct DownloadManager {
     jobs: Mutex<HashMap<String, Job>>,
+    gate: Mutex<Gate>,
+    /// Signalled whenever the gate may let someone through: a slot was
+    /// freed, a waiting job was stopped, or the limit changed.
+    gate_changed: Notify,
+    paused: Mutex<HashMap<String, Leftovers>>,
 }
 
 /// Everything one running job needs.
@@ -86,6 +132,8 @@ struct JobContext<'a> {
     app: &'a AppHandle,
     bins: &'a BinaryManager,
     id: &'a str,
+    settings: Settings,
+    resume: bool,
 }
 
 impl JobContext<'_> {
@@ -101,65 +149,135 @@ impl JobContext<'_> {
 }
 
 impl DownloadManager {
-    /// Starts a download in the background. Progress arrives as events.
+    /// Queues a download. It starts when a slot is free; progress arrives as events.
     pub fn start(self: &Arc<Self>, app: AppHandle, request: DownloadRequest) -> Result<()> {
         let url = ytdlp::validate_url(&request.url)?.to_string();
-        let output_dir = match request.output_dir {
-            Some(dir) => PathBuf::from(dir),
-            None => default_output_dir(&app)?,
-        };
-        std::fs::create_dir_all(&output_dir)?;
-
         let id = request.id;
         self.jobs.lock().unwrap().insert(id.clone(), Job::default());
+        self.gate.lock().unwrap().waiting.push_back(id.clone());
 
         let manager = Arc::clone(self);
         tauri::async_runtime::spawn(async move {
             let bins = Arc::clone(&app.state::<Arc<BinaryManager>>());
-            let job = JobContext {
-                app: &app,
-                bins: &bins,
-                id: &id,
-            };
-            let outcome = manager
-                .run(&job, &url, &request.options, request.trim, &output_dir)
-                .await;
-            let cancelled = manager
-                .jobs
-                .lock()
-                .unwrap()
-                .remove(&id)
-                .is_some_and(|job| job.cancelled);
+            let _ = app.emit(
+                EVENT,
+                DownloadEvent::Progress {
+                    id: id.clone(),
+                    progress: Tracker::queued(),
+                },
+            );
 
-            let event = match outcome {
-                _ if cancelled => DownloadEvent::Cancelled { id },
-                Ok(path) => DownloadEvent::Finished {
+            let outcome = if manager.wait_for_slot(&app, &id).await {
+                let job = JobContext {
+                    app: &app,
+                    bins: &bins,
+                    id: &id,
+                    // Read once the job starts, so changes made while it queued apply.
+                    settings: app.state::<SettingsStore>().get(),
+                    resume: request.resume,
+                };
+                let outcome = manager.run(&job, &url, &request.options, request.trim).await;
+                manager.gate.lock().unwrap().running -= 1;
+                manager.gate_changed.notify_waiters();
+                outcome
+            } else {
+                Err(AppError::cancelled())
+            };
+
+            let stop = manager.jobs.lock().unwrap().remove(&id).and_then(|job| job.stop);
+            let event = match (stop, outcome) {
+                (Some(Stop::Cancel), _) => DownloadEvent::Cancelled { id },
+                (Some(Stop::Pause), _) => DownloadEvent::Paused { id },
+                (None, Ok(path)) => DownloadEvent::Finished {
                     size: std::fs::metadata(&path).ok().map(|meta| meta.len()),
                     path: path.to_string_lossy().into_owned(),
                     id,
                 },
-                Err(error) => DownloadEvent::Failed { id, error },
+                (None, Err(error)) => DownloadEvent::Failed { id, error },
             };
             let _ = app.emit(EVENT, event);
         });
         Ok(())
     }
 
-    /// Stops a running download and removes its partial files.
-    pub async fn cancel(&self, id: &str) {
-        let pid = {
-            let mut jobs = self.jobs.lock().unwrap();
-            let Some(job) = jobs.get_mut(id) else { return };
-            job.cancelled = true;
-            job.pid
-        };
-        if let Some(pid) = pid {
-            process::kill_tree(pid).await;
+    /// Waits until this job is first in line and a slot is free.
+    /// Returns false if the job was stopped while it waited.
+    async fn wait_for_slot(&self, app: &AppHandle, id: &str) -> bool {
+        loop {
+            // Created before checking, so a signal between check and await isn't missed.
+            let changed = self.gate_changed.notified();
+            {
+                let mut gate = self.gate.lock().unwrap();
+                if self.stop_of(id).is_some() {
+                    gate.waiting.retain(|waiting| waiting != id);
+                    drop(gate);
+                    // The job behind may be first in line now.
+                    self.gate_changed.notify_waiters();
+                    return false;
+                }
+                let limit = app.state::<SettingsStore>().get().max_concurrent;
+                if gate.running < limit && gate.waiting.front().is_some_and(|first| first == id) {
+                    gate.waiting.pop_front();
+                    gate.running += 1;
+                    drop(gate);
+                    // More than one slot may be free: let the next in line look too.
+                    self.gate_changed.notify_waiters();
+                    return true;
+                }
+            }
+            changed.await;
         }
     }
 
-    fn is_cancelled(&self, id: &str) -> bool {
-        self.jobs.lock().unwrap().get(id).is_some_and(|job| job.cancelled)
+    /// Re-evaluates the queue, after the concurrency limit changed.
+    pub fn refresh_queue(&self) {
+        self.gate_changed.notify_waiters();
+    }
+
+    /// Stops a download for good and removes its partial files.
+    /// Also discards the files of a download that was paused earlier.
+    pub async fn cancel(&self, id: &str) {
+        if !self.stop(id, Stop::Cancel).await {
+            let leftovers = self.paused.lock().unwrap().remove(id);
+            if let Some(leftovers) = leftovers {
+                leftovers.remove().await;
+            }
+        }
+    }
+
+    /// Stops a download but keeps what it has fetched, so it can be resumed.
+    pub async fn pause(&self, id: &str) {
+        self.stop(id, Stop::Pause).await;
+    }
+
+    /// Stops every running and waiting download, keeping their partial files.
+    /// Used when the app closes, so no yt-dlp or ffmpeg process is left behind.
+    pub async fn pause_all(&self) {
+        let ids: Vec<String> = self.jobs.lock().unwrap().keys().cloned().collect();
+        for id in ids {
+            self.pause(&id).await;
+        }
+    }
+
+    /// Returns false if there is no such job.
+    async fn stop(&self, id: &str, stop: Stop) -> bool {
+        let pid = {
+            let mut jobs = self.jobs.lock().unwrap();
+            let Some(job) = jobs.get_mut(id) else { return false };
+            job.stop = Some(stop);
+            job.pid
+        };
+        // Wakes the job if it is still waiting in the queue …
+        self.gate_changed.notify_waiters();
+        // … and ends its process if it is running.
+        if let Some(pid) = pid {
+            process::kill_tree(pid).await;
+        }
+        true
+    }
+
+    fn stop_of(&self, id: &str) -> Option<Stop> {
+        self.jobs.lock().unwrap().get(id).and_then(|job| job.stop)
     }
 
     /// Runs the whole job and returns the path of the finished file.
@@ -169,16 +287,26 @@ impl DownloadManager {
         url: &str,
         options: &DownloadOptions,
         trim: Option<Trim>,
-        output_dir: &Path,
     ) -> Result<PathBuf> {
         job.emit(Tracker::new(false).current());
+        // A resumed job starts clean: whatever it left is either reused or replaced.
+        self.paused.lock().unwrap().remove(job.id);
+
+        let output_dir = match &job.settings.output_dir {
+            Some(dir) => dir.clone(),
+            None => default_output_dir(job.app)?,
+        };
+        tokio::fs::create_dir_all(&output_dir).await.map_err(|err| {
+            AppError::internal("Couldn't create the download folder. Check the folder in Settings.")
+                .with_details(format!("{}: {err}", output_dir.display()))
+        })?;
 
         let video = self.video_info(job, url).await?;
         let recipe = plan::plan(&video, options, trim)?;
         let mut tracker = Tracker::new(recipe.needs_ffmpeg_pass());
 
         let downloaded = self
-            .fetch_streams(job, &video.url, &recipe, output_dir, &mut tracker)
+            .fetch_streams(job, &video.url, &recipe, &output_dir, &mut tracker)
             .await?;
         if !recipe.needs_ffmpeg_pass() {
             return Ok(downloaded);
@@ -191,15 +319,24 @@ impl DownloadManager {
             .await;
         // A hardware encoder can refuse a job it passed the probe for (driver
         // limits, too many sessions). The CPU encoders always work.
-        if result.is_err() && encoders != Encoders::SOFTWARE && !self.is_cancelled(job.id) {
+        if result.is_err() && encoders != Encoders::SOFTWARE && self.stop_of(job.id).is_none() {
             result = self
                 .convert(job, &recipe, &Encoders::SOFTWARE, &downloaded, &output, &mut tracker)
                 .await;
         }
 
-        let _ = tokio::fs::remove_file(&downloaded).await;
         if result.is_err() {
             let _ = tokio::fs::remove_file(&output).await;
+        }
+        if self.stop_of(job.id) == Some(Stop::Pause) {
+            // Keep the downloaded source: resuming goes straight back to converting.
+            let leftovers = Leftovers {
+                others: vec![downloaded],
+                ..Leftovers::default()
+            };
+            self.paused.lock().unwrap().insert(job.id.to_string(), leftovers);
+        } else {
+            let _ = tokio::fs::remove_file(&downloaded).await;
         }
         result.map(|()| output)
     }
@@ -240,12 +377,19 @@ impl DownloadManager {
                 "--no-playlist",
                 // Stamp the file with the time it was downloaded, not uploaded.
                 "--no-mtime",
-                // The same video may be fetched again with other settings; the newest request wins.
-                "--force-overwrites",
-            ])
-            .arg("--paths")
+            ]);
+        if !job.resume {
+            // The same video may be fetched again with other settings; the
+            // newest request wins. (A resumed job instead reuses its files.)
+            cmd.arg("--force-overwrites");
+        }
+        cmd.arg("--paths")
             .arg(output_dir)
-            .args(["--output", &args::output_template(recipe), "--"])
+            .args([
+                "--output",
+                &args::output_template(recipe, &job.settings.filename_template()),
+                "--",
+            ])
             .arg(url);
 
         let mut output_file: Option<PathBuf> = None;
@@ -283,15 +427,21 @@ impl DownloadManager {
             })
             .await;
 
+        let leftovers = || Leftovers {
+            stream_files: stream_files.clone(),
+            multi_stream: tracker.is_multi_stream(),
+            others: part_file.iter().cloned().collect(),
+        };
         match result {
             Ok(log) => output_file.ok_or_else(|| {
                 AppError::internal("The download finished but the file couldn't be located.").with_details(log)
             }),
-            Err(Failure::Cancelled) => {
-                if let Some(part) = &part_file {
-                    let _ = tokio::fs::remove_file(part).await;
-                }
-                remove_partial_files(&stream_files, tracker.is_multi_stream()).await;
+            Err(Failure::Stopped(Stop::Cancel)) => {
+                leftovers().remove().await;
+                Err(AppError::cancelled())
+            }
+            Err(Failure::Stopped(Stop::Pause)) => {
+                self.paused.lock().unwrap().insert(job.id.to_string(), leftovers());
                 Err(AppError::cancelled())
             }
             Err(Failure::Exited(log)) => Err(errors::classify(&log)),
@@ -328,7 +478,7 @@ impl DownloadManager {
 
         match result {
             Ok(_) => Ok(()),
-            Err(Failure::Cancelled) => Err(AppError::cancelled()),
+            Err(Failure::Stopped(_)) => Err(AppError::cancelled()),
             Err(Failure::Exited(log)) => {
                 Err(AppError::internal("The video downloaded, but converting it failed.").with_details(log))
             }
@@ -336,15 +486,19 @@ impl DownloadManager {
         }
     }
 
-    /// Runs a child process for a job: registers it for cancellation, feeds
-    /// each stdout line (and a tick four times a second) to `on_event`, and
-    /// returns the stderr log on success.
+    /// Runs a child process for a job: registers it so the job can be
+    /// stopped, feeds each stdout line (and a tick four times a second) to
+    /// `on_event`, and returns the stderr log on success.
     async fn run_child(
         &self,
         id: &str,
         mut cmd: Command,
         mut on_event: impl FnMut(ChildEvent<'_>),
     ) -> std::result::Result<String, Failure> {
+        // Stopped between steps: don't start the next one.
+        if let Some(stop) = self.stop_of(id) {
+            return Err(Failure::Stopped(stop));
+        }
         let mut child = cmd
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -382,8 +536,8 @@ impl DownloadManager {
             job.pid = None;
         }
 
-        if self.is_cancelled(id) {
-            Err(Failure::Cancelled)
+        if let Some(stop) = self.stop_of(id) {
+            Err(Failure::Stopped(stop))
         } else if status.is_ok_and(|status| status.success()) {
             Ok(log)
         } else {
@@ -403,12 +557,13 @@ enum ChildEvent<'a> {
 /// How a child process run can go wrong.
 enum Failure {
     Spawn(AppError),
-    Cancelled,
+    /// The user cancelled or paused the job.
+    Stopped(Stop),
     /// Non-zero exit; carries the stderr log.
     Exited(String),
 }
 
-fn default_output_dir(app: &AppHandle) -> Result<PathBuf> {
+pub fn default_output_dir(app: &AppHandle) -> Result<PathBuf> {
     app.path()
         .download_dir()
         .map_err(|err| AppError::internal("Couldn't find your Downloads folder.").with_details(err.to_string()))
@@ -441,7 +596,7 @@ async fn collect_lines(stream: impl AsyncRead + Unpin) -> String {
     Vec::from(lines).join("\n")
 }
 
-/// Cleans up after a cancelled download.
+/// Removes what a stopped download left on disk.
 ///
 /// `stream_files` are the per-stream targets yt-dlp reported. Their `.part`,
 /// `.ytdl` and fragment companions are always safe to delete. The targets

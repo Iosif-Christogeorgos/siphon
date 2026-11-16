@@ -9,6 +9,7 @@ mod ffmpeg;
 mod plan;
 mod preview;
 mod process;
+mod settings;
 mod state;
 mod ytdlp;
 
@@ -26,6 +27,7 @@ fn main() {
             let binaries = binaries::BinaryManager::new(app.handle())?;
             app.manage(Arc::new(binaries));
             app.manage(Arc::new(downloads::DownloadManager::default()));
+            app.manage(settings::SettingsStore::load(app.handle())?);
             app.manage(state::MediaCache::default());
             app.manage(state::EncoderCache::default());
             Ok(())
@@ -38,9 +40,19 @@ fn main() {
             commands::preview_source,
             commands::start_download,
             commands::cancel_download,
+            commands::pause_download,
+            commands::get_settings,
+            commands::set_settings,
             commands::open_file,
             commands::reveal_file,
         ])
-        .run(tauri::generate_context!())
-        .expect("failed to start Siphon");
+        .build(tauri::generate_context!())
+        .expect("failed to start Siphon")
+        .run(|app, event| {
+            // Closing the app must not leave yt-dlp or ffmpeg running behind it.
+            if let tauri::RunEvent::Exit = event {
+                let downloads = Arc::clone(&app.state::<Arc<downloads::DownloadManager>>());
+                tauri::async_runtime::block_on(downloads.pause_all());
+            }
+        });
 }
