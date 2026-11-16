@@ -52,6 +52,16 @@ Why Siphon works the way it does, and what is known not to be right yet. Progres
 ### Distribution
 
 - **App self-update uses GitHub Releases from the public repository.**
+- **Updates are signed.** The owner approved (2026-11-16) generating a signing key. The private key is at `C:\Users\olimp\.tauri\siphon.key`, outside the repository, and in the GitHub Actions secret `TAURI_SIGNING_PRIVATE_KEY`. It has no password. The public key is in `src-tauri/tauri.conf.json`. If the private key is lost, installed copies can no longer be updated in place, so it needs a backup.
+- **Releases are created as drafts.** The owner publishes them on GitHub, and installed copies see nothing until then.
+- **The app update is driven from Rust commands** (`src-tauri/src/app_update.rs`), not the updater's JavaScript API, so the webview needs no extra permissions and no extra npm packages.
+- **Siphon always asks before updating itself**, whatever the tools' "install automatically" setting says, because it has to restart. It refuses while downloads are running or waiting.
+
+## Testing notes
+
+- **Test links:** `https://www.youtube.com/watch?v=jNQXAC9IVRw` (19 seconds, a quick end-to-end check), `https://www.youtube.com/watch?v=aqz-KE-bpKQ` (10 minutes, 4K60: progress, presets, trimming, pause and resume), `https://www.youtube.com/playlist?list=PLa1F2ddGya_86Vmu2clTpAfBvBWnfLc9s` (20 videos: the playlist picker and the queue), `https://archive.org/details/BigBuckBunny_124` (a site other than YouTube).
+- **To test a tool update without waiting for a real release:** close the app, change `tools.yt_dlp.version` in `%LOCALAPPDATA%\app.siphon.desktop\bin\manifest.json` to an older value, and start it again.
+- **To drive the running app without touching the desktop:** start it with `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222` and use the Chrome DevTools Protocol at `http://127.0.0.1:9222/json` (screenshots, `Runtime.evaluate`, `Input.insertText`, mouse events, `Emulation.setEmulatedMedia` for light mode). `window.__TAURI_INTERNALS__.invoke(…)` calls backend commands directly.
 
 ## Known issues
 
