@@ -23,6 +23,14 @@ Why Siphon works the way it does, and what is known not to be right yet. Progres
 - **An exact cut never changes the resolution a preset picks.** It only turns a copy into an encode: the same codec for H.264 and HEVC sources, otherwise the device's conversion target.
 - **Section downloads report no progress** (they go through ffmpeg inside yt-dlp), so progress is read from the growing `.part` file against the expected size.
 
+### Queue and settings
+
+- **Pausing kills the process and keeps the partial files.** yt-dlp has no pause command. Resuming starts the same job again without `--force-overwrites`, so yt-dlp continues from its `.part` file, and a source that was already downloaded goes straight back to converting. Section (trimmed) downloads can't be continued by yt-dlp and start over when resumed.
+- **The queue is first in, first out behind one gate.** A job runs when it is first in line and fewer than the configured number are running. The limit is read each time, so changing it in Settings takes effect at once.
+- **Settings live in the backend** (`settings.json`), not in browser storage, because the backend is what uses them. The choice of preset and other per-download options stay in the frontend.
+- **Custom file names can't contain folders or `..`** and must contain at least one yt-dlp field. The folder is its own setting, and a name without fields would make every download overwrite the last.
+- **The download list is not saved between sessions.** A finished file may have been moved or deleted since, and a half-finished one is simply started again.
+
 ### Managed binaries
 
 - **FFmpeg uses the `-shared` build** (a 91 MB download rather than 200 MB) and is refreshed at most every 30 days.

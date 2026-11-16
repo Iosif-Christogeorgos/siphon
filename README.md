@@ -6,14 +6,14 @@ Siphon is a personal-use tool. It does not bypass DRM; protected videos get a cl
 
 ## Status
 
-Siphon is being built in phases. This is **v0.3.0**.
+Siphon is being built in phases. This is **v0.4.0**.
 
 | Phase | Scope | State |
 | --- | --- | --- |
 | 1 | App shell, managed binaries, link → metadata → best-quality download with progress | Done |
 | 2 | Device presets and manual format selection | Done |
 | 3 | Trim with live preview | Done |
-| 4 | Download queue, playlists, settings | Planned |
+| 4 | Download queue, playlists, settings | Done |
 | 5 | Design polish, background auto-updates, app self-update | Planned |
 
 ## Requirements
@@ -32,7 +32,7 @@ npm install
 npm run tauri dev
 ```
 
-The first launch shows a setup screen while Siphon downloads its engines (about 150 MB). After that, paste a video link, pick where you will watch it, and press **Download**. Files are saved to your Downloads folder.
+The first launch shows a setup screen while Siphon downloads its engines (about 150 MB). After that, paste a video link, pick where you will watch it, and press **Download**. Files are saved to your Downloads folder unless you choose another in Settings.
 
 ## Build an installer
 
@@ -106,6 +106,26 @@ Only the selected part is downloaded (`--download-sections`). There are two ways
 
 Why Siphon makes exact cuts itself instead of using yt-dlp's `--force-keyframes-at-cuts` is explained in [docs/decisions.md](docs/decisions.md#trimming).
 
+### Queue, playlists and settings
+
+Every download joins a queue. A set number run at once (three by default) and the rest wait their turn, in order. The **Downloads** button in the title bar opens the list, where each download can be paused, resumed, cancelled, retried, opened or shown in its folder.
+
+- **Pause** stops the download but keeps what it has fetched; **Resume** carries on from there.
+- **Cancel** stops it and deletes the partial files.
+- Closing the app pauses whatever is running, so no yt-dlp or ffmpeg process is left behind. The list itself is not kept between sessions.
+
+A playlist link shows its videos with checkboxes. The ones you select are added to the queue with the current preset, and the best format is worked out for each video when its turn comes. A YouTube video link that also names a playlist offers a way to the whole playlist.
+
+**Settings** (the gear in the title bar) holds the download folder, the file-name style and the number of simultaneous downloads. They are stored in `settings.json` in the app's config folder (`%APPDATA%app.siphon.desktop` on Windows).
+
+| File-name style | Example |
+| --- | --- |
+| Title [id] (default) | `Big Buck Bunny [aqz-KE-bpKQ].mp4` |
+| Title | `Big Buck Bunny.mp4` |
+| Channel - Title | `Blender - Big Buck Bunny.mp4` |
+| Date Title | `2014-11-10 Big Buck Bunny.mp4` |
+| Custom | Your own yt-dlp template, for example `%(channel)s - %(title)s` |
+
 ### Talking to yt-dlp
 
 All yt-dlp commands are built in Rust and passed as argument arrays, never as shell strings. Links are validated as plain `http(s)` URLs and placed after a `--` separator, so user input can't be read as an option.
@@ -117,16 +137,18 @@ Progress comes from `--progress-template` lines that the backend parses and fold
 ```
 src/                     React + TypeScript frontend
   components/            Shared UI (title bar, error card, shadcn/ui primitives)
-  features/              One folder per feature: setup, link, video, options, trim, download, home
+  features/              One folder per feature: setup, link, video, playlist, options, trim,
+                         download, queue, settings, home
   lib/                   IPC wrappers, formatting, motion presets
-  stores/                Zustand stores (binaries, downloads, options, trim)
+  stores/                Zustand stores (binaries, downloads, options, trim, ui)
   types.ts               Types mirrored from the Rust backend
 src-tauri/               Rust backend (Tauri 2)
   src/binaries/          Download, verify, install and update the managed tools
   src/ytdlp/             Command building, metadata, progress parsing, error classification
   src/plan/              Presets, codec rules and the planner (options → recipe → summary)
   src/ffmpeg/            Hardware encoder detection and conversion arguments
-  src/downloads/         Download jobs and progress tracking
+  src/downloads/         The download queue, jobs (pause, resume, cancel) and progress tracking
+  src/settings.rs        User preferences and where they are stored
   src/preview.rs         Where the trim preview plays from (embed, stream or cached copy)
   src/commands.rs        The IPC surface
 docs/device-support.md   What each preset assumes about its device, with sources
