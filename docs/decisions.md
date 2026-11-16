@@ -66,7 +66,7 @@ Why Siphon works the way it does, and what is known not to be right yet. Progres
 
 ## Known issues
 
-- **Intermittent HTTP 403 on section downloads.** A trimmed YouTube download once failed with `ffmpeg exited with code 3436169992`, which is ffmpeg's `AVERROR_HTTP_FORBIDDEN`. The same request succeeded on every retry and from a shell, so it is YouTube refusing a request now and then. After 0.5.0 (not released yet) a download that fails with a network error is tried once more after two seconds, which covers this; if the second try fails too, the error is shown ("The site dropped the connection … Try again").
+- **Intermittent HTTP 403 on section downloads.** A trimmed YouTube download once failed with `ffmpeg exited with code 3436169992`, which is ffmpeg's `AVERROR_HTTP_FORBIDDEN`. The same request succeeded on every retry and from a shell, so it is YouTube refusing a request now and then. Since 0.5.1 a download that fails with a network error is tried once more after two seconds, which covers this; if the second try fails too, the error is shown ("The site dropped the connection … Try again").
 - **YouTube draws its own overlay on the paused preview.** With the official embedded player, a paused frame is partly covered by the video title, a play button and "More videos". The API offers no way to hide them. Scrubbing still shows the frame underneath.
 - **The YouTube embed can stall in "buffering" after a seek.** `YouTubePlayer.tsx` nudges it out with a second seek.
 - **Downloading the same video twice with the same settings overwrites the first file.**
