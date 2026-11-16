@@ -7,7 +7,9 @@ import type {
   DownloadRequest,
   Media,
   PlanSummary,
+  Preview,
   ToolStatus,
+  Trim,
 } from "@/types";
 
 /** Typed wrappers around every backend command (see `src-tauri/src/commands.rs`). */
@@ -15,8 +17,9 @@ export const ipc = {
   binariesStatus: () => invoke<ToolStatus[]>("binaries_status"),
   binariesSync: () => invoke<ToolStatus[]>("binaries_sync"),
   fetchMedia: (url: string) => invoke<Media>("fetch_media", { url }),
-  planDownload: (url: string, options: DownloadOptions) =>
-    invoke<PlanSummary>("plan_download", { url, options }),
+  planDownload: (url: string, options: DownloadOptions, trim: Trim | null) =>
+    invoke<PlanSummary>("plan_download", { url, options, trim }),
+  previewSource: (url: string, level: number) => invoke<Preview>("preview_source", { url, level }),
   startDownload: (request: DownloadRequest) => invoke<void>("start_download", { request }),
   cancelDownload: (id: string) => invoke<void>("cancel_download", { id }),
   openFile: (path: string) => invoke<void>("open_file", { path }),

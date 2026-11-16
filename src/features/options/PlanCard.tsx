@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 import type { PlanSummary } from "@/types";
 
 /** Says, in plain language, exactly what pressing Download will produce. */
-export function PlanCard({ plan }: { plan: PlanSummary | undefined }) {
+export function PlanCard({ plan, clips }: { plan: PlanSummary | undefined; clips: number }) {
   if (!plan) {
     return (
       <div aria-hidden className="flex gap-3 px-1 py-1">
@@ -37,6 +37,7 @@ export function PlanCard({ plan }: { plan: PlanSummary | undefined }) {
             {plan.estimated_size != null && (
               <span className="shrink-0 text-[13px] text-muted-foreground tabular-nums">
                 ≈ {formatBytes(plan.estimated_size)}
+                {clips > 1 && " each"}
               </span>
             )}
           </div>

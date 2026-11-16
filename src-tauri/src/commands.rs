@@ -12,6 +12,7 @@ use crate::downloads::{DownloadManager, DownloadRequest};
 use crate::error::{AppError, ErrorKind, Result};
 use crate::plan::explain::{self, PlanSummary};
 use crate::plan::{self, DownloadOptions, Trim};
+use crate::preview::{self, Preview};
 use crate::state::{EncoderCache, MediaCache};
 use crate::ytdlp::metadata::{self, Media};
 
@@ -57,6 +58,22 @@ pub async fn plan_download(
         .ok_or_else(|| AppError::internal("Siphon lost track of this video. Paste the link again."))?;
     let recipe = plan::plan(&video, &options, trim)?;
     Ok(explain::summarize(&recipe, &encoders.get(&bins).await))
+}
+
+/// Where the trim preview should play from. `level` starts at 0; ask again
+/// with the returned level + 1 if that source fails to play.
+#[tauri::command]
+pub async fn preview_source(
+    app: AppHandle,
+    bins: Binaries<'_>,
+    cache: State<'_, MediaCache>,
+    url: String,
+    level: u8,
+) -> Result<Preview> {
+    let video = cache
+        .get(&url)
+        .ok_or_else(|| AppError::internal("Siphon lost track of this video. Paste the link again."))?;
+    preview::source(&app, &bins, &video, level).await
 }
 
 #[tauri::command]

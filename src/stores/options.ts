@@ -16,7 +16,10 @@ interface OptionsState {
   /** Resolution picked for this video; null means "let the preset decide". */
   maxLines: number | null;
   sizeLimitMb: number;
+  /** Trim cuts: exact frames (re-encodes) or fast (lossless, starts on a key frame). */
+  exactCut: boolean;
   manual: ManualFields;
+  setExactCut: (exact: boolean) => void;
   choosePreset: (preset: PresetId) => void;
   chooseManual: () => void;
   setMaxLines: (lines: number | null) => void;
@@ -33,6 +36,7 @@ export const useOptions = create<OptionsState>()(
       preset: "windows",
       maxLines: null,
       sizeLimitMb: SHARE_LIMITS_MB[0],
+      exactCut: true,
       manual: {
         content: "video_audio",
         video_format: null,
@@ -46,6 +50,7 @@ export const useOptions = create<OptionsState>()(
       chooseManual: () => set({ mode: "manual" }),
       setMaxLines: (maxLines) => set({ maxLines }),
       setSizeLimit: (sizeLimitMb) => set({ sizeLimitMb }),
+      setExactCut: (exactCut) => set({ exactCut }),
 
       setManual: (changes) => {
         const manual = { ...get().manual, ...changes };
@@ -63,10 +68,11 @@ export const useOptions = create<OptionsState>()(
     {
       name: "siphon.options",
       // Stream ids and the resolution belong to one video; everything else is a preference.
-      partialize: ({ mode, preset, sizeLimitMb, manual }) => ({
+      partialize: ({ mode, preset, sizeLimitMb, exactCut, manual }) => ({
         mode,
         preset,
         sizeLimitMb,
+        exactCut,
         manual: { ...manual, video_format: null, audio_format: null },
       }),
     },

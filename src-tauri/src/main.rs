@@ -7,6 +7,7 @@ mod downloads;
 mod error;
 mod ffmpeg;
 mod plan;
+mod preview;
 mod process;
 mod state;
 mod ytdlp;
@@ -21,6 +22,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            preview::clear_cache(app.handle());
             let binaries = binaries::BinaryManager::new(app.handle())?;
             app.manage(Arc::new(binaries));
             app.manage(Arc::new(downloads::DownloadManager::default()));
@@ -33,6 +35,7 @@ fn main() {
             commands::binaries_sync,
             commands::fetch_media,
             commands::plan_download,
+            commands::preview_source,
             commands::start_download,
             commands::cancel_download,
             commands::open_file,

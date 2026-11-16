@@ -159,6 +159,14 @@ export interface ManualOptions {
 
 export type DownloadOptions = PresetOptions | ManualOptions;
 
+/** The part of the video to keep, in seconds. */
+export interface Trim {
+  start: number;
+  end: number;
+  /** Cut on the exact frames (re-encodes) instead of the nearest key frame. */
+  exact: boolean;
+}
+
 export interface Hint {
   level: "info" | "warning";
   text: string;
@@ -182,6 +190,19 @@ export interface PlanSummary {
   /** The resolution this plan resolved to. */
   lines: number | null;
   ext: string;
+}
+
+// ── preview.rs ─────────────────────────────────────────────────────────
+
+export type PreviewSource =
+  | { kind: "youtube"; id: string }
+  | { kind: "stream"; url: string }
+  | { kind: "file"; path: string };
+
+export interface Preview {
+  source: PreviewSource;
+  /** Ask for level + 1 if this source fails to play. */
+  level: number;
 }
 
 // ── downloads ───────────────────────────────────────────────────────────
@@ -209,6 +230,7 @@ export interface DownloadRequest {
   id: string;
   url: string;
   options: DownloadOptions;
+  trim: Trim | null;
   output_dir: string | null;
 }
 

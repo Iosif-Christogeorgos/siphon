@@ -33,6 +33,9 @@ pub struct VideoInfo {
     pub duration: Option<f64>,
     pub channel: Option<String>,
     pub view_count: Option<u64>,
+    /// yt-dlp's name for the site ("Youtube", "Vimeo", …).
+    #[serde(skip)]
+    pub extractor: Option<String>,
     pub formats: Vec<Format>,
 }
 
@@ -82,6 +85,9 @@ pub struct Format {
     /// True for segmented streams (HLS). Sites often list the same video both
     /// ways; the plain file downloads faster and reports its size.
     pub segmented: bool,
+    /// Direct media URL, used only for the trim preview.
+    #[serde(skip)]
+    pub stream_url: Option<String>,
     pub note: Option<String>,
 }
 
@@ -135,6 +141,8 @@ struct RawInfo {
     uploader: Option<String>,
     #[serde(default, deserialize_with = "number")]
     view_count: Option<f64>,
+    #[serde(default, deserialize_with = "text")]
+    extractor_key: Option<String>,
     #[serde(default, deserialize_with = "text")]
     live_status: Option<String>,
     #[serde(default)]
@@ -190,6 +198,8 @@ struct RawFormat {
     format_note: Option<String>,
     #[serde(default, deserialize_with = "text")]
     protocol: Option<String>,
+    #[serde(default, deserialize_with = "text")]
+    url: Option<String>,
     /// "none" when the stream has no video / audio, even if the codec is unknown.
     #[serde(default, deserialize_with = "text")]
     video_ext: Option<String>,
@@ -287,6 +297,7 @@ fn video(raw: RawInfo, requested_url: &str) -> Result<VideoInfo> {
         duration: raw.duration,
         channel: raw.channel.or(raw.uploader),
         view_count: raw.view_count.map(|n| n as u64),
+        extractor: raw.extractor_key,
         formats,
     })
 }
@@ -340,6 +351,7 @@ fn format(raw: RawFormat) -> Option<Format> {
             .as_deref()
             .is_some_and(|protocol| protocol.starts_with("m3u8")),
         note: raw.format_note,
+        stream_url: raw.url.filter(|url| url.starts_with("http")),
         video_codec: None,
         audio_codec: None,
     };

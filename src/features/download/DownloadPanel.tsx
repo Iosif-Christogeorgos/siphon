@@ -15,7 +15,7 @@ import { formatBytes, formatEta, formatSpeed } from "@/lib/format";
 import { ipc } from "@/lib/ipc";
 import { riseIn, spring } from "@/lib/motion";
 import { cn } from "@/lib/utils";
-import { type Download, useDownloads } from "@/stores/downloads";
+import { type DownloadGroup, useDownloads } from "@/stores/downloads";
 import type { Stage } from "@/types";
 import { CompletionMark } from "./CompletionMark";
 
@@ -37,12 +37,15 @@ export function DownloadPanel({
   download,
   onStart,
   disabled,
+  label,
 }: {
-  /** The download started from this panel, if any. */
-  download: Download | undefined;
+  /** The download (or group of clips) started from this panel, if any. */
+  download: DownloadGroup | undefined;
   onStart: () => void;
   /** True while there is no valid plan to download. */
   disabled: boolean;
+  /** Button text: "Download", "Download clip", … */
+  label: string;
 }) {
   const cancel = useDownloads((state) => state.cancel);
   // The bar is allowed to glide to 100% before the finished state takes over.
@@ -81,18 +84,22 @@ export function DownloadPanel({
                 ) : (
                   <ArrowDownToLine className="size-4.5 transition-transform duration-200 group-hover:translate-y-0.5" />
                 )}
-                {download ? "Try again" : "Download"}
+                {download ? "Try again" : label}
               </button>
             </Face>
           )}
           {view === "running" && download && (
             <Face key="running">
-              <Running download={download} onCancel={() => cancel(download.id)} onFilled={() => setFilled(true)} />
+              <Running
+                download={download}
+                onCancel={() => download.ids.forEach(cancel)}
+                onFilled={() => setFilled(true)}
+              />
             </Face>
           )}
           {view === "finished" && download?.path && (
             <Face key="finished">
-              <Finished path={download.path} size={download.size} />
+              <Finished path={download.path} size={download.size} count={download.count} />
             </Face>
           )}
         </AnimatePresence>
@@ -129,7 +136,7 @@ function Running({
   onCancel,
   onFilled,
 }: {
-  download: Download;
+  download: DownloadGroup;
   onCancel: () => void;
   onFilled: () => void;
 }) {
@@ -194,20 +201,22 @@ function Running({
   );
 }
 
-function Finished({ path, size }: { path: string; size: number | null }) {
+function Finished({ path, size, count }: { path: string; size: number | null; count: number }) {
   return (
     <div className="flex size-full items-center gap-3 pr-2 pl-4">
       <CompletionMark />
       <div className="min-w-0 flex-1 text-[15px] font-medium">
-        Downloaded
+        {count > 1 ? `${count} clips downloaded` : "Downloaded"}
         {size != null && <span className="ml-2 text-[13px] font-normal text-muted-foreground">{formatBytes(size)}</span>}
       </div>
       <Button variant="ghost" size="sm" onClick={() => void ipc.revealFile(path)}>
         <FolderOpen /> Show in folder
       </Button>
-      <Button size="sm" onClick={() => void ipc.openFile(path)}>
-        <Play className="fill-current" /> Open
-      </Button>
+      {count === 1 && (
+        <Button size="sm" onClick={() => void ipc.openFile(path)}>
+          <Play className="fill-current" /> Open
+        </Button>
+      )}
     </div>
   );
 }

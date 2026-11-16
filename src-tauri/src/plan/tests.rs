@@ -27,6 +27,7 @@ fn video(id: &str, vcodec: &str, height: u32, fps: f64, kbps: f64) -> Format {
         language: None,
         language_preference: None,
         segmented: false,
+        stream_url: None,
         note: None,
         video_codec: None,
         audio_codec: None,
@@ -67,6 +68,7 @@ fn info(formats: Vec<Format>) -> VideoInfo {
         duration: Some(600.0),
         channel: None,
         view_count: None,
+        extractor: None,
         formats,
     }
 }

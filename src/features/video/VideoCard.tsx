@@ -1,13 +1,13 @@
 import { ImageOff } from "lucide-react";
 import { motion } from "motion/react";
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 import { formatCount, formatDuration } from "@/lib/format";
 import { bestVideoFormat, resolutionLabel } from "@/lib/formats";
 import { displayHost } from "@/lib/url";
 import { cn } from "@/lib/utils";
 import type { VideoInfo } from "@/types";
 
-export function VideoCard({ video }: { video: VideoInfo }) {
+export function VideoCard({ video, action }: { video: VideoInfo; action?: ReactNode }) {
   const best = bestVideoFormat(video.formats);
   const quality = best ? resolutionLabel(best) : null;
   const byline = [video.channel, displayHost(video.url)].filter(Boolean).join(" · ");
@@ -23,10 +23,11 @@ export function VideoCard({ video }: { video: VideoInfo }) {
           {video.title}
         </h2>
         <p className="mt-1 truncate text-[13px] text-muted-foreground">{byline}</p>
-        <div className="mt-auto flex flex-wrap gap-1.5 pt-3">
+        <div className="mt-auto flex flex-wrap items-center gap-1.5 pt-3">
           {quality && <Badge accent>Up to {quality}</Badge>}
           {best?.dynamic_range && best.dynamic_range !== "SDR" && <Badge>{best.dynamic_range}</Badge>}
           {video.view_count != null && <Badge>{formatCount(video.view_count)} views</Badge>}
+          {action && <div className="ml-auto">{action}</div>}
         </div>
       </div>
     </article>
@@ -69,7 +70,7 @@ function Thumbnail({ src, duration }: { src: string | null; duration: number | n
   );
 }
 
-function Badge({ accent, children }: { accent?: boolean; children: React.ReactNode }) {
+function Badge({ accent, children }: { accent?: boolean; children: ReactNode }) {
   return (
     <span
       className={cn(
