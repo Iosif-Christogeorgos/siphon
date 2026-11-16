@@ -303,14 +303,7 @@ fn video(raw: RawInfo, requested_url: &str) -> Result<VideoInfo> {
 }
 
 fn format(raw: RawFormat) -> Option<Format> {
-    // yt-dlp writes the string "none" for "this stream has no video/audio".
-    // When the codec is unknown, `video_ext` / `audio_ext` still say whether the track exists.
-    let present = |codec: &Option<String>, ext: &Option<String>| match codec.as_deref() {
-        Some(codec) => codec != "none",
-        None => ext.as_deref() != Some("none"),
-    };
-    let has_video = present(&raw.vcodec, &raw.video_ext);
-    let has_audio = present(&raw.acodec, &raw.audio_ext);
+    let (has_video, has_audio) = tracks(&raw);
     let kind = match (has_video, has_audio) {
         (true, true) => FormatKind::Muxed,
         (true, false) => FormatKind::Video,
@@ -360,6 +353,25 @@ fn format(raw: RawFormat) -> Option<Format> {
     Some(format)
 }
 
+/// Whether a format carries video and audio.
+///
+/// yt-dlp writes the codec "none" for a missing track. When a site reports no
+/// codecs at all, `video_ext` still tells a video file from an audio file,
+/// but yt-dlp then fills `audio_ext` with "none" even though an ordinary
+/// video file almost always has sound. So an unknown audio codec next to
+/// video counts as audio being present.
+fn tracks(raw: &RawFormat) -> (bool, bool) {
+    let has_video = match raw.vcodec.as_deref() {
+        Some(codec) => codec != "none",
+        None => raw.video_ext.as_deref() != Some("none"),
+    };
+    let has_audio = match raw.acodec.as_deref() {
+        Some(codec) => codec != "none",
+        None => has_video || raw.audio_ext.as_deref() != Some("none"),
+    };
+    (has_video, has_audio)
+}
+
 fn playlist(raw: RawInfo, requested_url: &str) -> PlaylistInfo {
     let entries = raw
         .entries
@@ -390,4 +402,36 @@ fn playlist(raw: RawInfo, requested_url: &str) -> PlaylistInfo {
 /// yt-dlp orders thumbnails worst → best.
 fn last_thumbnail(thumbnails: Option<Vec<RawThumbnail>>) -> Option<String> {
     thumbnails?.into_iter().rev().find_map(|thumbnail| thumbnail.url)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn kind_of(json: &str) -> Option<FormatKind> {
+        format(serde_json::from_str(json).unwrap()).map(|format| format.kind)
+    }
+
+    #[test]
+    fn classifies_formats_by_their_tracks() {
+        let video = r#"{"format_id": "137", "ext": "mp4", "vcodec": "avc1.640028", "acodec": "none"}"#;
+        let audio = r#"{"format_id": "251", "ext": "webm", "vcodec": "none", "acodec": "opus"}"#;
+        let storyboard = r#"{"format_id": "sb0", "ext": "mhtml", "vcodec": "none", "acodec": "none"}"#;
+        assert_eq!(kind_of(video), Some(FormatKind::Video));
+        assert_eq!(kind_of(audio), Some(FormatKind::Audio));
+        assert_eq!(kind_of(storyboard), None);
+    }
+
+    #[test]
+    fn a_plain_video_file_with_unknown_codecs_is_assumed_to_have_sound() {
+        // What archive.org and direct file links look like.
+        let file = r#"{"format_id": "1", "ext": "mp4", "video_ext": "mp4", "audio_ext": "none", "height": 360}"#;
+        assert_eq!(kind_of(file), Some(FormatKind::Muxed));
+    }
+
+    #[test]
+    fn an_audio_file_with_unknown_codecs_stays_audio() {
+        let file = r#"{"format_id": "773", "ext": "m4a", "video_ext": "none", "audio_ext": "m4a"}"#;
+        assert_eq!(kind_of(file), Some(FormatKind::Audio));
+    }
 }
