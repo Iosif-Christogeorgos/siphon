@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { ipc, toAppError } from "@/lib/ipc";
-import type { AppError, DownloadEvent, Progress, VideoInfo } from "@/types";
+import type { AppError, DownloadEvent, DownloadOptions, Progress, VideoInfo } from "@/types";
 
 export type DownloadStatus = "running" | "finished" | "failed";
 
@@ -20,7 +20,7 @@ export interface Download {
 interface DownloadsState {
   byId: Record<string, Download>;
   /** Starts downloading a video and returns the new download's id. */
-  start: (video: VideoInfo) => string;
+  start: (video: VideoInfo, options: DownloadOptions) => string;
   cancel: (id: string) => void;
   remove: (id: string) => void;
   apply: (event: DownloadEvent) => void;
@@ -37,7 +37,7 @@ export const useDownloads = create<DownloadsState>((set, get) => {
   return {
     byId: {},
 
-    start: (video) => {
+    start: (video, options) => {
       const id = crypto.randomUUID();
       const download: Download = {
         id,
@@ -51,7 +51,7 @@ export const useDownloads = create<DownloadsState>((set, get) => {
       };
       set({ byId: { ...get().byId, [id]: download } });
       ipc
-        .startDownload({ id, url: video.url, output_dir: null })
+        .startDownload({ id, url: video.url, options, output_dir: null })
         .catch((error) => patch(id, { status: "failed", error: toAppError(error) }));
       return id;
     },

@@ -82,11 +82,8 @@ impl From<std::io::Error> for AppError {
 
 impl From<reqwest::Error> for AppError {
     fn from(err: reqwest::Error) -> Self {
-        Self::new(
-            ErrorKind::Network,
-            "Couldn't reach the server. Check your connection.",
-        )
-        .with_details(format!("{err:?}"))
+        Self::new(ErrorKind::Network, "Couldn't reach the server. Check your connection.")
+            .with_details(format!("{err:?}"))
     }
 }
 

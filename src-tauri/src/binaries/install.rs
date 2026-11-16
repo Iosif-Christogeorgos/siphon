@@ -51,12 +51,7 @@ fn sibling(dir: &Path, suffix: &str) -> PathBuf {
 }
 
 /// Fills `staging` with a verified, ready-to-run copy of the release.
-async fn stage(
-    manager: &BinaryManager,
-    tool: Tool,
-    release: &Release,
-    staging: &Path,
-) -> Result<()> {
+async fn stage(manager: &BinaryManager, tool: Tool, release: &Release, staging: &Path) -> Result<()> {
     let _ = tokio::fs::remove_dir_all(staging).await;
     tokio::fs::create_dir_all(staging).await?;
     let archive = staging.join(&release.asset_name);
@@ -93,9 +88,7 @@ async fn stage(
         let (zip_path, dest) = (archive.clone(), staging.to_path_buf());
         tokio::task::spawn_blocking(move || unzip(tool, &zip_path, &dest))
             .await
-            .map_err(|err| {
-                AppError::internal("Unpacking was interrupted.").with_details(err.to_string())
-            })??;
+            .map_err(|err| AppError::internal("Unpacking was interrupted.").with_details(err.to_string()))??;
         tokio::fs::remove_file(&archive).await?;
     } else {
         // A bare executable (yt-dlp): just give it its canonical name.
@@ -120,12 +113,7 @@ async fn stage(
 }
 
 /// Streams the asset to disk, hashing as it goes. Returns the hex SHA-256.
-async fn download(
-    manager: &BinaryManager,
-    tool: Tool,
-    release: &Release,
-    dest: &Path,
-) -> Result<String> {
+async fn download(manager: &BinaryManager, tool: Tool, release: &Release, dest: &Path) -> Result<String> {
     let response = manager
         .http
         .get(&release.download_url)
@@ -158,9 +146,8 @@ async fn download(
 
 /// Extracts just the files a tool needs, flattened into `dest`.
 fn unzip(tool: Tool, archive: &Path, dest: &Path) -> Result<()> {
-    let unzip_error = |err: zip::result::ZipError| {
-        AppError::setup("Couldn't unpack the download.").with_details(err.to_string())
-    };
+    let unzip_error =
+        |err: zip::result::ZipError| AppError::setup("Couldn't unpack the download.").with_details(err.to_string());
 
     let mut zip = zip::ZipArchive::new(std::fs::File::open(archive)?).map_err(unzip_error)?;
     for index in 0..zip.len() {
@@ -172,11 +159,7 @@ fn unzip(tool: Tool, archive: &Path, dest: &Path) -> Result<()> {
         let Some(path) = entry.enclosed_name() else {
             continue;
         };
-        let Some(file_name) = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .map(str::to_owned)
-        else {
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()).map(str::to_owned) else {
             continue;
         };
 
@@ -184,10 +167,7 @@ fn unzip(tool: Tool, archive: &Path, dest: &Path) -> Result<()> {
             // FFmpeg-Builds layout: <root>/bin/{ffmpeg,ffprobe,ffplay}.exe + DLLs,
             // next to doc/, include/ and lib/, which we don't need.
             Tool::Ffmpeg => {
-                let in_bin = path
-                    .parent()
-                    .and_then(Path::file_name)
-                    .is_some_and(|dir| dir == "bin");
+                let in_bin = path.parent().and_then(Path::file_name).is_some_and(|dir| dir == "bin");
                 in_bin && !file_name.starts_with("ffplay")
             }
             _ => tool.executables().iter().any(|name| exe(name) == file_name),
@@ -207,8 +187,7 @@ async fn swap_in(current: &Path, staging: &Path, previous: &Path) -> Result<()> 
     if had_current {
         let _ = tokio::fs::remove_dir_all(previous).await;
         tokio::fs::rename(current, previous).await.map_err(|err| {
-            AppError::setup("Couldn't replace the old version (is it in use?).")
-                .with_details(err.to_string())
+            AppError::setup("Couldn't replace the old version (is it in use?).").with_details(err.to_string())
         })?;
     }
     if let Err(err) = tokio::fs::rename(staging, current).await {

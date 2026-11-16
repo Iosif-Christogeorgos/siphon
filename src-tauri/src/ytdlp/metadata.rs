@@ -21,7 +21,7 @@ pub enum Media {
     Playlist(PlaylistInfo),
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct VideoInfo {
     pub id: String,
     pub title: String,
@@ -46,7 +46,7 @@ pub enum FormatKind {
     Muxed,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Format {
     pub id: String,
     pub ext: String,
@@ -71,6 +71,8 @@ pub struct Format {
     /// "SDR", "HDR10", "HLG", …
     pub dynamic_range: Option<String>,
     pub language: Option<String>,
+    /// yt-dlp's ranking of audio tracks: the original language scores highest.
+    pub language_preference: Option<i32>,
     pub note: Option<String>,
 }
 
@@ -173,6 +175,8 @@ struct RawFormat {
     dynamic_range: Option<String>,
     #[serde(default, deserialize_with = "text")]
     language: Option<String>,
+    #[serde(default, deserialize_with = "number")]
+    language_preference: Option<f64>,
     #[serde(default, deserialize_with = "text")]
     format_note: Option<String>,
     #[serde(default)]
@@ -180,9 +184,7 @@ struct RawFormat {
 }
 
 /// A number, or a string holding one; anything else becomes `None`.
-fn number<'de, D: Deserializer<'de>>(
-    deserializer: D,
-) -> std::result::Result<Option<f64>, D::Error> {
+fn number<'de, D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Option<f64>, D::Error> {
     Ok(match Value::deserialize(deserializer)? {
         Value::Number(n) => n.as_f64().filter(|n| n.is_finite()),
         Value::String(s) => s.trim().parse().ok(),
@@ -191,9 +193,7 @@ fn number<'de, D: Deserializer<'de>>(
 }
 
 /// A non-empty string, or a number rendered as one; anything else becomes `None`.
-fn text<'de, D: Deserializer<'de>>(
-    deserializer: D,
-) -> std::result::Result<Option<String>, D::Error> {
+fn text<'de, D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Option<String>, D::Error> {
     Ok(match Value::deserialize(deserializer)? {
         Value::String(s) if !s.trim().is_empty() => Some(s),
         Value::Number(n) => Some(n.to_string()),
@@ -220,21 +220,19 @@ pub async fn fetch(bins: &BinaryManager, url: &str) -> Result<Media> {
     ])
     .arg(url);
 
-    let output = process::output_within(cmd, FETCH_TIMEOUT)
-        .await?
-        .ok_or_else(|| {
-            AppError::new(
-                ErrorKind::Network,
-                "The site took too long to respond. Try again in a moment.",
-            )
-        })?;
+    let output = process::output_within(cmd, FETCH_TIMEOUT).await?.ok_or_else(|| {
+        AppError::new(
+            ErrorKind::Network,
+            "The site took too long to respond. Try again in a moment.",
+        )
+    })?;
     let stderr = String::from_utf8_lossy(&output.stderr);
     if !output.status.success() {
         return Err(errors::classify(&stderr));
     }
 
-    let raw: RawInfo = serde_json::from_slice(&output.stdout)
-        .map_err(|err| AppError::from(err).with_details(stderr.to_string()))?;
+    let raw: RawInfo =
+        serde_json::from_slice(&output.stdout).map_err(|err| AppError::from(err).with_details(stderr.to_string()))?;
 
     if raw.kind.as_deref() == Some("playlist") {
         Ok(Media::Playlist(playlist(raw, url)))
@@ -311,12 +309,11 @@ fn format(raw: RawFormat) -> Option<Format> {
         abr: rate(raw.abr),
         asr: whole(raw.asr),
         audio_channels: whole(raw.audio_channels),
-        filesize: rate(raw.filesize)
-            .or(rate(raw.filesize_approx))
-            .map(|n| n as u64),
+        filesize: rate(raw.filesize).or(rate(raw.filesize_approx)).map(|n| n as u64),
         filesize_estimated: rate(raw.filesize).is_none(),
         dynamic_range: raw.dynamic_range,
         language: raw.language,
+        language_preference: raw.language_preference.map(|n| n as i32),
         note: raw.format_note,
     })
 }
@@ -350,8 +347,5 @@ fn playlist(raw: RawInfo, requested_url: &str) -> PlaylistInfo {
 
 /// yt-dlp orders thumbnails worst → best.
 fn last_thumbnail(thumbnails: Option<Vec<RawThumbnail>>) -> Option<String> {
-    thumbnails?
-        .into_iter()
-        .rev()
-        .find_map(|thumbnail| thumbnail.url)
+    thumbnails?.into_iter().rev().find_map(|thumbnail| thumbnail.url)
 }

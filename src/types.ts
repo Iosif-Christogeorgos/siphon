@@ -71,6 +71,7 @@ export interface Format {
   filesize_estimated: boolean;
   dynamic_range: string | null;
   language: string | null;
+  language_preference: number | null;
   note: string | null;
 }
 
@@ -105,6 +106,81 @@ export interface PlaylistInfo {
 
 export type Media = ({ type: "video" } & VideoInfo) | ({ type: "playlist" } & PlaylistInfo);
 
+// ── plan ───────────────────────────────────────────────────────────────
+
+export type PresetId =
+  | "iphone"
+  | "android"
+  | "windows"
+  | "macos"
+  | "tv"
+  | "editing"
+  | "share"
+  | "audio"
+  | "max";
+
+export type VideoCodec = "h264" | "hevc" | "vp9" | "av1" | "vp8" | "dnxhr" | "other";
+export type AudioCodec = "aac" | "opus" | "mp3" | "vorbis" | "flac" | "ac3" | "pcm" | "other";
+export type Container =
+  | "mp4"
+  | "mkv"
+  | "webm"
+  | "mov"
+  | "m4a"
+  | "mp3"
+  | "opus"
+  | "ogg"
+  | "flac"
+  | "wav";
+export type Content = "video_audio" | "video_only" | "audio_only";
+
+export interface PresetOptions {
+  mode: "preset";
+  preset: PresetId;
+  /** A specific resolution (short side); null lets the preset decide. */
+  max_lines: number | null;
+  /** Share preset only. */
+  size_limit_mb: number | null;
+}
+
+/** null means "best available" for streams and "keep the original" for codecs and container. */
+export interface ManualOptions {
+  mode: "manual";
+  content: Content;
+  video_format: string | null;
+  audio_format: string | null;
+  container: Container | null;
+  video_codec: VideoCodec | null;
+  audio_codec: AudioCodec | null;
+}
+
+export type DownloadOptions = PresetOptions | ManualOptions;
+
+export interface Hint {
+  level: "info" | "warning";
+  text: string;
+}
+
+export interface QualityOption {
+  /** Short side in pixels, e.g. 1080. */
+  lines: number;
+  /** Picking this resolution means converting the video. */
+  converts: boolean;
+}
+
+export interface PlanSummary {
+  headline: string;
+  detail: string;
+  converts: boolean;
+  /** Bytes, when predictable. */
+  estimated_size: number | null;
+  hints: Hint[];
+  qualities: QualityOption[];
+  /** The resolution this plan resolved to. */
+  lines: number | null;
+  ext: string;
+}
+
 // ── downloads ───────────────────────────────────────────────────────────
 
 export type Stage =
@@ -129,6 +205,7 @@ export interface Progress {
 export interface DownloadRequest {
   id: string;
   url: string;
+  options: DownloadOptions;
   output_dir: string | null;
 }
 

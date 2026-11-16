@@ -133,10 +133,7 @@ impl BinaryManager {
         let root = app
             .path()
             .app_local_data_dir()
-            .map_err(|err| {
-                AppError::setup("Couldn't locate the app data folder.")
-                    .with_details(err.to_string())
-            })?
+            .map_err(|err| AppError::setup("Couldn't locate the app data folder.").with_details(err.to_string()))?
             .join("bin");
         std::fs::create_dir_all(&root)?;
 
@@ -190,6 +187,11 @@ impl BinaryManager {
         }
     }
 
+    /// The ffmpeg executable itself, for Siphon's own conversions.
+    pub fn ffmpeg(&self) -> Option<PathBuf> {
+        self.ffmpeg_dir().map(|dir| dir.join(exe("ffmpeg")))
+    }
+
     // ── Status ──────────────────────────────────────────────────────────
 
     pub fn statuses(&self) -> Vec<ToolStatus> {
@@ -202,12 +204,10 @@ impl BinaryManager {
 
     /// True when every tool can be launched.
     pub fn is_ready(&self) -> bool {
-        Tool::ALL
-            .iter()
-            .all(|&tool| match sources::is_managed(tool) {
-                true => self.installed(tool).is_some(),
-                false => find_system_ffmpeg().is_some(),
-            })
+        Tool::ALL.iter().all(|&tool| match sources::is_managed(tool) {
+            true => self.installed(tool).is_some(),
+            false => find_system_ffmpeg().is_some(),
+        })
     }
 
     fn initial_status(&self, tool: Tool) -> ToolStatus {
@@ -223,9 +223,7 @@ impl BinaryManager {
                 status.state = ToolState::Ready;
             } else {
                 status.state = ToolState::Failed;
-                status.error = Some(
-                    "FFmpeg wasn't found. Install it with Homebrew: brew install ffmpeg".into(),
-                );
+                status.error = Some("FFmpeg wasn't found. Install it with Homebrew: brew install ffmpeg".into());
             }
         } else if let Some(installed) = self.installed(tool) {
             status.state = ToolState::Ready;
@@ -237,10 +235,7 @@ impl BinaryManager {
     /// The manifest entry for `tool`, but only if its files are really on disk.
     fn installed(&self, tool: Tool) -> Option<Installed> {
         let dir = self.tool_dir(tool);
-        let complete = tool
-            .executables()
-            .iter()
-            .all(|name| dir.join(exe(name)).is_file());
+        let complete = tool.executables().iter().all(|name| dir.join(exe(name)).is_file());
         if !complete {
             return None;
         }
@@ -296,9 +291,7 @@ impl BinaryManager {
     /// Per-tool failures are reported through statuses, not as an error.
     pub async fn sync_all(&self, channel: Channel) -> Vec<ToolStatus> {
         let _guard = self.sync_lock.lock().await;
-        let managed = Tool::ALL
-            .into_iter()
-            .filter(|&tool| sources::is_managed(tool));
+        let managed = Tool::ALL.into_iter().filter(|&tool| sources::is_managed(tool));
         futures_util::future::join_all(managed.map(|tool| self.sync_tool(tool, channel))).await;
         self.statuses()
     }
@@ -314,9 +307,7 @@ impl BinaryManager {
             },
         );
 
-        let outcome = self
-            .install_if_newer(tool, channel, installed.as_ref())
-            .await;
+        let outcome = self.install_if_newer(tool, channel, installed.as_ref()).await;
 
         // Whatever happened, a working install (old or new) means "ready".
         // Being offline or a failed update must never block downloads.
@@ -338,12 +329,7 @@ impl BinaryManager {
         });
     }
 
-    async fn install_if_newer(
-        &self,
-        tool: Tool,
-        channel: Channel,
-        installed: Option<&Installed>,
-    ) -> Result<()> {
+    async fn install_if_newer(&self, tool: Tool, channel: Channel, installed: Option<&Installed>) -> Result<()> {
         let release = sources::latest(&self.http, tool, channel).await?;
 
         if let Some(installed) = installed {
@@ -370,10 +356,7 @@ impl BinaryManager {
 fn find_system_ffmpeg() -> Option<PathBuf> {
     let path = std::env::var_os("PATH").unwrap_or_default();
     std::env::split_paths(&path)
-        .chain([
-            PathBuf::from("/opt/homebrew/bin"),
-            PathBuf::from("/usr/local/bin"),
-        ])
+        .chain([PathBuf::from("/opt/homebrew/bin"), PathBuf::from("/usr/local/bin")])
         .find(|dir| is_executable_in(dir, "ffmpeg") && is_executable_in(dir, "ffprobe"))
 }
 

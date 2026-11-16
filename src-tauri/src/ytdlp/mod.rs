@@ -3,6 +3,7 @@
 //! Arguments are always passed as an array, one value per element. Nothing
 //! here (or anywhere else) builds a shell string from user input.
 
+pub mod args;
 pub mod errors;
 pub mod metadata;
 pub mod progress;
@@ -27,8 +28,7 @@ pub fn command(bins: &BinaryManager) -> Command {
         "utf-8",
     ]);
     // YouTube needs a JavaScript runtime; point yt-dlp at our managed Deno.
-    cmd.arg("--js-runtimes")
-        .arg(format!("deno:{}", bins.deno().display()));
+    cmd.arg("--js-runtimes").arg(format!("deno:{}", bins.deno().display()));
     if let Some(dir) = bins.ffmpeg_dir() {
         cmd.arg("--ffmpeg-location").arg(dir);
     }

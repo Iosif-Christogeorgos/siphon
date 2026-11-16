@@ -1,12 +1,22 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppError, DownloadEvent, DownloadRequest, Media, ToolStatus } from "@/types";
+import type {
+  AppError,
+  DownloadEvent,
+  DownloadOptions,
+  DownloadRequest,
+  Media,
+  PlanSummary,
+  ToolStatus,
+} from "@/types";
 
 /** Typed wrappers around every backend command (see `src-tauri/src/commands.rs`). */
 export const ipc = {
   binariesStatus: () => invoke<ToolStatus[]>("binaries_status"),
   binariesSync: () => invoke<ToolStatus[]>("binaries_sync"),
   fetchMedia: (url: string) => invoke<Media>("fetch_media", { url }),
+  planDownload: (url: string, options: DownloadOptions) =>
+    invoke<PlanSummary>("plan_download", { url, options }),
   startDownload: (request: DownloadRequest) => invoke<void>("start_download", { request }),
   cancelDownload: (id: string) => invoke<void>("cancel_download", { id }),
   openFile: (path: string) => invoke<void>("open_file", { path }),

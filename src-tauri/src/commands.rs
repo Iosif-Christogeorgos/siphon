@@ -10,7 +10,10 @@ use crate::binaries::sources::Channel;
 use crate::binaries::{BinaryManager, ToolStatus};
 use crate::downloads::{DownloadManager, DownloadRequest};
 use crate::error::{AppError, ErrorKind, Result};
-use crate::ytdlp::metadata;
+use crate::plan::explain::{self, PlanSummary};
+use crate::plan::{self, DownloadOptions};
+use crate::state::{EncoderCache, MediaCache};
+use crate::ytdlp::metadata::{self, Media};
 
 type Binaries<'a> = State<'a, Arc<BinaryManager>>;
 type Downloads<'a> = State<'a, Arc<DownloadManager>>;
@@ -28,10 +31,31 @@ pub async fn binaries_sync(bins: Binaries<'_>) -> Result<Vec<ToolStatus>> {
     Ok(bins.sync_all(Channel::default()).await)
 }
 
+/// Looks a link up and remembers the result for planning and downloading.
 #[tauri::command]
-pub async fn fetch_media(bins: Binaries<'_>, url: String) -> Result<metadata::Media> {
+pub async fn fetch_media(bins: Binaries<'_>, cache: State<'_, MediaCache>, url: String) -> Result<Media> {
     ensure_ready(&bins)?;
-    metadata::fetch(&bins, &url).await
+    let media = metadata::fetch(&bins, &url).await?;
+    if let Media::Video(video) = &media {
+        cache.insert(url.trim(), Arc::new((**video).clone()));
+    }
+    Ok(media)
+}
+
+/// Describes what downloading `url` with `options` would do, without doing it.
+#[tauri::command]
+pub async fn plan_download(
+    bins: Binaries<'_>,
+    cache: State<'_, MediaCache>,
+    encoders: State<'_, EncoderCache>,
+    url: String,
+    options: DownloadOptions,
+) -> Result<PlanSummary> {
+    let video = cache
+        .get(&url)
+        .ok_or_else(|| AppError::internal("Siphon lost track of this video. Paste the link again."))?;
+    let recipe = plan::plan(&video, &options)?;
+    Ok(explain::summarize(&recipe, &encoders.get(&bins).await))
 }
 
 #[tauri::command]
@@ -42,7 +66,7 @@ pub fn start_download(
     request: DownloadRequest,
 ) -> Result<()> {
     ensure_ready(&bins)?;
-    downloads.start(app, Arc::clone(&bins), request)
+    downloads.start(app, request)
 }
 
 #[tauri::command]
@@ -64,18 +88,16 @@ pub fn open_file(app: AppHandle, path: String) -> Result<()> {
 #[tauri::command]
 pub fn reveal_file(app: AppHandle, path: String) -> Result<()> {
     let path = existing(path)?;
-    app.opener().reveal_item_in_dir(path).map_err(|err| {
-        AppError::internal("Couldn't open the folder.").with_details(err.to_string())
-    })
+    app.opener()
+        .reveal_item_in_dir(path)
+        .map_err(|err| AppError::internal("Couldn't open the folder.").with_details(err.to_string()))
 }
 
 fn ensure_ready(bins: &BinaryManager) -> Result<()> {
     if bins.is_ready() {
         Ok(())
     } else {
-        Err(AppError::setup(
-            "Siphon is still setting up its download engine.",
-        ))
+        Err(AppError::setup("Siphon is still setting up its download engine."))
     }
 }
 

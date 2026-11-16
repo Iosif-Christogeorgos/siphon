@@ -58,9 +58,5 @@ pub async fn kill_tree(pid: u32) {
         cmd.args(["-TERM", "--", &format!("-{pid}")]);
         cmd
     };
-    let _ = killer
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .await;
+    let _ = killer.stdout(Stdio::null()).stderr(Stdio::null()).status().await;
 }

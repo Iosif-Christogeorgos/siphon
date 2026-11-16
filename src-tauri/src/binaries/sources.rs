@@ -69,21 +69,11 @@ fn source(tool: Tool, channel: Channel) -> Option<Source> {
         // ffprobe: under half the download of the static build.
         (Tool::Ffmpeg, "windows", "x86_64") => {
             let asset = "ffmpeg-master-latest-win64-gpl-shared.zip";
-            (
-                "yt-dlp/FFmpeg-Builds",
-                asset,
-                "checksums.sha256".to_string(),
-                true,
-            )
+            ("yt-dlp/FFmpeg-Builds", asset, "checksums.sha256".to_string(), true)
         }
         (Tool::Ffmpeg, "windows", "aarch64") => {
             let asset = "ffmpeg-master-latest-winarm64-gpl-shared.zip";
-            (
-                "yt-dlp/FFmpeg-Builds",
-                asset,
-                "checksums.sha256".to_string(),
-                true,
-            )
+            ("yt-dlp/FFmpeg-Builds", asset, "checksums.sha256".to_string(), true)
         }
         (Tool::Deno, os, arch) => {
             let asset = match (os, arch) {
@@ -113,17 +103,10 @@ pub fn is_managed(tool: Tool) -> bool {
 
 /// Looks up the newest release of `tool` on GitHub.
 pub async fn latest(http: &reqwest::Client, tool: Tool, channel: Channel) -> Result<Release> {
-    let source = source(tool, channel).ok_or_else(|| {
-        AppError::setup(format!(
-            "{} isn't available for this platform.",
-            tool.label()
-        ))
-    })?;
+    let source = source(tool, channel)
+        .ok_or_else(|| AppError::setup(format!("{} isn't available for this platform.", tool.label())))?;
 
-    let url = format!(
-        "https://api.github.com/repos/{}/releases/latest",
-        source.repo
-    );
+    let url = format!("https://api.github.com/repos/{}/releases/latest", source.repo);
     let response = http
         .get(&url)
         .header("Accept", "application/vnd.github+json")
@@ -142,12 +125,7 @@ pub async fn latest(http: &reqwest::Client, tool: Tool, channel: Channel) -> Res
     let release: GithubRelease = response.json().await?;
 
     let find = |name: &str| release.assets.iter().find(|asset| asset.name == name);
-    let missing = |name: &str| {
-        AppError::setup(format!(
-            "The latest {} release is missing “{name}”.",
-            tool.label()
-        ))
-    };
+    let missing = |name: &str| AppError::setup(format!("The latest {} release is missing “{name}”.", tool.label()));
     let asset = find(source.asset).ok_or_else(|| missing(source.asset))?;
     let checksums = find(&source.checksums).ok_or_else(|| missing(&source.checksums))?;
 

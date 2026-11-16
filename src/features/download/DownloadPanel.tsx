@@ -16,7 +16,7 @@ import { ipc } from "@/lib/ipc";
 import { riseIn, spring } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import { type Download, useDownloads } from "@/stores/downloads";
-import type { Stage, VideoInfo } from "@/types";
+import type { DownloadOptions, Stage, VideoInfo } from "@/types";
 import { CompletionMark } from "./CompletionMark";
 
 const STAGE_LABELS: Record<Stage, string> = {
@@ -33,7 +33,7 @@ const STAGE_LABELS: Record<Stage, string> = {
  * The big button under the video card. It morphs in place:
  * Download → live progress → "Downloaded" with open/reveal actions.
  */
-export function DownloadPanel({ video }: { video: VideoInfo }) {
+export function DownloadPanel({ video, options }: { video: VideoInfo; options: DownloadOptions }) {
   const [id, setId] = useState<string | null>(null);
   const download = useDownloads((state) => (id ? state.byId[id] : undefined));
   const start = useDownloads((state) => state.start);
@@ -43,7 +43,7 @@ export function DownloadPanel({ video }: { video: VideoInfo }) {
 
   const begin = () => {
     setFilled(false);
-    setId(start(video));
+    setId(start(video, options));
   };
 
   const view =

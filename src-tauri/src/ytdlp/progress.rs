@@ -69,9 +69,7 @@ pub fn parse(line: &str) -> Option<Line> {
     if let Some(rest) = line.strip_prefix("SIPHON_DL|") {
         // The file name goes last because it may itself contain pipes.
         let fields: Vec<&str> = rest.splitn(10, '|').collect();
-        let [status, downloaded, total, estimate, speed, eta, format_id, vcodec, acodec, filename] =
-            fields[..]
-        else {
+        let [status, downloaded, total, estimate, speed, eta, format_id, vcodec, acodec, filename] = fields[..] else {
             return None;
         };
         return Some(Line::Download(DownloadTick {
@@ -83,9 +81,7 @@ pub fn parse(line: &str) -> Option<Line> {
             format_id: format_id.to_string(),
             has_video: !matches!(vcodec, "none" | "NA"),
             has_audio: !matches!(acodec, "none" | "NA"),
-            filename: Some(filename)
-                .filter(|name| *name != "NA")
-                .map(str::to_string),
+            filename: Some(filename).filter(|name| *name != "NA").map(str::to_string),
         }));
     }
     if let Some(rest) = line.strip_prefix("SIPHON_PP|") {
@@ -166,7 +162,8 @@ mod tests {
 
     #[test]
     fn parses_a_two_stream_plan() {
-        let line = r#"SIPHON_PLAN|NA|[{"format_id": "137", "filesize": 900}, {"format_id": "251", "filesize_approx": 100.5}]"#;
+        let line =
+            r#"SIPHON_PLAN|NA|[{"format_id": "137", "filesize": 900}, {"format_id": "251", "filesize_approx": 100.5}]"#;
         assert_eq!(
             parse(line),
             Some(Line::Plan(vec![

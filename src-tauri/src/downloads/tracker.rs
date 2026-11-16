@@ -28,21 +28,30 @@ pub struct Progress {
     pub eta: Option<f64>,
 }
 
-/// Share of the bar reserved for the downloads; the rest is post-processing.
+/// Share of the bar the downloads get when yt-dlp only has to merge afterwards …
 const DOWNLOAD_SHARE: f64 = 0.97;
+/// … and when a conversion follows, which usually takes about as long again.
+const DOWNLOAD_SHARE_BEFORE_CONVERT: f64 = 0.5;
 
 #[derive(Debug)]
 pub struct Tracker {
     plan: Vec<PlannedStream>,
     finished_streams: usize,
+    download_share: f64,
     progress: Progress,
 }
 
 impl Tracker {
-    pub fn new() -> Self {
+    /// `converts`: whether an ffmpeg conversion follows the download.
+    pub fn new(converts: bool) -> Self {
         Self {
             plan: Vec::new(),
             finished_streams: 0,
+            download_share: if converts {
+                DOWNLOAD_SHARE_BEFORE_CONVERT
+            } else {
+                DOWNLOAD_SHARE
+            },
             progress: Progress {
                 stage: Stage::Preparing,
                 fraction: 0.0,
@@ -79,7 +88,7 @@ impl Tracker {
         };
 
         let before: f64 = (0..index).map(|i| self.weight(i, stream_count)).sum();
-        let overall = (before + self.weight(index, stream_count) * within) * DOWNLOAD_SHARE;
+        let overall = (before + self.weight(index, stream_count) * within) * self.download_share;
 
         if !tick.downloading {
             self.finished_streams += 1;
@@ -109,7 +118,17 @@ impl Tracker {
             "VideoRemuxer" | "VideoConvertor" | "ExtractAudio" => Stage::Converting,
             _ => Stage::Finishing,
         };
-        self.progress.fraction = self.progress.fraction.max(DOWNLOAD_SHARE);
+        self.progress.fraction = self.progress.fraction.max(self.download_share);
+        self.progress.speed = None;
+        self.progress.eta = None;
+        self.current()
+    }
+
+    /// Progress of the ffmpeg conversion, 0–1, mapped onto the rest of the bar.
+    pub fn on_convert(&mut self, done: f64) -> Progress {
+        let overall = self.download_share + (1.0 - self.download_share) * done.clamp(0.0, 1.0);
+        self.progress.stage = Stage::Converting;
+        self.progress.fraction = self.progress.fraction.max(overall);
         self.progress.speed = None;
         self.progress.eta = None;
         self.current()
@@ -155,7 +174,7 @@ mod tests {
 
     #[test]
     fn weights_streams_by_size() {
-        let mut tracker = Tracker::new();
+        let mut tracker = Tracker::new(false);
         tracker.set_plan(vec![stream(900), stream(100)]);
 
         let halfway_video = tracker.on_tick(&tick(true, 450, 900, true));
@@ -170,7 +189,7 @@ mod tests {
 
     #[test]
     fn never_moves_backwards() {
-        let mut tracker = Tracker::new();
+        let mut tracker = Tracker::new(false);
         tracker.set_plan(vec![stream(100)]);
         let first = tracker.on_tick(&tick(true, 60, 100, true)).fraction;
         // The size estimate grew, so the raw ratio dropped.
@@ -180,7 +199,7 @@ mod tests {
 
     #[test]
     fn works_without_a_plan() {
-        let mut tracker = Tracker::new();
+        let mut tracker = Tracker::new(false);
         let progress = tracker.on_tick(&tick(true, 50, 100, true));
         assert!((progress.fraction - 0.5 * DOWNLOAD_SHARE).abs() < 1e-9);
     }

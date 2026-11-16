@@ -124,7 +124,10 @@ export function Home() {
               ) : media.data.type === "video" ? (
                 <>
                   <VideoCard video={media.data} />
-                  <DownloadPanel video={media.data} />
+                  <DownloadPanel
+                    video={media.data}
+                    options={{ mode: "preset", preset: "max", max_lines: null, size_limit_mb: null }}
+                  />
                 </>
               ) : (
                 <PlaylistNotice playlist={media.data} />
