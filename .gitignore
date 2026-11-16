@@ -1,0 +1,44 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+src-tauri/target/
+src-tauri/gen/schemas/
+
+# Managed binaries (downloaded at runtime into the app-data folder, never committed)
+/bin/
+*.exe
+/yt-dlp*
+/ffmpeg*
+/ffprobe*
+/deno*
+
+# Downloaded media
+*.mp4
+*.mkv
+*.webm
+*.mov
+*.m4a
+*.mp3
+*.opus
+*.flac
+*.wav
+*.part
+*.ytdl
+
+# Secrets
+.env
+.env.*
+*.key
+*.pem
+
+# Logs & editors
+*.log
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini

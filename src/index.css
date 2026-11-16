@@ -1,0 +1,181 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/jetbrains-mono";
+
+/*
+ * Design tokens, named the shadcn/ui way so its components drop in unchanged.
+ * One brand colour (aqua, `primary`) on neutral surfaces with a faint cool tint.
+ * The theme follows the system: tokens are redefined under prefers-color-scheme.
+ */
+:root {
+  color-scheme: light dark;
+
+  --background: oklch(0.985 0.003 205);
+  --foreground: oklch(0.21 0.012 225);
+  --card: oklch(1 0 0);
+  --card-foreground: var(--foreground);
+  --popover: oklch(1 0 0);
+  --popover-foreground: var(--foreground);
+  --primary: oklch(0.6 0.105 196);
+  --primary-hover: oklch(0.55 0.1 196);
+  --primary-foreground: oklch(0.99 0.01 196);
+  --primary-soft: oklch(0.6 0.105 196 / 0.1);
+  --secondary: oklch(0.955 0.005 210);
+  --secondary-foreground: var(--foreground);
+  --muted: oklch(0.955 0.005 210);
+  --muted-foreground: oklch(0.5 0.014 222);
+  --subtle-foreground: oklch(0.66 0.012 220);
+  --accent: oklch(0.2 0.02 225 / 0.055);
+  --accent-foreground: var(--foreground);
+  --destructive: oklch(0.58 0.19 25);
+  --destructive-soft: oklch(0.58 0.19 25 / 0.08);
+  --success: oklch(0.6 0.13 158);
+  --border: oklch(0.2 0.02 225 / 0.09);
+  --border-strong: oklch(0.2 0.02 225 / 0.16);
+  --input: var(--border-strong);
+  --ring: var(--primary);
+  --shadow-color: 220 30% 20%;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: oklch(0.155 0.007 232);
+    --foreground: oklch(0.955 0.004 210);
+    --card: oklch(0.192 0.008 232);
+    --popover: oklch(0.225 0.009 232);
+    --primary: oklch(0.8 0.125 192);
+    --primary-hover: oklch(0.86 0.115 192);
+    --primary-foreground: oklch(0.18 0.03 200);
+    --primary-soft: oklch(0.8 0.125 192 / 0.12);
+    --secondary: oklch(0.235 0.009 232);
+    --muted: oklch(0.235 0.009 232);
+    --muted-foreground: oklch(0.7 0.012 222);
+    --subtle-foreground: oklch(0.52 0.012 225);
+    --accent: oklch(1 0 0 / 0.06);
+    --destructive: oklch(0.72 0.17 22);
+    --destructive-soft: oklch(0.72 0.17 22 / 0.12);
+    --success: oklch(0.78 0.15 160);
+    --border: oklch(1 0 0 / 0.075);
+    --border-strong: oklch(1 0 0 / 0.14);
+    --shadow-color: 230 50% 2%;
+  }
+}
+
+@theme inline {
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, "Cascadia Code", monospace;
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-soft: var(--primary-soft);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-subtle-foreground: var(--subtle-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-soft: var(--destructive-soft);
+  --color-success: var(--success);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --shadow-card:
+    0 1px 1px hsl(var(--shadow-color) / 0.04), 0 4px 10px -2px hsl(var(--shadow-color) / 0.06),
+    0 18px 36px -12px hsl(var(--shadow-color) / 0.12);
+  --shadow-pop:
+    0 2px 4px hsl(var(--shadow-color) / 0.08), 0 16px 40px -8px hsl(var(--shadow-color) / 0.28);
+
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+
+  --animate-shimmer: shimmer 1.6s linear infinite;
+  @keyframes shimmer {
+    from {
+      background-position: 200% 0;
+    }
+    to {
+      background-position: -200% 0;
+    }
+  }
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    overflow: hidden;
+    background: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.5;
+    /* Inter: single-storey a, open digits, contextual alternates. */
+    font-feature-settings: "cv11", "ss01", "calt";
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    /* A desktop app, not a document: no text selection or rubber-banding. */
+    user-select: none;
+    cursor: default;
+    overscroll-behavior: none;
+  }
+
+  input,
+  textarea,
+  [data-selectable] {
+    user-select: text;
+  }
+
+  button {
+    cursor: default;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background: var(--primary-soft);
+  }
+}
+
+/* Loading placeholder with a slow sheen. */
+@utility skeleton {
+  border-radius: 0.5rem;
+  background: linear-gradient(
+    100deg,
+    var(--muted) 30%,
+    color-mix(in oklab, var(--muted) 50%, var(--popover)) 50%,
+    var(--muted) 70%
+  );
+  background-size: 200% 100%;
+  animation: var(--animate-shimmer);
+  @media (prefers-reduced-motion: reduce) {
+    animation: none;
+  }
+}
+
+@utility scrollbar-thin {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
