@@ -109,6 +109,7 @@ src-tauri/               Rust backend (Tauri 2)
   src/downloads/         Download jobs and progress tracking
   src/commands.rs        The IPC surface
 docs/device-support.md   What each preset assumes about its device, with sources
+docs/decisions.md        Why things work the way they do, and known issues
 app-icon.svg             Icon source; regenerate with `npx tauri icon app-icon.svg`
 ```
 
