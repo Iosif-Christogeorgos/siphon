@@ -6,7 +6,7 @@ Siphon is a personal-use tool. It does not bypass DRM; protected videos get a cl
 
 ## Status
 
-Siphon is being built in phases. This is **v0.4.0**.
+Siphon was built in phases. This is **v0.5.0**, the last planned one.
 
 | Phase | Scope | State |
 | --- | --- | --- |
@@ -14,7 +14,7 @@ Siphon is being built in phases. This is **v0.4.0**.
 | 2 | Device presets and manual format selection | Done |
 | 3 | Trim with live preview | Done |
 | 4 | Download queue, playlists, settings | Done |
-| 5 | Design polish, background auto-updates, app self-update | Planned |
+| 5 | Background tool updates, app self-update, design polish | Done |
 
 ## Requirements
 
@@ -42,6 +42,16 @@ npm run tauri build
 
 The installer is written to `src-tauri/target/release/bundle/` (`nsis/` on Windows, `dmg/` on macOS).
 
+The build also signs the installer for the self-update, so it needs the signing key. Without it the build stops at the end with an error about a missing private key. In PowerShell:
+
+```powershell
+$env:TAURI_SIGNING_PRIVATE_KEY = "$env:USERPROFILE\.tauri\siphon.key"   # the key file, or its contents
+$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""                             # the key has no password
+npm run tauri build
+```
+
+Released versions are not built by hand: see [Releases](#releases).
+
 ## Checks
 
 ```sh
@@ -64,7 +74,7 @@ yt-dlp, FFmpeg/ffprobe and Deno (the JavaScript runtime yt-dlp needs for YouTube
   deno\
 ```
 
-On launch Siphon asks the GitHub API for the latest release of each tool:
+At launch, and once a day while it is open, Siphon asks the GitHub API for the latest release of each tool:
 
 | Tool | Source | Checksum file |
 | --- | --- | --- |
@@ -116,7 +126,7 @@ Every download joins a queue. A set number run at once (three by default) and th
 
 A playlist link shows its videos with checkboxes. The ones you select are added to the queue with the current preset, and the best format is worked out for each video when its turn comes. A YouTube video link that also names a playlist offers a way to the whole playlist.
 
-**Settings** (the gear in the title bar) holds the download folder, the file-name style and the number of simultaneous downloads. They are stored in `settings.json` in the app's config folder (`%APPDATA%app.siphon.desktop` on Windows).
+**Settings** (the gear in the title bar) holds the download folder, the file-name style, the update choices and the number of simultaneous downloads. They are stored in `settings.json` in the app's config folder (`%APPDATA%app.siphon.desktop` on Windows).
 
 | File-name style | Example |
 | --- | --- |
@@ -125,6 +135,26 @@ A playlist link shows its videos with checkboxes. The ones you select are added 
 | Channel - Title | `Blender - Big Buck Bunny.mp4` |
 | Date Title | `2014-11-10 Big Buck Bunny.mp4` |
 | Custom | Your own yt-dlp template, for example `%(channel)s - %(title)s` |
+
+### Updates
+
+Video sites change often and yt-dlp follows within days, so an old yt-dlp is the usual reason a download stops working. Siphon keeps its tools current on its own.
+
+- **When.** The tools are checked at launch and once a day. **Check now** in Settings → Updates does it on demand.
+- **Channel.** yt-dlp comes from its stable releases by default. **Nightly** switches to `yt-dlp/yt-dlp-nightly-builds`, which gets site fixes sooner.
+- **Install automatically or ask first.** By default a new version is installed in the background and a toast says what changed. With **Ask first**, the toast offers the update and nothing is replaced until you accept. A tool that is missing is always installed, because Siphon can't work without it.
+- **Never mid-download.** A tool is not replaced while a download is using it. The update waits and is tried again within the hour.
+- **Update and retry.** If a download fails in a way that points to an outdated yt-dlp (a bot check, an unreadable page, HTTP 403 or 429), Siphon looks for a newer yt-dlp and, if there is one, installs it and tries the download once more before reporting the error.
+
+Siphon also updates itself. At launch it looks for a newer published release on GitHub. If there is one, a toast and Settings → Updates offer **Restart to update**. Siphon always asks first, because it has to restart, and it refuses while downloads are running or waiting. The update is only installed if its signature matches the public key built into the app.
+
+### Releases
+
+Pushing a version tag (`v0.5.0`) runs `.github/workflows/release.yml`. It builds and signs the app, and attaches the installer, its signature and `latest.json` (the file installed copies read to find updates) to a **draft** GitHub release. Nothing reaches installed copies until the draft is published on GitHub.
+
+To make a release: set the same version in `package.json`, `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json`, commit, then tag and push.
+
+The signing key is in the repository secret `TAURI_SIGNING_PRIVATE_KEY`; its public half is in `src-tauri/tauri.conf.json`. Keep a backup of the private key. Without it, installed copies can no longer be updated in place.
 
 ### Talking to yt-dlp
 
@@ -140,7 +170,7 @@ src/                     React + TypeScript frontend
   features/              One folder per feature: setup, link, video, playlist, options, trim,
                          download, queue, settings, home
   lib/                   IPC wrappers, formatting, motion presets
-  stores/                Zustand stores (binaries, downloads, options, trim, ui)
+  stores/                Zustand stores (binaries, downloads, options, trim, toasts, appUpdate, ui)
   types.ts               Types mirrored from the Rust backend
 src-tauri/               Rust backend (Tauri 2)
   src/binaries/          Download, verify, install and update the managed tools
@@ -149,8 +179,10 @@ src-tauri/               Rust backend (Tauri 2)
   src/ffmpeg/            Hardware encoder detection and conversion arguments
   src/downloads/         The download queue, jobs (pause, resume, cancel) and progress tracking
   src/settings.rs        User preferences and where they are stored
+  src/app_update.rs      Checking for and installing a newer Siphon
   src/preview.rs         Where the trim preview plays from (embed, stream or cached copy)
   src/commands.rs        The IPC surface
+.github/workflows/release.yml   Builds and signs a draft release when a version tag is pushed
 docs/device-support.md   What each preset assumes about its device, with sources
 docs/decisions.md        Why things work the way they do, and known issues
 app-icon.svg             Icon source; regenerate with `npx tauri icon app-icon.svg`
@@ -158,4 +190,4 @@ app-icon.svg             Icon source; regenerate with `npx tauri icon app-icon.s
 
 ## Stack
 
-Tauri 2, React 19, TypeScript, Vite, Tailwind CSS 4, shadcn/ui, Motion, Zustand, TanStack Query and Lucide icons. There is no telemetry or tracking. The only network requests are the ones needed to fetch a video and to update the managed binaries.
+Tauri 2, React 19, TypeScript, Vite, Tailwind CSS 4, shadcn/ui, Motion, Zustand, TanStack Query and Lucide icons. There is no telemetry or tracking. The only network requests are the ones needed to fetch a video and to update Siphon and its managed binaries.
