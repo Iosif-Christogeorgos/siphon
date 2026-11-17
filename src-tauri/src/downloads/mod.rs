@@ -1327,6 +1327,10 @@ impl DownloadManager {
         }
         // Keeps a tool update from swapping the binaries while this runs.
         let _in_use = bins.in_use().await;
+        // Waiting for an update can take seconds: the job may have been stopped meanwhile.
+        if let Some(stop) = self.stop_of(id) {
+            return Err(Failure::Stopped(stop));
+        }
         let mut child = cmd
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -1334,8 +1338,19 @@ impl DownloadManager {
             .map_err(|err| {
                 Failure::Spawn(AppError::setup("Couldn't start the download engine.").with_details(err.to_string()))
             })?;
-        if let Some(job) = self.jobs.lock().unwrap().get_mut(id) {
-            job.pid = child.id();
+        // Registering the process and reading the stop share one lock with `stop`, so a
+        // stop that came just before the process existed is caught here instead of lost.
+        let stopped_meanwhile = match self.jobs.lock().unwrap().get_mut(id) {
+            Some(job) => {
+                job.pid = child.id();
+                job.stop.is_some()
+            }
+            None => false,
+        };
+        if stopped_meanwhile {
+            if let Some(pid) = child.id() {
+                process::kill_tree(pid).await;
+            }
         }
 
         let stderr_log = tokio::spawn(collect_lines(child.stderr.take().expect("stderr is piped")));
