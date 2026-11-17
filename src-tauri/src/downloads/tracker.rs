@@ -1,5 +1,8 @@
 //! Folds yt-dlp's per-stream ticks into one overall, never-decreasing progress value.
 
+use std::collections::VecDeque;
+use std::time::{Duration, Instant};
+
 use serde::Serialize;
 
 use crate::ytdlp::progress::{DownloadTick, PlannedStream};
@@ -39,12 +42,18 @@ const DOWNLOAD_SHARE: f64 = 0.97;
 /// … and when a conversion follows, which usually takes about as long again.
 const DOWNLOAD_SHARE_BEFORE_CONVERT: f64 = 0.5;
 
+/// How far back speed is measured when it is read off a growing file.
+/// ffmpeg writes in bursts, so a single 250 ms step swings wildly.
+const SPEED_WINDOW: Duration = Duration::from_secs(3);
+
 #[derive(Debug)]
 pub struct Tracker {
     plan: Vec<PlannedStream>,
     finished_streams: usize,
     download_share: f64,
     progress: Progress,
+    /// Recent file sizes and when they were read (see `on_bytes`).
+    samples: VecDeque<(Instant, u64)>,
 }
 
 impl Tracker {
@@ -64,6 +73,7 @@ impl Tracker {
                 speed: None,
                 eta: None,
             },
+            samples: VecDeque::new(),
         }
     }
 
@@ -149,8 +159,13 @@ impl Tracker {
     }
 
     /// Progress measured from the size of the file on disk. Section downloads
-    /// go through ffmpeg, which reports nothing until it is done.
+    /// go through ffmpeg, which reports nothing until it is done, so speed
+    /// and time left are worked out here from how fast the file grows.
     pub fn on_bytes(&mut self, written: u64, expected: u64) -> Progress {
+        self.on_bytes_at(written, expected, Instant::now())
+    }
+
+    fn on_bytes_at(&mut self, written: u64, expected: u64, now: Instant) -> Progress {
         let within = if expected > 0 {
             (written as f64 / expected as f64).min(0.99)
         } else {
@@ -158,6 +173,25 @@ impl Tracker {
         };
         self.progress.stage = Stage::Downloading;
         self.progress.fraction = self.progress.fraction.max(within * self.download_share);
+
+        self.samples.push_back((now, written));
+        while self
+            .samples
+            .front()
+            .is_some_and(|(at, _)| now.duration_since(*at) > SPEED_WINDOW)
+        {
+            self.samples.pop_front();
+        }
+        let (oldest_at, oldest) = self.samples.front().copied().unwrap_or((now, written));
+        let elapsed = now.duration_since(oldest_at).as_secs_f64();
+        // Half a second of readings at least, or the first burst reads as the speed.
+        if elapsed >= 0.5 {
+            let speed = written.saturating_sub(oldest) as f64 / elapsed;
+            self.progress.speed = Some(speed);
+            // The expected size is an estimate: once it is passed, the time left is unknown.
+            self.progress.eta = (speed > 0.0 && written < expected)
+                .then(|| (expected - written) as f64 / speed);
+        }
         self.current()
     }
 
@@ -244,6 +278,34 @@ mod tests {
         // The size estimate grew, so the raw ratio dropped.
         let second = tracker.on_tick(&tick(true, 61, 200, true)).fraction;
         assert!(second >= first);
+    }
+
+    #[test]
+    fn reads_speed_and_time_left_off_a_growing_file() {
+        let mut tracker = Tracker::new(false);
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+
+        // Too soon after the first reading to say anything about speed.
+        let first = tracker.on_bytes_at(0, 10_000_000, at(0));
+        assert_eq!((first.speed, first.eta), (None, None));
+        tracker.on_bytes_at(100_000, 10_000_000, at(250));
+
+        // 1 MB/s: 2 MB in two seconds, 8 MB still to come.
+        let steady = tracker.on_bytes_at(2_000_000, 10_000_000, at(2000));
+        assert!((steady.speed.unwrap() - 1_000_000.0).abs() < 1.0);
+        assert!((steady.eta.unwrap() - 8.0).abs() < 0.01);
+
+        // Only the last three seconds count: 4 → 10 MB from 2.5 s to 5.5 s is 2 MB/s.
+        tracker.on_bytes_at(4_000_000, 10_000_000, at(2500));
+        let faster = tracker.on_bytes_at(10_000_000, 12_000_000, at(5500));
+        assert!((faster.speed.unwrap() - 2_000_000.0).abs() < 1.0);
+        assert!((faster.eta.unwrap() - 1.0).abs() < 0.01);
+
+        // Past the estimated size, the time left is unknown, not zero.
+        let past = tracker.on_bytes_at(13_000_000, 12_000_000, at(6000));
+        assert_eq!(past.eta, None);
+        assert!(past.speed.is_some());
     }
 
     #[test]

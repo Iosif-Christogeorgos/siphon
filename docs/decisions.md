@@ -33,7 +33,7 @@ Measured on 2026-11-17 with the 4K test video below, on a connection that downlo
 - **A stream with a bitrate but no size gets one estimated** (bitrate × duration, `estimate_size` in `src-tauri/src/ytdlp/metadata.rs`). yt-dlp usually does this itself, but not for Twitch. Without a size, a trimmed part had nothing to measure its `.part` file against and sat on "Preparing" until it finished.
 - **Each trimmed part is its own download** and its own file, named `Title [id] (1m00s-1m15s).ext`. The backend takes one trim range per job; the UI starts one job per part.
 - **An exact cut never changes the resolution a preset picks.** It only turns a copy into an encode: the same codec for H.264 and HEVC sources, otherwise the device's conversion target.
-- **Section downloads report no progress** (they go through ffmpeg inside yt-dlp), so progress is read from the growing `.part` file against the expected size.
+- **Section downloads report no progress** (they go through ffmpeg inside yt-dlp), so progress is read from the growing `.part` file against the expected size, every 250 ms. Speed is the file's growth over the last three seconds (ffmpeg writes in bursts, so one step swings wildly), and the time left is the bytes still expected at that speed. Once the file passes the estimated size, the time left is shown as unknown rather than zero.
 
 ### Queue and settings
 
