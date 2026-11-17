@@ -515,11 +515,11 @@ fn x_clip() -> VideoInfo {
 
 #[test]
 fn share_copies_an_original_that_already_fits() {
-    // The 720p file is 5.4 MB.
+    // The 720p file is 5.4 MB; the 4K one, 26 MB, is too large.
     let recipe = share(&x_clip(), TargetId::Discord, TierId::DiscordFree, None);
     assert!(copied(&recipe));
     assert_eq!(recipe.format_selector(), "http-2176");
-    assert_eq!(recipe.size_limit, Some(10_000_000));
+    assert_eq!(recipe.size_limit, Some(20_000_000));
     assert_eq!(recipe.badge, Badge::Lossless);
     // If the copy comes out over the limit after all, it is converted.
     assert!(recipe
@@ -575,11 +575,15 @@ fn share_budgets_for_the_trimmed_length() {
         end: 90.0,
         exact: true,
     });
-    let recipe = share(&youtube_4k(), TargetId::Discord, TierId::DiscordFree, trim);
+    let recipe = share(&youtube_4k(), TargetId::Whatsapp, TierId::WhatsappHd, trim);
     assert_eq!(recipe.duration, Some(30.0));
-    // 30 seconds into 10 MB leaves room for 720p.
+    // 30 seconds into 100 MB would allow far more, but WhatsApp HD shows 720p.
     assert_eq!(recipe.output_lines(), Some(720));
-    assert!(recipe.estimated_size().unwrap() <= 10_000_000);
+    let whole = share(&youtube_4k(), TargetId::Discord, TierId::DiscordFree, None);
+    let part = share(&youtube_4k(), TargetId::Discord, TierId::DiscordFree, trim);
+    // The same limit buys a sharper picture for a shorter part.
+    assert!(part.output_lines() > whole.output_lines());
+    assert!(part.estimated_size().unwrap() <= 20_000_000);
 }
 
 #[test]

@@ -916,9 +916,7 @@ impl<'a> Planner<'a> {
             (video.codec, VideoAction::Copy)
         };
         recipe.container = Container::natural(Some(codec), recipe.audio.as_ref().map(|audio| audio.source));
-        recipe.hints.push(info(
-            "Not every device plays this format. VLC does; for a phone or TV, Watch is the safer pick.",
-        ));
+        // (The group says it may not play everywhere; the badge repeats it.)
         recipe.video = Some(Self::video_step(&video, action));
         recipe
     }

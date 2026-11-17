@@ -150,10 +150,10 @@ const fn tier(id: TierId, label: &'static str, limit_mb: u32, max_lines: u32) ->
     }
 }
 
-// The limits are the cautious end of what could be confirmed (docs/presets.md):
+// Where sources disagree, the limit is the cautious end of them (docs/presets.md):
 // a file made for a smaller limit still sends, one made for a larger does not.
 const DISCORD_TIERS: &[Tier] = &[
-    tier(TierId::DiscordFree, "Free · 10 MB", 10, 1080),
+    tier(TierId::DiscordFree, "Free · 20 MB", 20, 1080),
     tier(TierId::DiscordNitroBasic, "Nitro Basic · 50 MB", 50, 1080),
     tier(TierId::DiscordNitro, "Nitro · 500 MB", 500, 1080),
 ];

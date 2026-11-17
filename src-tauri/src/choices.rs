@@ -42,8 +42,10 @@ pub struct Choices {
     pub group: Group,
     /// The target last used in each group.
     pub targets: HashMap<Group, TargetId>,
-    /// The quality row: a resolution, or a bitrate for Music. `None` is "Best".
+    /// The quality row for video: a resolution (short side). `None` is "Best".
     pub quality: Option<u32>,
+    /// The quality row for Music: a bitrate in kbit/s. `None` is "Best".
+    pub music_kbps: Option<u32>,
     /// The tier picked for each Share target.
     pub tiers: HashMap<TargetId, TierId>,
     pub music_format: MusicFormat,
@@ -61,6 +63,7 @@ impl Default for Choices {
             group: Group::Watch,
             targets: HashMap::new(),
             quality: None,
+            music_kbps: None,
             tiers: HashMap::new(),
             music_format: MusicFormat::default(),
             smooth_editing: false,
@@ -81,6 +84,9 @@ impl Choices {
         self.targets.retain(|group, target| target.group() == *group);
         self.tiers
             .retain(|target, tier| target.info().tiers.iter().any(|known| known.id == *tier));
+        // Stream ids belong to one video, not to what is remembered.
+        self.custom.video_format = None;
+        self.custom.audio_format = None;
         for preset in &mut self.saved {
             preset.name = preset.name.trim().chars().take(MAX_NAME).collect();
             // Stream ids belong to one video, not to a preset.
