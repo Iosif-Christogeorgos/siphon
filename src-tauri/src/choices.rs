@@ -58,7 +58,8 @@ impl Default for Choices {
     fn default() -> Self {
         Self {
             active: Active::Preset,
-            group: Group::Watch,
+            // A new user starts on the best streams as the site has them.
+            group: Group::Max,
             targets: HashMap::new(),
             quality: None,
             music_kbps: None,
@@ -223,6 +224,12 @@ mod tests {
     use super::*;
     use crate::plan::codecs::Container;
     use serde_json::json;
+
+    #[test]
+    fn a_new_user_starts_on_max_quality() {
+        assert_eq!(Choices::default().group, Group::Max);
+        assert_eq!(Choices::default().active, Active::Preset);
+    }
 
     #[test]
     fn old_device_presets_become_watch_targets() {

@@ -354,7 +354,7 @@ impl Target {
 }
 
 impl Group {
-    /// In the order the app shows them. A new user still starts on Watch (see `choices.rs`).
+    /// In the order the app shows them. A new user starts on Max quality (see `choices.rs`).
     pub const ALL: [Group; 5] = [Group::Max, Group::Watch, Group::Share, Group::Audio, Group::Edit];
 
     pub fn default_target(self) -> TargetId {
