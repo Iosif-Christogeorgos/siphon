@@ -1,6 +1,6 @@
 [package]
 name = "siphon"
-version = "0.9.0"
+version = "0.10.0"
 description = "A universal video downloader built on yt-dlp"
 authors = ["Iosif Christogeorgos"]
 edition = "2021"
