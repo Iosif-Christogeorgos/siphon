@@ -689,6 +689,14 @@ impl DownloadManager {
                     Err(fallback) => return Ok(Err(fallback)),
                 }
             };
+            // A failed tool, with what it was doing.
+            ($result:expr, $what:expr) => {
+                match $result {
+                    Ok(value) => value,
+                    Err(Fallback::Failed(error)) => return Ok(Err(Fallback::Failed(format!("{}: {error}", $what)))),
+                    Err(fallback) => return Ok(Err(fallback)),
+                }
+            };
         }
         let (Some(trim), Some(encode), Some(video)) = (recipe.cut(), recipe.cut_encode.as_ref(), recipe.video.as_ref())
         else {
@@ -742,7 +750,7 @@ impl DownloadManager {
                 plan.delay,
                 &pieces.join("head.ts"),
             );
-            step!(self.tool(job, &ffmpeg, args, None).await?);
+            step!(self.tool(job, &ffmpeg, args, None).await?, "re-encoding the start");
             names.push("head.ts");
         }
         progress(tracker);
@@ -752,14 +760,14 @@ impl DownloadManager {
             Some(plan.before(plan.copy_until)),
             &pieces.join("middle.ts"),
         );
-        step!(self.tool(job, &ffmpeg, args, None).await?);
+        step!(self.tool(job, &ffmpeg, args, None).await?, "copying the middle");
         names.push("middle.ts");
         progress(tracker);
         // The end is re-encoded from a copy of just its packets: decoding the
         // source from the start to reach them would take as long as the part.
         let rest = pieces.join("rest.ts");
         let args = smart_cut::copy_args(source, plan.before(plan.copy_until), None, &rest);
-        step!(self.tool(job, &ffmpeg, args, None).await?);
+        step!(self.tool(job, &ffmpeg, args, None).await?, "copying the end's packets");
         let args = smart_cut::edge_args(
             &rest,
             plan.before(plan.copy_until),
@@ -768,12 +776,12 @@ impl DownloadManager {
             plan.delay,
             &pieces.join("tail.ts"),
         );
-        step!(self.tool(job, &ffmpeg, args, None).await?);
+        step!(self.tool(job, &ffmpeg, args, None).await?, "re-encoding the end");
         names.push("tail.ts");
         progress(tracker);
         if let Some(piece) = &audio {
             let args = smart_cut::audio_args(source, plan.first(), plan.end(), piece, &pieces.join("audio.mka"));
-            step!(self.tool(job, &ffmpeg, args, None).await?);
+            step!(self.tool(job, &ffmpeg, args, None).await?, "cutting the audio");
         }
         progress(tracker);
 
@@ -808,7 +816,7 @@ impl DownloadManager {
                 break;
             }
         }
-        step!(joined);
+        step!(joined, "joining");
         progress(tracker);
 
         // Check the result: every frame at its time, the audio in sync, and
@@ -832,14 +840,16 @@ impl DownloadManager {
                 smart_cut::head_check_args(output, source, &plan, stats),
                 Some(pieces)
             )
-            .await?
+            .await?,
+            "decoding the first join"
         );
         let compared = tokio::fs::read_to_string(pieces.join(stats)).await.unwrap_or_default();
         step!(smart_cut::check_head(&plan, &compared));
         progress(tracker);
         step!(
             self.tool(job, &ffmpeg, smart_cut::tail_check_args(output, &plan), None)
-                .await?
+                .await?,
+            "decoding the last join"
         );
         progress(tracker);
 
@@ -873,6 +883,37 @@ impl DownloadManager {
             copied,
             plan.frames.len() - copied
         )))
+    }
+
+    /// For a cut: how far the downloaded part's audio has to move onto its
+    /// video's clock, when the two disagree (see `smart_cut::clock_shift`).
+    async fn audio_shift(&self, job: &JobContext<'_>, recipe: &Recipe, input: &Path) -> Result<Option<f64>> {
+        if recipe.cut().is_none() || recipe.audio_codec().is_none() {
+            return Ok(None);
+        }
+        let mut times = Vec::new();
+        for stream in ["v:0", "a:0"] {
+            let args = smart_cut::first_times_args(input, stream);
+            let lines = self
+                .tool(job, &job.bins.ffprobe(), args, None)
+                .await?
+                .unwrap_or_default();
+            times.push(
+                lines
+                    .iter()
+                    .filter_map(|line| line.trim().parse::<f64>().ok())
+                    .collect::<Vec<_>>(),
+            );
+        }
+        let shift = smart_cut::clock_shift(&times[0], &times[1]);
+        if let Some(shift) = shift {
+            let name = input.file_name().unwrap_or_default().to_string_lossy();
+            log::line(
+                job.app,
+                &format!("cut {name}: its audio is on another clock; moved by {shift:.3} s"),
+            );
+        }
+        Ok(shift)
     }
 
     /// A stream's packets, in decode order, as ffprobe lists them.
@@ -1205,9 +1246,10 @@ impl DownloadManager {
         let share = 1.0 / passes.len() as f64;
 
         job.emit(tracker.on_convert(0.0));
+        let audio_shift = self.audio_shift(job, recipe, input).await?;
         for (index, pass) in passes.into_iter().enumerate() {
             let mut cmd = process::command(&ffmpeg);
-            cmd.args(ffmpeg::convert_args(recipe, input, output, pass));
+            cmd.args(ffmpeg::convert_args_shifted(recipe, input, output, pass, audio_shift));
             let result = self
                 .run_child(job.bins, job.id, cmd, |event| {
                     if let ChildEvent::Line(line) = event {

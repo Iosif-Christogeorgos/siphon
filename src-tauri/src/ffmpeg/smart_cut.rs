@@ -183,6 +183,47 @@ pub fn parse_params(text: &str) -> StreamParams {
     params
 }
 
+/// ffprobe arguments that print the times of a stream's first few packets.
+pub fn first_times_args(input: &Path, stream: &str) -> Vec<OsString> {
+    let mut args: Vec<OsString> = [
+        "-v",
+        "error",
+        "-select_streams",
+        stream,
+        "-read_intervals",
+        "%+#12",
+        "-show_entries",
+        "packet=pts_time",
+        "-of",
+        "csv=p=0",
+    ]
+    .iter()
+    .map(OsString::from)
+    .collect();
+    args.push(input.into());
+    args
+}
+
+/// How far to move the audio of a downloaded part onto its video's clock,
+/// from the times of each stream's first packets, when the two disagree.
+///
+/// Both start at the key frame the part was cut from, a fraction of a second
+/// apart at most. Some containers (AVI) keep the video on the source's clock
+/// and restart the audio at zero; cutting both at the same times would then
+/// put the sound in the wrong place.
+pub fn clock_shift(video: &[f64], audio: &[f64]) -> Option<f64> {
+    // The earliest time, ignoring a stray packet far before the rest (AVI
+    // starts its video with one at zero).
+    let start = |times: &[f64]| -> Option<f64> {
+        let mut sorted: Vec<f64> = times.iter().copied().filter(|t| t.is_finite()).collect();
+        sorted.sort_by(f64::total_cmp);
+        let middle = *sorted.get(sorted.len() / 2)?;
+        sorted.into_iter().find(|t| middle - t < 1.0)
+    };
+    let shift = start(video)? - start(audio)?;
+    (shift.abs() > 2.0).then_some(shift)
+}
+
 // ── Deciding the pieces ─────────────────────────────────────────────────
 
 /// How a selection is split up.
@@ -874,6 +915,20 @@ mod tests {
         let packets = stream(0.0, 600, 120, false);
         assert_eq!(plan(&packets, trim(5.004, 5.012)), Err(Fallback::NoFrames));
         assert_eq!(plan(&[], trim(0.0, 1.0)), Err(Fallback::NoFrames));
+    }
+
+    #[test]
+    fn moves_audio_onto_the_videos_clock_only_when_they_disagree() {
+        // A normal part: both start at the key frame, a few milliseconds apart.
+        assert_eq!(
+            clock_shift(&[3590.466, 3590.516, 3590.483], &[3590.485, 3590.506]),
+            None
+        );
+        // An AVI part: the video keeps the source's clock (after a stray packet
+        // at zero), the audio starts again at zero.
+        let shift = clock_shift(&[0.0, 56.12491, 56.166577, 56.208243, 56.25], &[0.0, 0.032, 0.064]);
+        assert!(shift.is_some_and(|s| (s - 56.12491).abs() < 1e-6), "{shift:?}");
+        assert_eq!(clock_shift(&[], &[0.0]), None);
     }
 
     #[test]
