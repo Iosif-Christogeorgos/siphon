@@ -1,5 +1,6 @@
 import { AnimatePresence } from "motion/react";
 import { useEffect } from "react";
+import { CloseGuard } from "@/components/CloseGuard";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { TitleBar } from "@/components/TitleBar";
 import { Toaster } from "@/components/Toaster";
@@ -96,6 +97,7 @@ export function App() {
         </ErrorBoundary>
       </main>
       <Toaster />
+      <CloseGuard />
     </div>
   );
 }
