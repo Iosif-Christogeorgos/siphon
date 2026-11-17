@@ -12,6 +12,7 @@ import { TOOL_NAMES, TOOL_ORDER, TOOL_ROLES } from "@/lib/tools";
 import { cn } from "@/lib/utils";
 import { useAppUpdate } from "@/stores/appUpdate";
 import { selectAvailable, useBinaries } from "@/stores/binaries";
+import { useTheme } from "@/stores/theme";
 import { useToasts } from "@/stores/toasts";
 import { useUi } from "@/stores/ui";
 import type { FilenameStyle, Settings, SettingsView } from "@/types";
@@ -78,6 +79,9 @@ function SettingsForm({
     });
     if (typeof folder === "string") onChange({ output_dir: folder });
   };
+
+  const theme = useTheme((state) => state.theme);
+  const setTheme = useTheme((state) => state.setTheme);
 
   const folder = settings.output_dir ?? settings.default_output_dir ?? "Downloads";
   const style = FILENAME_STYLES.find((candidate) => candidate.id === settings.filename);
@@ -163,6 +167,26 @@ function SettingsForm({
               min={1}
               max={MAX_CONCURRENT}
               onChange={(max_concurrent) => onChange({ max_concurrent })}
+            />
+          }
+        />
+      </Group>
+
+      <Group title="Appearance">
+        <Row
+          title="Theme"
+          hint="System matches your computer’s light or dark mode."
+          control={
+            <Segmented
+              label="Theme"
+              group="theme"
+              value={theme}
+              options={[
+                { id: "system", label: "System" },
+                { id: "light", label: "Light" },
+                { id: "dark", label: "Dark" },
+              ]}
+              onChange={setTheme}
             />
           }
         />

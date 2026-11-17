@@ -6,60 +6,48 @@
 /*
  * Design tokens, named the shadcn/ui way so its components drop in unchanged.
  * One brand colour (aqua, `primary`) on neutral surfaces with a faint cool tint.
- * The theme follows the system: tokens are redefined under prefers-color-scheme.
+ *
+ * Each colour holds its light and its dark value (`light-dark()`), and
+ * `color-scheme` picks which applies. It follows the system unless the user
+ * chose a theme in Settings, which sets `data-theme` on <html> (see
+ * src/stores/theme.ts). Scrollbars and text fields follow it too.
  */
 :root {
   color-scheme: light dark;
 
-  --background: oklch(0.985 0.003 205);
-  --foreground: oklch(0.21 0.012 225);
-  --card: oklch(1 0 0);
+  --background: light-dark(oklch(0.985 0.003 205), oklch(0.155 0.007 232));
+  --foreground: light-dark(oklch(0.21 0.012 225), oklch(0.955 0.004 210));
+  --card: light-dark(oklch(1 0 0), oklch(0.192 0.008 232));
   --card-foreground: var(--foreground);
-  --popover: oklch(1 0 0);
+  --popover: light-dark(oklch(1 0 0), oklch(0.225 0.009 232));
   --popover-foreground: var(--foreground);
-  --primary: oklch(0.53 0.1 196);
-  --primary-hover: oklch(0.48 0.095 196);
-  --primary-foreground: oklch(0.99 0.01 196);
-  --primary-soft: oklch(0.53 0.1 196 / 0.1);
-  --secondary: oklch(0.955 0.005 210);
+  --primary: light-dark(oklch(0.53 0.1 196), oklch(0.8 0.125 192));
+  --primary-hover: light-dark(oklch(0.48 0.095 196), oklch(0.86 0.115 192));
+  --primary-foreground: light-dark(oklch(0.99 0.01 196), oklch(0.18 0.03 200));
+  --primary-soft: light-dark(oklch(0.53 0.1 196 / 0.1), oklch(0.8 0.125 192 / 0.12));
+  --secondary: light-dark(oklch(0.955 0.005 210), oklch(0.235 0.009 232));
   --secondary-foreground: var(--foreground);
-  --muted: oklch(0.955 0.005 210);
-  --muted-foreground: oklch(0.5 0.014 222);
-  --subtle-foreground: oklch(0.61 0.012 220);
-  --accent: oklch(0.2 0.02 225 / 0.055);
+  --muted: light-dark(oklch(0.955 0.005 210), oklch(0.235 0.009 232));
+  --muted-foreground: light-dark(oklch(0.5 0.014 222), oklch(0.7 0.012 222));
+  --subtle-foreground: light-dark(oklch(0.61 0.012 220), oklch(0.52 0.012 225));
+  --accent: light-dark(oklch(0.2 0.02 225 / 0.055), oklch(1 0 0 / 0.06));
   --accent-foreground: var(--foreground);
-  --destructive: oklch(0.58 0.19 25);
-  --destructive-soft: oklch(0.58 0.19 25 / 0.08);
-  --success: oklch(0.6 0.13 158);
-  --border: oklch(0.2 0.02 225 / 0.09);
-  --border-strong: oklch(0.2 0.02 225 / 0.16);
+  --destructive: light-dark(oklch(0.58 0.19 25), oklch(0.72 0.17 22));
+  --destructive-soft: light-dark(oklch(0.58 0.19 25 / 0.08), oklch(0.72 0.17 22 / 0.12));
+  --success: light-dark(oklch(0.6 0.13 158), oklch(0.78 0.15 160));
+  --border: light-dark(oklch(0.2 0.02 225 / 0.09), oklch(1 0 0 / 0.075));
+  --border-strong: light-dark(oklch(0.2 0.02 225 / 0.16), oklch(1 0 0 / 0.14));
   --input: var(--border-strong);
   --ring: var(--primary);
-  --shadow-color: 220 30% 20%;
+  --shadow-color: light-dark(hsl(220 30% 20%), hsl(230 50% 2%));
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: oklch(0.155 0.007 232);
-    --foreground: oklch(0.955 0.004 210);
-    --card: oklch(0.192 0.008 232);
-    --popover: oklch(0.225 0.009 232);
-    --primary: oklch(0.8 0.125 192);
-    --primary-hover: oklch(0.86 0.115 192);
-    --primary-foreground: oklch(0.18 0.03 200);
-    --primary-soft: oklch(0.8 0.125 192 / 0.12);
-    --secondary: oklch(0.235 0.009 232);
-    --muted: oklch(0.235 0.009 232);
-    --muted-foreground: oklch(0.7 0.012 222);
-    --subtle-foreground: oklch(0.52 0.012 225);
-    --accent: oklch(1 0 0 / 0.06);
-    --destructive: oklch(0.72 0.17 22);
-    --destructive-soft: oklch(0.72 0.17 22 / 0.12);
-    --success: oklch(0.78 0.15 160);
-    --border: oklch(1 0 0 / 0.075);
-    --border-strong: oklch(1 0 0 / 0.14);
-    --shadow-color: 230 50% 2%;
-  }
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
 }
 
 @theme inline {
@@ -92,10 +80,12 @@
   --color-ring: var(--ring);
 
   --shadow-card:
-    0 1px 1px hsl(var(--shadow-color) / 0.04), 0 4px 10px -2px hsl(var(--shadow-color) / 0.06),
-    0 18px 36px -12px hsl(var(--shadow-color) / 0.12);
+    0 1px 1px color-mix(in srgb, var(--shadow-color) 4%, transparent),
+    0 4px 10px -2px color-mix(in srgb, var(--shadow-color) 6%, transparent),
+    0 18px 36px -12px color-mix(in srgb, var(--shadow-color) 12%, transparent);
   --shadow-pop:
-    0 2px 4px hsl(var(--shadow-color) / 0.08), 0 16px 40px -8px hsl(var(--shadow-color) / 0.28);
+    0 2px 4px color-mix(in srgb, var(--shadow-color) 8%, transparent),
+    0 16px 40px -8px color-mix(in srgb, var(--shadow-color) 28%, transparent);
 
   --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
 

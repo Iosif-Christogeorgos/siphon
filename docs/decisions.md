@@ -59,6 +59,7 @@ Measured on 2026-11-17 with the 4K test video below, on a connection that downlo
 ### Interface
 
 - **The accent colour is aqua/teal.**
+- **The theme follows the system unless the user picks one** (Settings → Appearance). Each colour token in `src/index.css` holds both values with `light-dark()`, and `color-scheme` on `<html>` picks one: `light dark` follows the system, and `data-theme="light"` or `"dark"` pins it. One set of tokens instead of two copies, and scrollbars and text fields switch with it. The choice is kept in the webview's storage (`src/stores/theme.ts`), not in `settings.json`, because only the interface uses it, and it is applied before the window is first shown, so there is no flash of the other theme.
 - **Settings are grouped lists.** Each setting is one row in a card: its name, with a small control (a switch or stepper) on the same line, and a plain explanation underneath at full width. Wide controls (the folder, the file-name picker) go below the explanation. Squeezing the explanation into a column beside the control made it wrap into four or five ragged lines.
 - **The download list is ordered as a queue:** running, then waiting in start order, then paused, failed and finished (newest first).
 - **The slide-over panels sit inside the error boundary**, so a panel that fails to render shows an error card instead of blanking the window. This came from a real crash: a Zustand selector that returned a new array on every call.

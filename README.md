@@ -128,7 +128,9 @@ Every download joins a queue. A set number run at once (three by default) and th
 
 A playlist link shows its videos with checkboxes. The ones you select are added to the queue with the current preset, and the best format is worked out for each video when its turn comes. A YouTube video link that also names a playlist offers a way to the whole playlist.
 
-**Settings** (the gear in the title bar) holds the download folder, the file-name style, the update choices and the number of simultaneous downloads. They are stored in `settings.json` in the app's config folder (`%APPDATA%app.siphon.desktop` on Windows).
+**Settings** (the gear in the title bar) holds the download folder, the file-name style, the number of simultaneous downloads, the theme and the update choices. They are stored in `settings.json` in the app's config folder (`%APPDATA%\app.siphon.desktop` on Windows), except the theme, which only the interface uses and which is kept with it.
+
+The theme follows Windows' light or dark mode by default (**System**), and changes when Windows does. **Light** or **Dark** keeps Siphon in that theme whatever Windows uses.
 
 | File-name style | Example |
 | --- | --- |
