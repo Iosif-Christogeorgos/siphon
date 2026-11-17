@@ -24,6 +24,8 @@ use crate::ytdlp::{self, errors};
 /// The preview only has to be watchable, so aim low: it loads faster.
 const PREVIEW_LINES: u32 = 360;
 const PROXY_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+/// Above this the copy is not worth the wait (two hours of 360p is about 400 MB).
+const PROXY_MAX_SIZE: &str = "500M";
 
 pub const LAST_LEVEL: u8 = 2;
 
@@ -144,11 +146,16 @@ async fn download_proxy(app: &AppHandle, bins: &BinaryManager, video: &VideoInfo
         .args([
             "--no-playlist",
             "--no-warnings",
-            // The smallest thing a webview plays everywhere: ≤360p H.264 + AAC in MP4.
+            // A preview only has to be watchable: the smallest picture near
+            // 360p and the smallest sound, never the full-quality file. Where
+            // nothing that small exists, the smallest the site has.
             "--format-sort",
-            "res:360,vcodec:h264,acodec:aac",
+            "res:360,+size,+br,vcodec:h264,acodec:aac",
             "--format",
-            "bv*+ba/b",
+            "bv*[height<=480]+wa/b[height<=480]/wv*+wa/w",
+            // And no preview at all rather than gigabytes of one.
+            "--max-filesize",
+            PROXY_MAX_SIZE,
             "--merge-output-format",
             "mp4",
             "--remux-video",

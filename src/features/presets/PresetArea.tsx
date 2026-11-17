@@ -5,7 +5,7 @@ import { Chip } from "@/components/ui/chip";
 import { onRadioKeys } from "@/components/ui/radio-keys";
 import { Segmented } from "@/components/ui/segmented";
 import { Hint } from "@/components/ui/tooltip";
-import { formatBytes } from "@/lib/format";
+import { formatBytes, formatBytesRange } from "@/lib/format";
 import { iconFor } from "@/lib/icons";
 import { spring } from "@/lib/motion";
 import { currentTarget, useChoices, useRegistry } from "@/stores/choices";
@@ -170,7 +170,7 @@ function QualityRow({
   const bitrate = target.quality === "bitrate";
   const options: QualityOption[] = playlist
     ? (bitrate ? registry.music_bitrates.toReversed() : target.quality === "resolution" ? PLAYLIST_LADDER : []).map(
-        (value) => ({ value, converts: false, estimated_size: null }),
+        (value) => ({ value, converts: false, estimated_size: null, size_range: null }),
       )
     : summary?.quality === target.quality
       ? summary.options
@@ -178,13 +178,15 @@ function QualityRow({
   if (target.quality === "none" || options.length < (bitrate ? 1 : 2)) return null;
 
   const selected = bitrate ? choices.music_kbps : choices.quality;
+  // Worth marking only when some choices convert and others don't.
+  const mixed = options.some((option) => option.converts) && options.some((option) => !option.converts);
   const set = (value: number | null) => useChoices.getState().setQuality(value, bitrate);
   return (
     <Row label="Quality">
       <Chip group="quality" tone="soft" selected={selected === null} onSelect={() => set(null)}>
         Best
       </Chip>
-      {options.map(({ value, converts, estimated_size }) => (
+      {options.map(({ value, converts, estimated_size, size_range }) => (
         <Chip
           key={value}
           group="quality"
@@ -192,12 +194,12 @@ function QualityRow({
           selected={selected === value}
           onSelect={() => set(value)}
           // Two short lines: the choice, and its size in small print under it.
-          className={estimated_size !== null ? "h-auto rounded-xl py-1" : undefined}
+          className={estimated_size !== null ? "h-auto rounded-xl px-1.5 py-1" : undefined}
         >
           <span className="flex flex-col items-center leading-tight">
             <span className="flex items-center gap-1">
               {bitrate ? `${value} kbps` : `${value}p`}
-              {converts && (
+              {converts && mixed && (
                 <Hint label="Converted for this target (slower)">
                   <RefreshCw className="size-3! opacity-70" />
                 </Hint>
@@ -205,7 +207,7 @@ function QualityRow({
             </span>
             {estimated_size !== null && (
               <span className="text-[10.5px] font-normal text-subtle-foreground tabular-nums">
-                {formatBytes(estimated_size)}
+                {size_range ? formatBytesRange(size_range[0], size_range[1]) : formatBytes(estimated_size)}
               </span>
             )}
           </span>

@@ -101,7 +101,7 @@ Presets start from where the video is going. Pick a **group**, then a **target**
 | Max quality | | The best streams exactly as the site has them; may not play everywhere |
 | Share | Discord · WhatsApp · TikTok / Reels / Shorts | The best quality that fits the upload limit of your tier |
 
-The quality row offers **Best** and the resolutions the video actually has, each with its estimated size; a lower one downloads the matching stream, and nothing is upscaled. Music offers bitrates instead; Max quality and Share have no quality row. **Customize** (under the summary) opens the old manual mode, where you choose the streams, file type and codecs yourself, and can save them as a named preset that appears under **My presets**. Siphon remembers the last group, target, quality and Share tier.
+The quality row offers **Best** and the resolutions the video actually has, each with its estimated size (a range when converting, since the size then depends on the picture); a lower one downloads the matching stream, and nothing is upscaled. Music offers bitrates instead; Max quality and Share have no quality row. **Customize** (under the summary) opens the old manual mode, where you choose the streams, file type and codecs yourself, and can save them as a named preset that appears under **My presets**. Siphon remembers the last group, target, quality and Share tier.
 
 The presets are defined once, in `src-tauri/src/plan/registry.rs`, and the interface reads them from the backend. The planner in `src-tauri/src/plan` turns a choice into a recipe from the formats the video really offers: the same Apple preset copies X's 4K H.264 file but converts YouTube's 4K VP9 to HEVC. It copies original streams whenever the target can play them, because converting is slower and never improves quality. The summary above the Download button is generated from the same recipe that builds the commands, so the app cannot describe one thing and do another. It marks each plan **No quality loss**, **Converts** (with a rough time), **Size-optimized** or **May not play everywhere**.
 
@@ -122,7 +122,7 @@ What each target plays or needs, the upload limits, and the sources for them are
 | , / . | Step one frame back or forward |
 | I / O | Set the start or end of the part at the playhead |
 
-The preview comes from YouTube's embedded player for YouTube links, from a low-resolution stream for other sites (a plain file if the site has one, otherwise HLS, which is all Twitch offers), and from a small downloaded copy if neither plays.
+The preview comes from YouTube's embedded player for YouTube links, from a low-resolution stream for other sites (a plain file if the site has one, otherwise HLS, which is all Twitch offers), and from a small low-resolution copy if neither plays.
 
 Only the selected part is downloaded (`--download-sections`). There are two ways to cut it:
 
@@ -139,6 +139,8 @@ Every download joins a queue. A set number run at once (three by default) and th
 - **Cancel** stops it and deletes the partial files.
 - A download that fails because the connection dropped or the site refused it is tried again on its own: twice, after 2 and 10 seconds. A site that is limiting requests (HTTP 429) gets one more try, after 30 seconds. The download shows "Trying again in a moment" while it waits.
 - Every new try, automatic or with **Try again**, carries on from what the last one fetched instead of starting over.
+- A trimmed part whose connection stops sending gives up after 20 seconds and is tried again, instead of waiting forever.
+- Downloading something again never replaces the first file: the new one is named `Title [id] (2).mp4`, then `(3)`, and so on.
 - Closing the app stops every download and deletes their partial files, so no yt-dlp or ffmpeg process and no half-finished file is left behind. The list itself is not kept between sessions.
 
 A playlist link shows its videos with checkboxes. The ones you select are added to the queue with the current preset, and the best format is worked out for each video when its turn comes. The estimated total size fills in as Siphon looks the selected videos up. A YouTube video link that also names a playlist offers a way to the whole playlist.

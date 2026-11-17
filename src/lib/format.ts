@@ -13,6 +13,19 @@ export function formatBytes(bytes: number | null | undefined): string {
   return `${value.toFixed(digits)} ${BYTE_UNITS[unit]}`;
 }
 
+/** A size that may land anywhere between two values, in one unit: "1.4–5.6 GB", "52–126 MB". */
+export function formatBytesRange(low: number, high: number): string {
+  let unit = 0;
+  let scale = 1;
+  while (high / scale >= 1024 && unit < BYTE_UNITS.length - 1) {
+    scale *= 1024;
+    unit += 1;
+  }
+  const digits = unit > 0 && high / scale < 10 ? 1 : 0;
+  const value = (bytes: number) => (bytes / scale).toFixed(digits);
+  return `${value(low)}–${value(high)} ${BYTE_UNITS[unit]}`;
+}
+
 export function formatSpeed(bytesPerSecond: number | null | undefined): string {
   if (bytesPerSecond == null || bytesPerSecond <= 0) return "";
   return `${formatBytes(bytesPerSecond)}/s`;

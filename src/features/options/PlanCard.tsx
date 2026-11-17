@@ -9,7 +9,8 @@ import {
 } from "motion/react";
 import { type ReactNode, useEffect } from "react";
 import { Button } from "@/components/ui/button";
-import { formatBytes } from "@/lib/format";
+import { Hint } from "@/components/ui/tooltip";
+import { formatBytes, formatBytesRange } from "@/lib/format";
 import { spring } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import type { Badge, PlanSummary } from "@/types";
@@ -81,7 +82,16 @@ export function PlanCard({
             <p className="truncate font-medium">{plan.headline}</p>
             {plan.estimated_size != null && (
               <span className="shrink-0 text-[13px] text-muted-foreground tabular-nums">
-                ≈ <AnimatedBytes bytes={plan.estimated_size} />
+                {plan.size_range ? (
+                  // A conversion's size depends on the picture: say how far it can go.
+                  <Hint label={`Most likely about ${formatBytes(plan.estimated_size)}; it depends on the picture.`}>
+                    <span>{formatBytesRange(plan.size_range[0], plan.size_range[1])}</span>
+                  </Hint>
+                ) : (
+                  <>
+                    ≈ <AnimatedBytes bytes={plan.estimated_size} />
+                  </>
+                )}
                 {clips > 1 && " each"}
               </span>
             )}
