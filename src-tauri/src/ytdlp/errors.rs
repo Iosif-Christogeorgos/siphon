@@ -159,6 +159,13 @@ const RULES: &[(&[&str], ErrorKind, Retry, &str)] = &[
     ),
 ];
 
+/// True when ffmpeg, fetching a trimmed part, lost its input before the end
+/// (a connection that stopped sending) yet finished as if nothing happened.
+pub fn section_cut_short(log: &str) -> bool {
+    let log = log.to_lowercase();
+    log.contains("error during demuxing") || log.contains(": partial file")
+}
+
 /// Classifies a failed run. `log` is everything yt-dlp wrote to stderr.
 pub fn classify(log: &str) -> AppError {
     let haystack = log.to_lowercase();
@@ -220,6 +227,20 @@ mod tests {
         );
         assert_eq!(retry("ERROR: [youtube] abc: Video unavailable"), Retry::No);
         assert_eq!(retry("ERROR: Something odd happened"), Retry::No);
+    }
+
+    #[test]
+    fn notices_a_trimmed_part_cut_short() {
+        // What ffmpeg wrote when its connection stalled (2026-11-17, local test server).
+        let stalled = "[in#0/mov,mp4,m4a,3gp,3g2,mj2 @ 0001] stream 1, offset 0x6dbe4: partial file
+            [in#0/mov,mp4,m4a,3gp,3g2,mj2 @ 0001] Error during demuxing: I/O error
+            [out#0/mp4 @ 0002] video:144KiB audio:7KiB";
+        assert!(section_cut_short(stalled));
+        // HLS keep-alive warnings are harmless, and so is a clean finish.
+        assert!(!section_cut_short(
+            "[hls @ 0001] keepalive request failed for 'https://x/1.ts'"
+        ));
+        assert!(!section_cut_short("[download] Download completed"));
     }
 
     #[test]
