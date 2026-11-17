@@ -116,11 +116,6 @@ impl Tracker {
         self.progress.clone()
     }
 
-    /// More than one stream means the per-stream files are temporary.
-    pub fn is_multi_stream(&self) -> bool {
-        self.plan.len() > 1
-    }
-
     pub fn set_plan(&mut self, plan: Vec<PlannedStream>) {
         self.plan = plan;
     }

@@ -42,18 +42,48 @@ pub const TRANSFER_ARGS: [&str; 11] = [
     "--abort-on-unavailable-fragments",
 ];
 
+/// What a download's files carry in their names until it is finished:
+/// `Title.siphon-1a2b3c4d.mp4`. Unique to the download, so yt-dlp never takes
+/// a file that is already in the folder for its own: it would count it as
+/// "already downloaded" and work on it. It stays the same for every try at
+/// the same download, so a later try carries on from the files an earlier one left.
+const OWN_MARKER: &str = ".siphon-";
+
+/// This download's marker (see [`OWN_MARKER`]).
+pub fn own_marker(download_id: &str) -> String {
+    let own: String = download_id.chars().filter(char::is_ascii_alphanumeric).take(8).collect();
+    format!("{OWN_MARKER}{}", if own.is_empty() { "0" } else { &own })
+}
+
+/// A file's name without what Siphon added while working on it:
+/// `Title.siphon-1a2b3c4d` or `Title.source` → `Title`.
+pub fn finished_stem(stem: &str) -> &str {
+    let stem = stem.strip_suffix(SOURCE_MARKER).unwrap_or(stem);
+    match stem.rfind(OWN_MARKER) {
+        Some(at)
+            if stem[at + OWN_MARKER.len()..]
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric()) =>
+        {
+            &stem[..at]
+        }
+        _ => stem,
+    }
+}
+
 /// The full output template: the user's naming style (`name`, see
-/// `Settings::filename_template`) plus what Siphon adds itself.
-/// `copy` numbers a second download of the same thing: `Title [id] (2).mp4`.
-pub fn output_template(recipe: &Recipe, name: &str, copy: Option<u32>) -> String {
-    let marker = if recipe.needs_ffmpeg_pass() { SOURCE_MARKER } else { "" };
+/// `Settings::filename_template`) plus what Siphon adds itself. A converted
+/// source goes to the download's own work folder, so `.source` is enough
+/// there; anything written to the download folder carries `own` (see
+/// [`own_marker`]) until Siphon gives it its final, free name.
+pub fn output_template(recipe: &Recipe, name: &str, own: &str) -> String {
+    let marker = if recipe.needs_ffmpeg_pass() { SOURCE_MARKER } else { own };
     // Clips say which part they are, so several from one video don't collide.
     let clip = match recipe.trim {
         Some(trim) => format!(" ({}-{})", clock(trim.start), clock(trim.end)),
         None => String::new(),
     };
-    let copy = copy.map(|n| format!(" ({n})")).unwrap_or_default();
-    format!("{name}{clip}{copy}{marker}.%(ext)s")
+    format!("{name}{clip}{marker}.%(ext)s")
 }
 
 /// 75.4 → "1m15s". File-name safe (no colons) and free of yt-dlp's "%".

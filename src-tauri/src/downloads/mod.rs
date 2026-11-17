@@ -122,26 +122,16 @@ struct Gate {
     running: usize,
 }
 
-/// A file one stream is downloaded to.
-#[derive(Debug, Clone, PartialEq)]
-struct StreamFile {
-    path: PathBuf,
-    /// One of several streams waiting to be merged, so the file itself can
-    /// go. Otherwise it carries the finished file's own name, which may
-    /// belong to an older download: only its `.part` companions are ours.
-    intermediate: bool,
-}
-
 /// What a paused or failed download left on disk. The next try at the same
 /// download carries on from these files; cancelling it removes them.
 #[derive(Default)]
 struct Leftovers {
-    stream_files: Vec<StreamFile>,
+    /// The files yt-dlp downloaded streams to. Each carries the download's
+    /// own marker (see `args::own_marker`), so they, and their `.part`
+    /// companions, are always this download's to remove.
+    stream_files: Vec<PathBuf>,
     /// Anything else: a section's `.part` file, a downloaded source awaiting conversion.
     others: Vec<PathBuf>,
-    /// The " (2)" this download added to its name because the plain name was
-    /// taken; the next try keeps it, so it carries on from its own files.
-    copy: Option<u32>,
     /// The download's work folder, holding a source that awaits converting.
     work: Option<PathBuf>,
 }
@@ -529,7 +519,7 @@ impl DownloadManager {
                 }
                 _ => {
                     let _ = tokio::fs::remove_dir_all(&work).await;
-                    return Ok(downloaded);
+                    return self.publish(&downloaded, job.id).await;
                 }
             }
         };
@@ -933,9 +923,9 @@ impl DownloadManager {
             .current_dir(pieces)
             // The trace goes to a report file: there is too much of it to keep in memory.
             .env("FFREPORT", "file=keys.log:level=32");
-        match self.run_child(job.bins, job.id, cmd, |_| Flow::Continue).await {
+        match self.run_child(job.bins, job.id, cmd, |_| {}).await {
             Ok(_) => {}
-            Err(Failure::Stopped(_) | Failure::Abandoned) => return Err(AppError::cancelled()),
+            Err(Failure::Stopped(_)) => return Err(AppError::cancelled()),
             Err(Failure::Exited(log)) => {
                 return Ok(Err(Fallback::Failed(format!(
                     "reading the key frames: {}",
@@ -992,12 +982,11 @@ impl DownloadManager {
                 if let ChildEvent::Line(line) = event {
                     lines.push(line.trim_end().to_string());
                 }
-                Flow::Continue
             })
             .await;
         Ok(match result {
             Ok(_) => Ok(lines),
-            Err(Failure::Stopped(_) | Failure::Abandoned) => return Err(AppError::cancelled()),
+            Err(Failure::Stopped(_)) => return Err(AppError::cancelled()),
             Err(Failure::Exited(log)) => Err(Fallback::Failed(
                 log.lines().last().unwrap_or("no message").trim().to_string(),
             )),
@@ -1043,127 +1032,76 @@ impl DownloadManager {
         let Leftovers {
             mut stream_files,
             others: earlier_files,
-            mut copy,
             work: _,
         } = previous.unwrap_or_default();
-        // The name of the finished file, as yt-dlp checks it.
-        let finished_ext = if recipe.needs_ffmpeg_pass() {
-            "mkv"
-        } else {
-            recipe.container.ext()
-        };
-        // A converted file gets its own name when it is written (see `attempt`).
-        let check_name = !continues && !recipe.needs_ffmpeg_pass();
 
         let mut output_file: Option<PathBuf> = None;
         // Section downloads go through ffmpeg, which stays silent until it is
         // done. For those, progress is read off the growing ".part" file.
         let mut part_file: Option<PathBuf> = None;
         let expected_bytes = recipe.trim.and(recipe.estimated_source_bytes());
-        let result = loop {
-            let mut cmd = ytdlp::command(job.bins);
-            cmd.args(progress::template_args())
-                .args(args::TRANSFER_ARGS)
-                .args(args::recipe_args(recipe))
-                .args([
-                    "--no-playlist",
-                    // Stamp the file with the time it was downloaded, not uploaded.
-                    "--no-mtime",
-                ]);
-            self.route(job.id, &mut cmd)?;
-            if !continues {
-                // A new download ignores partial files of the same name; a
-                // later try leaves this out and carries on from them instead.
-                // (Not --force-overwrites: that deletes a finished file of the
-                // same name before the name is announced, so it couldn't be
-                // given its own.)
-                cmd.arg("--no-continue");
-            }
-            cmd.arg("--paths")
-                .arg(output_dir)
-                .args([
-                    "--output",
-                    &args::output_template(recipe, &job.settings.filename_template(), copy),
-                    "--",
-                ])
-                .arg(url);
+        let mut cmd = ytdlp::command(job.bins);
+        cmd.args(progress::template_args())
+            .args(args::TRANSFER_ARGS)
+            .args(args::recipe_args(recipe))
+            .args([
+                "--no-playlist",
+                // Stamp the file with the time it was downloaded, not uploaded.
+                "--no-mtime",
+            ]);
+        self.route(job.id, &mut cmd)?;
+        if !continues {
+            // A new download ignores partial files of the same name; a
+            // later try leaves this out and carries on from them instead.
+            cmd.arg("--no-continue");
+        }
+        // Every file carries this download's own marker until it is finished
+        // (see `publish`), so nothing already in the folder is ever touched.
+        cmd.arg("--paths")
+            .arg(output_dir)
+            .args([
+                "--output",
+                &args::output_template(recipe, &job.settings.filename_template(), &args::own_marker(job.id)),
+                "--",
+            ])
+            .arg(url);
 
-            // Set when the name yt-dlp is about to write is already taken, with
-            // whether a file on disk has it (rather than another running download).
-            let mut taken: Option<(PathBuf, bool)> = None;
-            let result = self
-                .run_child(job.bins, job.id, cmd, |event| match event {
-                    ChildEvent::Tick => {
-                        if let (Some(part), Some(expected)) = (&part_file, expected_bytes) {
-                            if let Ok(meta) = std::fs::metadata(part) {
-                                job.emit(tracker.on_bytes(meta.len(), expected));
-                            }
+        let result = self
+            .run_child(job.bins, job.id, cmd, |event| match event {
+                ChildEvent::Tick => {
+                    if let (Some(part), Some(expected)) = (&part_file, expected_bytes) {
+                        if let Ok(meta) = std::fs::metadata(part) {
+                            job.emit(tracker.on_bytes(meta.len(), expected));
                         }
-                        Flow::Continue
                     }
-                    ChildEvent::Line(line) => match progress::parse(line) {
-                        Some(progress::Line::Target(path)) => {
-                            let target = PathBuf::from(&path);
-                            let finished = target.with_extension(finished_ext);
-                            // Never replace a file: the same video downloaded
-                            // again gets its own name. Stopped before any data moves.
-                            if check_name && !self.claim(&finished, job.id, target.exists()) {
-                                let on_disk = target.exists() || finished.exists();
-                                taken = Some((target, on_disk));
-                                return Flow::Stop;
-                            }
-                            part_file = Some(PathBuf::from(format!("{path}.part")));
-                            Flow::Continue
-                        }
-                        Some(progress::Line::Plan(plan)) => {
-                            tracker.set_plan(plan);
-                            Flow::Continue
-                        }
-                        Some(progress::Line::Download(tick)) => {
-                            if let Some(path) = tick.filename.as_deref().map(PathBuf::from) {
-                                if !stream_files.iter().any(|file| file.path == path) {
-                                    stream_files.push(StreamFile {
-                                        path,
-                                        // A trimmed part arrives as one file, already under its final name.
-                                        intermediate: tracker.is_multi_stream() && recipe.trim.is_none(),
-                                    });
-                                }
-                            }
-                            job.emit(tracker.on_tick(&tick));
-                            Flow::Continue
-                        }
-                        Some(progress::Line::PostProcess { started: true, name }) => {
-                            job.emit(tracker.on_postprocess(&name));
-                            Flow::Continue
-                        }
-                        Some(progress::Line::File(path)) => {
-                            output_file = Some(PathBuf::from(path));
-                            Flow::Continue
-                        }
-                        Some(progress::Line::PostProcess { started: false, .. }) | None => Flow::Continue,
-                    },
-                })
-                .await;
-            match (taken, &result) {
-                (Some((target, on_disk)), Err(Failure::Abandoned)) => {
-                    // yt-dlp starts writing as soon as it names the file, so a
-                    // moment of it may be there. When the name belongs to a
-                    // finished file, that ".part" can only be this run's; when
-                    // another download holds it, the ".part" is that one's.
-                    if on_disk {
-                        let _ = tokio::fs::remove_file(format!("{}.part", target.display())).await;
-                    }
-                    copy = Some(self.free_copy(&target, finished_ext, copy));
                 }
-                _ => break result,
-            }
-        };
+                ChildEvent::Line(line) => match progress::parse(line) {
+                    Some(progress::Line::Target(path)) => {
+                        part_file = Some(PathBuf::from(format!("{path}.part")));
+                    }
+                    Some(progress::Line::Plan(plan)) => tracker.set_plan(plan),
+                    Some(progress::Line::Download(tick)) => {
+                        if let Some(path) = tick.filename.as_deref().map(PathBuf::from) {
+                            if !stream_files.contains(&path) {
+                                stream_files.push(path);
+                            }
+                        }
+                        job.emit(tracker.on_tick(&tick));
+                    }
+                    Some(progress::Line::PostProcess { started: true, name }) => {
+                        job.emit(tracker.on_postprocess(&name));
+                    }
+                    Some(progress::Line::File(path)) => output_file = Some(PathBuf::from(path)),
+                    Some(progress::Line::PostProcess { started: false, .. }) | None => {}
+                },
+            })
+            .await;
 
         let failure = match result {
             Ok(log) => {
                 // An earlier try may have left files this one had no use for
                 // (the streams picked can differ from one try to the next).
-                stream_files.retain(|file| Some(&file.path) != output_file.as_ref());
+                stream_files.retain(|file| Some(file) != output_file.as_ref());
                 remove_partial_files(&stream_files).await;
                 let file = output_file.ok_or_else(|| {
                     AppError::internal("The download finished but the file couldn't be located.")
@@ -1178,7 +1116,6 @@ impl DownloadManager {
         let leftovers = Leftovers {
             stream_files,
             others: earlier_files.into_iter().chain(part_file).collect(),
-            copy,
             work: recipe.needs_ffmpeg_pass().then(|| output_dir.to_path_buf()),
         };
         if let Failure::Stopped(Stop::Cancel) = failure {
@@ -1188,7 +1125,7 @@ impl DownloadManager {
         // Kept for the next try, automatic or by hand, to carry on from.
         self.keep_leftovers(job.id, leftovers);
         match failure {
-            Failure::Stopped(_) | Failure::Abandoned => Err(AppError::cancelled()),
+            Failure::Stopped(_) => Err(AppError::cancelled()),
             Failure::Exited(log) => Err(errors::classify(&log)),
             Failure::Spawn(error) => Err(error),
         }
@@ -1211,43 +1148,36 @@ impl DownloadManager {
         .with_details(log))
     }
 
-    /// Claims `finished` for this download. False when it is taken: the file
-    /// exists (or `exists` says the download's own target does), or another
-    /// running download is writing to it.
-    fn claim(&self, finished: &Path, id: &str, exists: bool) -> bool {
+    /// Claims `finished` for this download. False when it is taken: a file
+    /// has the name, or another running download is about to write it.
+    fn claim(&self, finished: &Path, id: &str) -> bool {
         let mut claimed = self.claimed.lock().unwrap();
         let other = claimed.get(finished).is_some_and(|owner| owner != id);
-        if exists || other || finished.exists() {
+        if other || finished.exists() {
             return false;
         }
         claimed.insert(finished.to_path_buf(), id.to_string());
         true
     }
 
-    /// The first copy number after `after` whose name is free:
+    /// The first copy number whose name is free:
     /// `Title [id].mp4` → `Title [id] (2).mp4`, `(3)`, …
-    fn free_copy(&self, target: &Path, ext: &str, after: Option<u32>) -> u32 {
+    fn free_copy(&self, target: &Path, ext: &str) -> u32 {
         let stem = target.file_stem().and_then(|stem| stem.to_str()).unwrap_or("video");
-        // The target of a later try already carries the number it was given.
-        let numbered = after.map(|n| format!(" ({n})"));
-        let base = numbered
-            .as_deref()
-            .and_then(|suffix| stem.strip_suffix(suffix))
-            .unwrap_or(stem);
         let claimed = self.claimed.lock().unwrap();
-        (after.map_or(2, |n| n + 1)..)
+        (2..)
             .find(|n| {
-                let candidate = target.with_file_name(format!("{base} ({n}).{ext}"));
+                let candidate = target.with_file_name(format!("{stem} ({n}).{ext}"));
                 !candidate.exists() && !claimed.contains_key(&candidate)
             })
             .expect("some number is free")
     }
 
     /// `output`, or the first "(2)", "(3)", … variant of it that no file or
-    /// running download has, claimed for this download. For converted files,
-    /// whose name Siphon chooses itself.
+    /// running download has, claimed for this download. Siphon names every
+    /// finished file itself, so nothing already in the folder is replaced.
     fn unique_output(&self, output: PathBuf, id: &str) -> PathBuf {
-        if self.claim(&output, id, false) {
+        if self.claim(&output, id) {
             return output;
         }
         let ext = output
@@ -1255,11 +1185,26 @@ impl DownloadManager {
             .and_then(|ext| ext.to_str())
             .unwrap_or("mp4")
             .to_string();
-        let copy = self.free_copy(&output, &ext, None);
+        let copy = self.free_copy(&output, &ext);
         let stem = output.file_stem().and_then(|stem| stem.to_str()).unwrap_or("video");
         let unique = output.with_file_name(format!("{stem} ({copy}).{ext}"));
-        self.claim(&unique, id, false);
+        self.claim(&unique, id);
         unique
+    }
+
+    /// Gives a file yt-dlp finished its final name: the download's marker comes
+    /// off, and a name that is taken gets the next free number. Same folder,
+    /// so it is a rename, however large the file.
+    async fn publish(&self, downloaded: &Path, id: &str) -> Result<PathBuf> {
+        let stem = downloaded.file_stem().and_then(|stem| stem.to_str()).unwrap_or("video");
+        let ext = downloaded.extension().and_then(|ext| ext.to_str()).unwrap_or("mp4");
+        let wanted = downloaded.with_file_name(format!("{}.{ext}", args::finished_stem(stem)));
+        let output = self.unique_output(wanted, id);
+        tokio::fs::rename(downloaded, &output).await.map_err(|err| {
+            AppError::internal("The download finished, but the file couldn't be given its name.")
+                .with_details(format!("{} → {}: {err}", downloaded.display(), output.display()))
+        })?;
+        Ok(output)
     }
 
     /// Step 3: Siphon's ffmpeg pass, for recipes that convert video or audio.
@@ -1295,12 +1240,11 @@ impl DownloadManager {
                             job.emit(tracker.on_convert((index as f64 + done / total) * share));
                         }
                     }
-                    Flow::Continue
                 })
                 .await;
             match result {
                 Ok(_) => {}
-                Err(Failure::Stopped(_) | Failure::Abandoned) => return Err(AppError::cancelled()),
+                Err(Failure::Stopped(_)) => return Err(AppError::cancelled()),
                 Err(Failure::Exited(log)) => {
                     return Err(AppError::internal("The video downloaded, but converting it failed.").with_details(log))
                 }
@@ -1312,14 +1256,13 @@ impl DownloadManager {
 
     /// Runs a child process for a job: registers it so the job can be
     /// stopped, feeds each stdout line (and a tick four times a second) to
-    /// `on_event`, and returns the stderr log on success. `on_event` can stop
-    /// the process early, which ends the run with `Failure::Abandoned`.
+    /// `on_event`, and returns the stderr log on success.
     async fn run_child(
         &self,
         bins: &BinaryManager,
         id: &str,
         mut cmd: Command,
-        mut on_event: impl FnMut(ChildEvent<'_>) -> Flow,
+        mut on_event: impl FnMut(ChildEvent<'_>),
     ) -> std::result::Result<String, Failure> {
         // Stopped between steps: don't start the next one.
         if let Some(stop) = self.stop_of(id) {
@@ -1357,28 +1300,19 @@ impl DownloadManager {
         let mut stdout = BufReader::new(child.stdout.take().expect("stdout is piped"));
         let mut ticker = tokio::time::interval(Duration::from_millis(250));
         let mut buffer = Vec::new();
-        let mut abandoned = false;
         loop {
-            let flow = tokio::select! {
+            tokio::select! {
                 // If the tick wins, the bytes read so far stay in `buffer` and
                 // the next read carries on from there, so no output is lost.
                 read = stdout.read_until(b'\n', &mut buffer) => match read {
                     Ok(0) | Err(_) => break,
                     Ok(_) => {
                         // Lossy on purpose: a stray byte in a title must not end the download.
-                        let flow = on_event(ChildEvent::Line(&String::from_utf8_lossy(&buffer)));
+                        on_event(ChildEvent::Line(&String::from_utf8_lossy(&buffer)));
                         buffer.clear();
-                        flow
                     }
                 },
                 _ = ticker.tick() => on_event(ChildEvent::Tick),
-            };
-            if flow == Flow::Stop {
-                if let Some(pid) = child.id() {
-                    process::kill_tree(pid).await;
-                }
-                abandoned = true;
-                break;
             }
         }
 
@@ -1390,8 +1324,6 @@ impl DownloadManager {
 
         if let Some(stop) = self.stop_of(id) {
             Err(Failure::Stopped(stop))
-        } else if abandoned {
-            Err(Failure::Abandoned)
         } else if status.is_ok_and(|status| status.success()) {
             Ok(log)
         } else {
@@ -1408,17 +1340,8 @@ enum ChildEvent<'a> {
     Tick,
 }
 
-/// Whether `run_child` lets the process carry on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Flow {
-    Continue,
-    Stop,
-}
-
 /// How a child process run can go wrong.
 enum Failure {
-    /// `on_event` asked for the process to be stopped.
-    Abandoned,
     Spawn(AppError),
     /// The user cancelled or paused the job.
     Stopped(Stop),
@@ -1471,8 +1394,7 @@ pub fn sweep_work(app: &AppHandle) {
 /// of the same video its own name would start here.
 fn converted_path(source: &Path, recipe: &Recipe, output_dir: &Path) -> PathBuf {
     let stem = source.file_stem().and_then(|stem| stem.to_str()).unwrap_or("video");
-    let stem = stem.strip_suffix(args::SOURCE_MARKER).unwrap_or(stem);
-    output_dir.join(format!("{stem}.{}", recipe.container.ext()))
+    output_dir.join(format!("{}.{}", args::finished_stem(stem), recipe.container.ext()))
 }
 
 /// `Title [id].mp4` → `Title [id].converting.mp4`: where a conversion writes
@@ -1517,15 +1439,13 @@ async fn collect_lines(stream: impl AsyncRead + Unpin) -> String {
     Vec::from(lines).join("\n")
 }
 
-/// Removes what a stopped download left on disk.
-///
-/// `stream_files` are the per-stream targets yt-dlp reported. Their `.part`,
-/// `.ytdl` and fragment companions are always safe to delete. The targets
-/// themselves are only deleted when they are intermediates awaiting a merge;
-/// otherwise the target is the user's final file and may predate this run.
-async fn remove_partial_files(stream_files: &[StreamFile]) {
+/// Removes what a stopped download left on disk: the files yt-dlp
+/// downloaded streams to, with their `.part`, `.ytdl` and fragment
+/// companions. They all carry the download's own marker, so none of them
+/// can be a file that was in the folder before.
+async fn remove_partial_files(stream_files: &[PathBuf]) {
     for file in stream_files {
-        let (Some(dir), Some(name)) = (file.path.parent(), file.path.file_name().and_then(|name| name.to_str())) else {
+        let (Some(dir), Some(name)) = (file.parent(), file.file_name().and_then(|name| name.to_str())) else {
             continue;
         };
         let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
@@ -1539,7 +1459,7 @@ async fn remove_partial_files(stream_files: &[StreamFile]) {
             let is_companion = entry_name
                 .strip_prefix(name)
                 .is_some_and(|rest| rest.starts_with(".part") || rest == ".ytdl");
-            if is_companion || (file.intermediate && entry_name == name) {
+            if is_companion || entry_name == name {
                 let _ = tokio::fs::remove_file(entry.path()).await;
             }
         }
@@ -1600,14 +1520,12 @@ mod naming_tests {
         let manager = DownloadManager::default();
 
         // Taken on disk.
-        assert!(!manager.claim(&file("Clip [x].mp4"), "a", false));
-        assert_eq!(manager.free_copy(&file("Clip [x].mp4"), "mp4", None), 3);
-        // A later try's target carries its number; the next one comes after it.
-        assert_eq!(manager.free_copy(&file("Clip [x] (3).mp4"), "mp4", Some(3)), 4);
+        assert!(!manager.claim(&file("Clip [x].mp4"), "a"));
+        assert_eq!(manager.free_copy(&file("Clip [x].mp4"), "mp4"), 3);
         // Taken by another running download, but free for the one holding it.
-        assert!(manager.claim(&file("Other.mp4"), "a", false));
-        assert!(!manager.claim(&file("Other.mp4"), "b", false));
-        assert!(manager.claim(&file("Other.mp4"), "a", false));
+        assert!(manager.claim(&file("Other.mp4"), "a"));
+        assert!(!manager.claim(&file("Other.mp4"), "b"));
+        assert!(manager.claim(&file("Other.mp4"), "a"));
         assert_eq!(manager.unique_output(file("Other.mp4"), "b"), file("Other (2).mp4"));
 
         std::fs::remove_dir_all(&dir).unwrap();

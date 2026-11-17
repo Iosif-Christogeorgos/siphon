@@ -894,11 +894,14 @@ fn trimmed_parts_give_up_on_a_stalled_connection() {
 }
 
 #[test]
-fn a_second_copy_is_numbered_in_its_name() {
+fn a_download_works_under_its_own_marker_and_drops_it_at_the_end() {
     let recipe = plan_for(&x_4k(), TargetId::Windows);
-    assert_eq!(args::output_template(&recipe, "%(title)s", None), "%(title)s.%(ext)s");
-    assert_eq!(
-        args::output_template(&recipe, "%(title)s", Some(2)),
-        "%(title)s (2).%(ext)s"
-    );
+    let own = args::own_marker("1a2b3c4d-5e6f-7a8b");
+    assert_eq!(own, ".siphon-1a2b3c4d");
+    assert_eq!(args::output_template(&recipe, "%(title)s", &own), "%(title)s.siphon-1a2b3c4d.%(ext)s");
+    assert_eq!(args::finished_stem("Clip [x].siphon-1a2b3c4d"), "Clip [x]");
+    assert_eq!(args::finished_stem("Clip [x].source"), "Clip [x]");
+    // A title that merely contains the word is left alone.
+    assert_eq!(args::finished_stem("My .siphon-day out"), "My .siphon-day out");
+    assert_eq!(args::finished_stem("Clip"), "Clip");
 }
