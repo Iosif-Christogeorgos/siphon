@@ -55,6 +55,10 @@ pub enum Fallback {
     /// The key frames inside the selection belong to open GOPs (frames on one
     /// side depend on frames on the other).
     OpenGop,
+    /// No key frame inside the selection that decoding restarts at (an IDR
+    /// frame): a decoder would carry the re-encoded start's settings over the
+    /// join, and show the copied frames out of order.
+    NoRestart,
     /// Decode times are missing, or the reordering delay differs between the key frames.
     Timing,
     /// The stream is something the encoder can't match (a profile or pixel format).
@@ -72,6 +76,7 @@ impl fmt::Display for Fallback {
             Fallback::NoFrames => write!(f, "the selection holds no frames"),
             Fallback::TooShort => write!(f, "no two key frames inside the selection"),
             Fallback::OpenGop => write!(f, "the key frames inside the selection are open"),
+            Fallback::NoRestart => write!(f, "no key frame inside the selection restarts decoding"),
             Fallback::Timing => write!(f, "the decode times can't be lined up"),
             Fallback::Unsupported(what) => write!(f, "unsupported stream: {what}"),
             Fallback::Failed(what) => write!(f, "a step failed: {what}"),
@@ -140,6 +145,8 @@ pub struct StreamParams {
     pub color_space: String,
     pub color_transfer: String,
     pub color_primaries: String,
+    /// Seconds per timestamp unit (1/1000 in Matroska, often 1/90000 in MP4).
+    pub time_base: f64,
 }
 
 /// ffprobe arguments that describe the first video stream, one `key=value` per line.
@@ -150,7 +157,7 @@ pub fn params_args(input: &Path) -> Vec<OsString> {
         "-select_streams",
         "v:0",
         "-show_entries",
-        "stream=codec_name,profile,level,pix_fmt,color_range,color_space,color_transfer,color_primaries",
+        "stream=codec_name,profile,level,pix_fmt,color_range,color_space,color_transfer,color_primaries,time_base",
         "-of",
         "default=noprint_wrappers=1",
     ]
@@ -177,6 +184,13 @@ pub fn parse_params(text: &str) -> StreamParams {
             "color_space" => params.color_space = value,
             "color_transfer" => params.color_transfer = value,
             "color_primaries" => params.color_primaries = value,
+            "time_base" => {
+                if let Some((num, den)) = value.split_once('/') {
+                    if let (Ok(num), Ok(den)) = (num.parse::<f64>(), den.parse::<f64>()) {
+                        params.time_base = num / den;
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -222,6 +236,64 @@ pub fn clock_shift(video: &[f64], audio: &[f64]) -> Option<f64> {
     };
     let shift = start(video)? - start(audio)?;
     (shift.abs() > 2.0).then_some(shift)
+}
+
+/// ffmpeg arguments that trace the NAL units of every key frame (into the
+/// report file the caller names with `FFREPORT`), to tell which ones decoding
+/// restarts at. Only reads: nothing is decoded or written.
+pub fn key_frames_trace_args(input: &Path) -> Vec<OsString> {
+    let mut args = os(&["-hide_banner", "-nostdin", "-loglevel", "error", "-copyts", "-i"]);
+    args.push(input.into());
+    args.extend(os(&[
+        "-map",
+        "0:v:0",
+        "-c",
+        "copy",
+        "-bsf:v",
+        "noise=drop=not(key),trace_headers",
+        "-f",
+        "null",
+        "-",
+    ]));
+    args
+}
+
+/// The times of the key frames that decoding restarts at, from the trace
+/// [`key_frames_trace_args`] writes: H.264 IDR frames, HEVC IDR and CRA frames.
+pub fn parse_restarts(trace: &str, codec: VideoCodec, time_base: f64) -> Vec<f64> {
+    let restarts = |nal: u32| match codec {
+        VideoCodec::Hevc => (16..=21).contains(&nal),
+        _ => nal == 5,
+    };
+    let mut times = Vec::new();
+    let mut current: Option<f64> = None;
+    let mut restart = false;
+    let flush = |current: Option<f64>, restart: bool, times: &mut Vec<f64>| {
+        if let (Some(pts), true) = (current, restart) {
+            times.push(pts * time_base);
+        }
+    };
+    for line in trace.lines() {
+        if let Some(rest) = line.split("Packet:").nth(1) {
+            flush(current, restart, &mut times);
+            current = rest
+                .split("pts ")
+                .nth(1)
+                .and_then(|after| after.split(',').next())
+                .and_then(|pts| pts.trim().parse::<f64>().ok());
+            restart = false;
+        } else if line.contains("nal_unit_type") {
+            if let Some(nal) = line
+                .rsplit("= ")
+                .next()
+                .and_then(|value| value.trim().parse::<u32>().ok())
+            {
+                restart |= restarts(nal);
+            }
+        }
+    }
+    flush(current, restart, &mut times);
+    times
 }
 
 // ── Deciding the pieces ─────────────────────────────────────────────────
@@ -276,7 +348,9 @@ impl CutPlan {
 }
 
 /// Splits `trim` up from the source's video packets (in decode order).
-pub fn plan(packets: &[Packet], trim: Trim) -> Result<CutPlan, Fallback> {
+/// `restarts` lists the key frames decoding restarts at (see
+/// [`parse_restarts`]); copying only starts at one of them.
+pub fn plan(packets: &[Packet], trim: Trim, restarts: &[f64]) -> Result<CutPlan, Fallback> {
     let frame = frame_duration(packets).ok_or(Fallback::NoFrames)?;
     let half = frame / 2.0;
     // The part must hold the whole selection, on the video's own clock: the
@@ -306,16 +380,24 @@ pub fn plan(packets: &[Packet], trim: Trim) -> Result<CutPlan, Fallback> {
         return Err(Fallback::TooShort);
     }
     let closed: Vec<usize> = keys.iter().copied().filter(|&i| is_closed(packets, i)).collect();
-    let (Some(&from), Some(&until)) = (closed.first(), closed.last()) else {
+    let (Some(&first_closed), Some(&until)) = (closed.first(), closed.last()) else {
         return Err(Fallback::OpenGop);
     };
-    if packets[until].pts <= packets[from].pts + half {
+    if packets[until].pts <= packets[first_closed].pts + half {
         return Err(if closed.len() < keys.len() {
             Fallback::OpenGop
         } else {
             Fallback::TooShort
         });
     }
+    // Copying starts at a key frame decoding restarts at.
+    let restarts_at = |i: usize| restarts.iter().any(|t| (t - packets[i].pts).abs() < SAME_TIME);
+    let Some(&from) = closed
+        .iter()
+        .find(|&&i| restarts_at(i) && packets[i].pts < packets[until].pts - half)
+    else {
+        return Err(Fallback::NoRestart);
+    };
 
     let delay_at = |i: usize| decode_time(packets, i, frame).map(|dts| packets[i].pts - dts);
     let (Some(delay), Some(delay_end)) = (delay_at(from), delay_at(until)) else {
@@ -508,7 +590,12 @@ pub fn edge_args(source: &Path, from: f64, until: f64, encoder: &[String], delay
 
 /// Copies the video packets shown from `from` (source times) up to `until`,
 /// or to the end of the file, untouched.
-pub fn copy_args(source: &Path, from: f64, until: Option<f64>, output: &Path) -> Vec<OsString> {
+///
+/// The source's parameter sets go in front of every key frame. A file may
+/// keep them only in its header (YouTube's in Matroska), and its key frames
+/// need not be IDR frames, after which nothing would bring them back: the
+/// copied frames would then be decoded with the re-encoded start's.
+pub fn copy_args(source: &Path, from: f64, until: Option<f64>, codec: VideoCodec, output: &Path) -> Vec<OsString> {
     let mut args = os(&["-hide_banner", "-nostdin", "-y", "-loglevel", "error", "-copyts", "-i"]);
     args.push(source.into());
     // Picked by their own timestamps: no seeking, which lands on the wrong
@@ -517,7 +604,13 @@ pub fn copy_args(source: &Path, from: f64, until: Option<f64>, output: &Path) ->
         Some(until) => format!("noise=drop=lt(pts*tb\\,{from})+gte(pts*tb\\,{until})"),
         None => format!("noise=drop=lt(pts*tb\\,{from})"),
     };
-    args.extend(os(&["-map", "0:v:0", "-c", "copy", "-bsf:v", &drop]));
+    let annex_b = if codec == VideoCodec::Hevc {
+        "hevc_mp4toannexb"
+    } else {
+        "h264_mp4toannexb"
+    };
+    let filters = format!("{drop},{annex_b},dump_extra=freq=keyframe");
+    args.extend(os(&["-map", "0:v:0", "-c", "copy", "-bsf:v", &filters]));
     args.extend(os(PIECE_OUTPUT));
     args.push(output.into());
     args
@@ -843,6 +936,11 @@ mod tests {
         packets
     }
 
+    /// Every key frame as a point decoding restarts at (IDR frames throughout).
+    fn every_key(packets: &[Packet]) -> Vec<f64> {
+        packets.iter().filter(|p| p.key).map(|p| p.pts).collect()
+    }
+
     fn trim(start: f64, end: f64) -> Trim {
         Trim { start, end }
     }
@@ -851,7 +949,7 @@ mod tests {
     fn copies_from_the_first_key_frame_after_the_start_to_the_last_before_the_end() {
         // Key frames every 2 s (120 frames), from 3590 s: at 3590, 3592, …
         let packets = stream(3590.0, 60 * 30, 120, false);
-        let plan = plan(&packets, trim(3600.5, 3610.25)).unwrap();
+        let plan = plan(&packets, trim(3600.5, 3610.25), &every_key(&packets)).unwrap();
         assert!((plan.copy_from - 3602.0).abs() < 1e-6, "{}", plan.copy_from);
         assert!((plan.copy_until - 3610.0).abs() < 1e-6, "{}", plan.copy_until);
         // 3600.5 … 3610.233: 585 frames, the first 90 before the first key frame.
@@ -864,7 +962,7 @@ mod tests {
     #[test]
     fn a_start_on_a_key_frame_needs_no_re_encoded_start() {
         let packets = stream(0.0, 600, 120, false);
-        let plan = plan(&packets, trim(2.0, 9.0)).unwrap();
+        let plan = plan(&packets, trim(2.0, 9.0), &every_key(&packets)).unwrap();
         assert!((plan.copy_from - 2.0).abs() < 1e-6);
         assert!(!plan.has_head());
     }
@@ -873,15 +971,24 @@ mod tests {
     fn falls_back_when_nothing_can_be_copied() {
         let packets = stream(0.0, 600, 120, false);
         // Only one key frame (at 2 s) inside the selection.
-        assert_eq!(plan(&packets, trim(1.5, 3.5)), Err(Fallback::TooShort));
+        assert_eq!(
+            plan(&packets, trim(1.5, 3.5), &every_key(&packets)),
+            Err(Fallback::TooShort)
+        );
         // None at all.
-        assert_eq!(plan(&packets, trim(0.5, 1.5)), Err(Fallback::TooShort));
+        assert_eq!(
+            plan(&packets, trim(0.5, 1.5), &every_key(&packets)),
+            Err(Fallback::TooShort)
+        );
     }
 
     #[test]
     fn falls_back_on_open_gops() {
         let packets = stream(0.0, 600, 120, true);
-        assert_eq!(plan(&packets, trim(0.5, 9.5)), Err(Fallback::OpenGop));
+        assert_eq!(
+            plan(&packets, trim(0.5, 9.5), &every_key(&packets)),
+            Err(Fallback::OpenGop)
+        );
     }
 
     #[test]
@@ -889,9 +996,15 @@ mod tests {
         // The part starts at zero, though the selection is an hour in: its
         // timestamps were reset, so nothing says where the selection is.
         let packets = stream(0.0, 600, 120, false);
-        assert_eq!(plan(&packets, trim(3600.0, 3605.0)), Err(Fallback::NotCovered));
+        assert_eq!(
+            plan(&packets, trim(3600.0, 3605.0), &every_key(&packets)),
+            Err(Fallback::NotCovered)
+        );
         // Or the part ends well before the selection does.
-        assert_eq!(plan(&packets, trim(1.0, 30.0)), Err(Fallback::NotCovered));
+        assert_eq!(
+            plan(&packets, trim(1.0, 30.0), &every_key(&packets)),
+            Err(Fallback::NotCovered)
+        );
     }
 
     #[test]
@@ -900,21 +1013,72 @@ mod tests {
         for packet in &mut packets {
             packet.dts = None;
         }
-        assert_eq!(plan(&packets, trim(0.5, 9.5)), Err(Fallback::Timing));
+        assert_eq!(
+            plan(&packets, trim(0.5, 9.5), &every_key(&packets)),
+            Err(Fallback::Timing)
+        );
 
         // Decoding runs further ahead at the last key frame than at the first.
         let mut packets = stream(0.0, 600, 120, false);
         let last_key = packets.iter().rposition(|p| p.key && p.pts < 9.5).unwrap();
         packets[last_key].dts = packets[last_key].dts.map(|dts| dts - 1.0 / 60.0);
-        assert_eq!(plan(&packets, trim(0.5, 9.5)), Err(Fallback::Timing));
+        assert_eq!(
+            plan(&packets, trim(0.5, 9.5), &every_key(&packets)),
+            Err(Fallback::Timing)
+        );
+    }
+
+    #[test]
+    fn copying_starts_only_where_decoding_restarts() {
+        let packets = stream(3590.0, 60 * 30, 120, false);
+        // Like YouTube: the key frame at 3602 s is not an IDR frame, the one at 3604 s is.
+        let restarts: Vec<f64> = every_key(&packets)
+            .into_iter()
+            .filter(|t| (t - 3602.0).abs() > 0.01)
+            .collect();
+        let cut = plan(&packets, trim(3600.5, 3610.25), &restarts).unwrap();
+        assert!((cut.copy_from - 3604.0).abs() < 1e-6, "{}", cut.copy_from);
+        // The end doesn't need one: it is re-encoded from its key frame on.
+        assert!((cut.copy_until - 3610.0).abs() < 1e-6);
+        // None at all inside the selection.
+        assert_eq!(
+            plan(&packets, trim(3600.5, 3610.25), &[3590.0]),
+            Err(Fallback::NoRestart)
+        );
+    }
+
+    #[test]
+    fn reads_which_key_frames_restart_decoding() {
+        let trace = "[trace_headers @ 0] Extradata
+[trace_headers @ 0] 3           nal_unit_type                                     00111 = 7
+[trace_headers @ 0] Packet: 176022 bytes, key frame, pts 59100, dts 59083, duration 17.
+[trace_headers @ 0] 3           nal_unit_type                                     01001 = 9
+[trace_headers @ 0] 3           nal_unit_type                                     00101 = 5
+[trace_headers @ 0] Packet: 85450 bytes, key frame, pts 60467, dts 60450, duration 17.
+[trace_headers @ 0] 3           nal_unit_type                                     00110 = 6
+[trace_headers @ 0] 3           nal_unit_type                                     00001 = 1
+[trace_headers @ 0] Packet: 64888 bytes, key frame, pts 62200, dts 62183, duration 17.
+[trace_headers @ 0] 3           nal_unit_type                                     00101 = 5
+";
+        assert_eq!(parse_restarts(trace, VideoCodec::H264, 0.001), vec![59.1, 62.2]);
+        // HEVC: IDR (19, 20) and CRA (21) frames restart decoding; a trailing picture (1) doesn't.
+        let hevc = "[trace_headers @ 0] Packet: 1 bytes, key frame, pts 900000, dts 895500, duration 1500.
+[trace_headers @ 0] 3           nal_unit_type                                    010101 = 21
+[trace_headers @ 0] Packet: 1 bytes, key frame, pts 1080000, dts 1075500, duration 1500.
+[trace_headers @ 0] 3           nal_unit_type                                    000001 = 1
+";
+        assert_eq!(parse_restarts(hevc, VideoCodec::Hevc, 1.0 / 90000.0), vec![10.0]);
     }
 
     #[test]
     fn falls_back_on_an_empty_selection() {
         // Between two frames.
         let packets = stream(0.0, 600, 120, false);
-        assert_eq!(plan(&packets, trim(5.004, 5.012)), Err(Fallback::NoFrames));
-        assert_eq!(plan(&[], trim(0.0, 1.0)), Err(Fallback::NoFrames));
+        assert_eq!(
+            plan(&packets, trim(5.004, 5.012), &every_key(&packets)),
+            Err(Fallback::NoFrames)
+        );
+        assert_eq!(plan(&[], trim(0.0, 1.0), &[]), Err(Fallback::NoFrames));
     }
 
     #[test]
@@ -969,6 +1133,7 @@ mod tests {
             color_space: "bt709".into(),
             color_transfer: "bt709".into(),
             color_primaries: "bt709".into(),
+            time_base: 1.0 / 90000.0,
         }
     }
 
@@ -1041,7 +1206,8 @@ mod tests {
     }
 
     fn a_plan() -> CutPlan {
-        plan(&stream(100.0, 60 * 20, 120, false), trim(102.5, 112.3)).unwrap()
+        let packets = stream(100.0, 60 * 20, 120, false);
+        plan(&packets, trim(102.5, 112.3), &every_key(&packets)).unwrap()
     }
 
     #[test]
@@ -1160,15 +1326,31 @@ mod tests {
 
     #[test]
     fn commands_pick_packets_by_their_own_times() {
-        let middle = copy_args(Path::new("src.mp4"), 3601.99, Some(3609.99), Path::new("mid.ts"));
+        let middle = copy_args(
+            Path::new("src.mp4"),
+            3601.99,
+            Some(3609.99),
+            VideoCodec::H264,
+            Path::new("mid.ts"),
+        );
         let middle: Vec<String> = middle.iter().map(|a| a.to_string_lossy().into_owned()).collect();
+        // Picked by time, with the parameter sets in front of every key frame.
         assert!(middle
             .iter()
-            .any(|a| a == "noise=drop=lt(pts*tb\\,3601.99)+gte(pts*tb\\,3609.99)"));
+            .any(|a| a
+                == "noise=drop=lt(pts*tb\\,3601.99)+gte(pts*tb\\,3609.99),h264_mp4toannexb,dump_extra=freq=keyframe"));
         assert!(!middle.iter().any(|a| a == "-ss"));
         assert!(middle.windows(2).any(|w| w == ["-mpegts_copyts", "1"]));
-        let rest = copy_args(Path::new("src.mp4"), 3609.99, None, Path::new("rest.ts"));
-        assert!(rest.iter().any(|a| a == "noise=drop=lt(pts*tb\\,3609.99)"));
+        let rest = copy_args(
+            Path::new("src.mp4"),
+            3609.99,
+            None,
+            VideoCodec::Hevc,
+            Path::new("rest.ts"),
+        );
+        assert!(rest
+            .iter()
+            .any(|a| a == "noise=drop=lt(pts*tb\\,3609.99),hevc_mp4toannexb,dump_extra=freq=keyframe"));
 
         let join = join_args(
             &["head.ts", "mid.ts", "tail.ts"],

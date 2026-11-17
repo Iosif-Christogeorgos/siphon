@@ -722,8 +722,14 @@ impl DownloadManager {
         let params = smart_cut::parse_params(
             &step!(self.tool(job, &ffprobe, smart_cut::params_args(source), None).await?).join("\n"),
         );
-        let plan = step!(smart_cut::plan(&source_video, trim));
         let encoder = step!(smart_cut::matching_args(&params, encode.hardware));
+        let codec = if params.codec == "hevc" {
+            VideoCodec::Hevc
+        } else {
+            video.source
+        };
+        let restarts = step!(self.restarts(job, source, codec, params.time_base, pieces).await?);
+        let plan = step!(smart_cut::plan(&source_video, trim, &restarts));
         progress(tracker);
 
         let audio = match (&recipe.audio, recipe.strip_audio) {
@@ -758,6 +764,7 @@ impl DownloadManager {
             source,
             plan.before(plan.copy_from),
             Some(plan.before(plan.copy_until)),
+            codec,
             &pieces.join("middle.ts"),
         );
         step!(self.tool(job, &ffmpeg, args, None).await?, "copying the middle");
@@ -766,7 +773,7 @@ impl DownloadManager {
         // The end is re-encoded from a copy of just its packets: decoding the
         // source from the start to reach them would take as long as the part.
         let rest = pieces.join("rest.ts");
-        let args = smart_cut::copy_args(source, plan.before(plan.copy_until), None, &rest);
+        let args = smart_cut::copy_args(source, plan.before(plan.copy_until), None, codec, &rest);
         step!(self.tool(job, &ffmpeg, args, None).await?, "copying the end's packets");
         let args = smart_cut::edge_args(
             &rest,
@@ -786,11 +793,6 @@ impl DownloadManager {
         progress(tracker);
 
         // Join them, on the video's own timestamps, starting at zero.
-        let codec = if params.codec == "hevc" {
-            VideoCodec::Hevc
-        } else {
-            video.source
-        };
         // Audio packets are at most a hundred a second (AAC at 48 kHz is 47).
         let audio_packets = audio
             .as_ref()
@@ -914,6 +916,42 @@ impl DownloadManager {
             );
         }
         Ok(shift)
+    }
+
+    /// The times of the source's key frames that decoding restarts at (see
+    /// `smart_cut::parse_restarts`).
+    async fn restarts(
+        &self,
+        job: &JobContext<'_>,
+        source: &Path,
+        codec: VideoCodec,
+        time_base: f64,
+        pieces: &Path,
+    ) -> Result<std::result::Result<Vec<f64>, Fallback>> {
+        let mut cmd = process::command(job.bins.ffmpeg());
+        cmd.args(smart_cut::key_frames_trace_args(source))
+            .current_dir(pieces)
+            // The trace goes to a report file: there is too much of it to keep in memory.
+            .env("FFREPORT", "file=keys.log:level=32");
+        match self.run_child(job.bins, job.id, cmd, |_| Flow::Continue).await {
+            Ok(_) => {}
+            Err(Failure::Stopped(_) | Failure::Abandoned) => return Err(AppError::cancelled()),
+            Err(Failure::Exited(log)) => {
+                return Ok(Err(Fallback::Failed(format!(
+                    "reading the key frames: {}",
+                    log.lines().last().unwrap_or("no message").trim()
+                ))))
+            }
+            Err(Failure::Spawn(error)) => return Ok(Err(Fallback::Failed(error.message))),
+        }
+        let trace = tokio::fs::read_to_string(pieces.join("keys.log"))
+            .await
+            .unwrap_or_default();
+        let _ = tokio::fs::remove_file(pieces.join("keys.log")).await;
+        if time_base <= 0.0 {
+            return Ok(Err(Fallback::Timing));
+        }
+        Ok(Ok(smart_cut::parse_restarts(&trace, codec, time_base)))
     }
 
     /// A stream's packets, in decode order, as ffprobe lists them.
