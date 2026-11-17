@@ -740,3 +740,146 @@ fn plain_described_streams_beat_segmented_copies() {
     );
     assert_eq!(plan_for(&video, TargetId::Windows).format_selector(), "137+140");
 }
+
+// ── Size estimates ──────────────────────────────────────────────────────
+
+/// One video stream as the calibration sources had it, ten minutes long.
+fn source(vcodec: &str, height: u32, fps: f64, kbps: f64) -> VideoInfo {
+    info(
+        vec![video("v", vcodec, height, fps, kbps), audio("a", "mp4a.40.2", 128.0)],
+        600.0,
+    )
+}
+
+#[test]
+fn quality_conversion_estimates_cover_what_test_encodes_measured() {
+    // Measured on 2026-11-17 with Siphon's settings (docs/decisions.md#size-estimates).
+    let cases = [
+        // Big Buck Bunny, VP9 4K60 at 12.2 Mbit/s → H.264 on NVENC: 33.2 Mbit/s.
+        (
+            source("vp09.00.51.08", 2160, 60.0, 12_170.0),
+            TargetId::Windows,
+            None,
+            33_200.0,
+        ),
+        // A talking head, AV1 1080p30 at 0.28 Mbit/s → H.264 on NVENC: 0.4 Mbit/s.
+        (
+            source("av01.0.08M.08", 1080, 30.0, 283.0),
+            TargetId::Windows,
+            None,
+            400.0,
+        ),
+        // The same with a key frame every second (Edit): 1.4 Mbit/s.
+        (
+            source("av01.0.08M.08", 1080, 30.0, 283.0),
+            TargetId::Premiere,
+            None,
+            1_400.0,
+        ),
+        // Big Buck Bunny's AV1 4K60 stream, stated at 9.0 Mbit/s, through Edit:
+        // 38, 47 and 64 Mbit/s in three different parts of the film.
+        (
+            source("av01.0.13M.08", 2160, 60.0, 8_982.0),
+            TargetId::Premiere,
+            None,
+            38_000.0,
+        ),
+        (
+            source("av01.0.13M.08", 2160, 60.0, 8_982.0),
+            TargetId::Premiere,
+            None,
+            64_000.0,
+        ),
+    ];
+    for (video, target, quality, measured_kbps) in cases {
+        let recipe = plan_with(
+            &video,
+            PresetChoice {
+                quality,
+                ..preset(target)
+            },
+            &nvidia(),
+        );
+        assert!(recipe.encodes_video());
+        let estimate = recipe.estimate().unwrap();
+        let audio = recipe.audio.as_ref().map_or(0.0, |audio| match audio.action {
+            AudioAction::Encode { bitrate_kbps, .. } => f64::from(bitrate_kbps.unwrap_or(0)),
+            AudioAction::Copy => 128.0,
+        });
+        let measured = ((measured_kbps + audio) * 1000.0 / 8.0 * 600.0) as u64;
+        assert!(
+            estimate.low <= measured && measured <= estimate.high,
+            "{target:?} {quality:?}: measured {measured} outside {estimate:?}"
+        );
+        assert!(estimate.is_uncertain());
+    }
+}
+
+#[test]
+fn copies_and_size_targeted_encodes_get_one_number() {
+    let copy = plan_for(&x_4k(), TargetId::Windows).estimate().unwrap();
+    assert!(!copy.is_uncertain());
+    let share = share(&youtube_without_360p(), TargetId::Discord, TierId::DiscordFree, None)
+        .estimate()
+        .unwrap();
+    assert!(!share.is_uncertain());
+    let summary = explain::summarize(&youtube_4k(), &Choice::Preset(preset(TargetId::Apple)), None, &nvidia()).unwrap();
+    // The 4K conversion is a range; the 1080p copy option is not.
+    assert!(summary.size_range.is_some());
+    let hd = summary.options.iter().find(|option| option.value == 1080).unwrap();
+    assert!(hd.size_range.is_none() && !hd.converts);
+}
+
+#[test]
+fn prores_estimates_follow_frames_not_the_source() {
+    let bbb = info(
+        vec![
+            video("1080", "vp09.00.41.08", 1080, 60.0, 4_000.0),
+            video("2160", "vp09.00.51.08", 2160, 60.0, 12_170.0),
+            audio("a", "opus", 160.0),
+        ],
+        600.0,
+    );
+    let recipe = plan_with(
+        &bbb,
+        PresetChoice {
+            smooth_editing: true,
+            ..preset(TargetId::Resolve)
+        },
+        &nvidia(),
+    );
+    // Measured: 277 Mbit/s at 1080p60 for Big Buck Bunny.
+    let estimate = recipe.estimate().unwrap();
+    let measured = (277_000.0 * 1000.0 / 8.0 * 600.0) as u64;
+    assert!(estimate.low <= measured && measured <= estimate.high, "{estimate:?}");
+}
+
+#[test]
+fn trimmed_parts_give_up_on_a_stalled_connection() {
+    let trim = Some(Trim {
+        start: 10.0,
+        end: 20.0,
+        exact: false,
+    });
+    let recipe = plan(
+        &x_4k(),
+        &Choice::Preset(preset(TargetId::Windows)),
+        trim,
+        &Capabilities::BASIC,
+    )
+    .unwrap();
+    let yt_dlp = args::recipe_args(&recipe);
+    assert!(yt_dlp
+        .iter()
+        .any(|arg| arg.starts_with("ffmpeg_i:") && arg.contains("-rw_timeout 20000000")));
+}
+
+#[test]
+fn a_second_copy_is_numbered_in_its_name() {
+    let recipe = plan_for(&x_4k(), TargetId::Windows);
+    assert_eq!(args::output_template(&recipe, "%(title)s", None), "%(title)s.%(ext)s");
+    assert_eq!(
+        args::output_template(&recipe, "%(title)s", Some(2)),
+        "%(title)s (2).%(ext)s"
+    );
+}

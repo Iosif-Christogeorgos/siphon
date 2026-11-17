@@ -229,14 +229,18 @@ export interface QualityOption {
   /** Picking this means converting. */
   converts: boolean;
   estimated_size: number | null;
+  /** Low and high, when the size depends on the picture. */
+  size_range: [number, number] | null;
 }
 
 export interface PlanSummary {
   badge: Badge;
   headline: string;
   detail: string;
-  /** Bytes, when predictable. */
+  /** Bytes, when predictable: the likely value. */
   estimated_size: number | null;
+  /** Low and high, when the size depends on the picture (a conversion): shown instead. */
+  size_range: [number, number] | null;
   /** Roughly how long converting takes, in seconds. */
   convert_seconds: number | null;
   hints: Hint[];

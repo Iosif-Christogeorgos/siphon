@@ -196,6 +196,8 @@ pub struct VideoStep {
     pub hdr: bool,
     /// Bytes of the source stream.
     pub size: Option<u64>,
+    /// The source stream's bitrate in kbit/s, when known.
+    pub kbps: Option<f64>,
     pub action: VideoAction,
 }
 
@@ -392,44 +394,41 @@ impl Recipe {
         Some(((video + audio) as f64 * self.source_fraction) as u64)
     }
 
-    /// Best guess at the finished file's size in bytes.
+    /// Best guess at the finished file's size in bytes (the likely value of [`Recipe::estimate`]).
     pub fn estimated_size(&self) -> Option<u64> {
+        self.estimate().map(|estimate| estimate.likely)
+    }
+
+    /// The finished file's size: the likely value, and how far either way it
+    /// can reasonably land. Copies and size-targeted encodes are near-certain;
+    /// a constant-quality encode depends on the picture, so it gets a range.
+    pub fn estimate(&self) -> Option<SizeEstimate> {
         let duration = self.duration;
-        let bitrate = |kbps: f64| duration.map(|d| (kbps * 1000.0 / 8.0 * d) as u64);
+        let bitrate = |kbps: f64| duration.map(|d| kbps * 1000.0 / 8.0 * d);
         let video = match &self.video {
-            None => Some(0),
+            None => Some(SizeEstimate::exact(0.0)),
             Some(step) => match &step.action {
-                VideoAction::Copy => step.size.map(|size| (size as f64 * self.source_fraction) as u64),
+                VideoAction::Copy => step
+                    .size
+                    .map(|size| SizeEstimate::exact(size as f64 * self.source_fraction)),
                 VideoAction::Encode(encode) => match (encode.codec, encode.bitrate_kbps) {
-                    (_, Some(kbps)) => bitrate(f64::from(kbps)),
-                    (VideoCodec::Prores, None) => bitrate(self.prores_kbps()),
-                    // Constant-quality encodes depend on the content: assume
-                    // about what the source spends, scaled to the new size.
-                    (codec, None) => step.size.zip(duration.filter(|d| *d > 0.0)).map(|(size, _)| {
-                        let scale = match (encode.scale_lines, step.lines) {
-                            (Some(lines), source) if source > 0 && lines < source => {
-                                (f64::from(lines) / f64::from(source)).powi(2)
-                            }
-                            _ => 1.0,
-                        };
-                        let efficiency = match (step.source, codec) {
-                            (VideoCodec::Av1, VideoCodec::H264) => 1.8,
-                            (VideoCodec::Vp9, VideoCodec::H264) | (VideoCodec::Av1, VideoCodec::Hevc) => 1.4,
-                            (VideoCodec::H264, VideoCodec::Hevc) => 0.7,
-                            _ => 1.0,
-                        };
-                        (size as f64 * self.source_fraction * scale * efficiency) as u64
+                    (_, Some(kbps)) => bitrate(f64::from(kbps)).map(SizeEstimate::exact),
+                    (VideoCodec::Prores, None) => {
+                        bitrate(self.prores_kbps()).map(|likely| SizeEstimate::spread(likely, 0.8, 1.25))
+                    }
+                    (_, None) => self.quality_encode_kbps(step, encode).and_then(|(kbps, low, high)| {
+                        bitrate(kbps).map(|likely| SizeEstimate::spread(likely, low, high))
                     }),
                 },
             },
         }?;
         let audio = match &self.audio {
-            None => Some(0),
-            Some(_) if self.strip_audio => Some(0),
+            None => Some(0.0),
+            Some(_) if self.strip_audio => Some(0.0),
             Some(step) => match step.action {
                 // Audio inside a muxed stream is already counted with the video.
-                AudioAction::Copy if step.format_id.is_none() => Some(0),
-                AudioAction::Copy => step.size.map(|size| (size as f64 * self.source_fraction) as u64),
+                AudioAction::Copy if step.format_id.is_none() => Some(0.0),
+                AudioAction::Copy => step.size.map(|size| size as f64 * self.source_fraction),
                 AudioAction::Encode {
                     codec: AudioCodec::Pcm, ..
                 } => bitrate(1536.0),
@@ -440,15 +439,56 @@ impl Recipe {
                 AudioAction::Encode { .. } => step.source_kbps.and_then(bitrate),
             },
         }?;
-        Some(video + audio)
+        Some(video.plus(audio))
     }
 
-    /// ProRes 422 is ~147 Mbit/s at 1080p30 and scales with pixels and frame rate.
+    /// What a constant-quality encode is likely to spend, in kbit/s, with the
+    /// factors below and above it that cover most videos.
+    ///
+    /// Calibrated on this machine (2026-11-17, docs/decisions.md#size-estimates):
+    /// the source's own bitrate says how complex the picture is, far better
+    /// than resolution alone (a talking head needed a tenth of the bits per
+    /// pixel of Big Buck Bunny). Scaled to the new size by pixels per second
+    /// to the power 0.75, an encode at Siphon's quality settings lands at
+    /// about 1.4× (a talking head) to 2.7× (busy animation) it for H.264 on
+    /// the GPU, and about 1.5× for HEVC. Sites state an average bitrate, and
+    /// a busy part of the same video can need twice the average.
+    fn quality_encode_kbps(&self, step: &VideoStep, encode: &VideoEncode) -> Option<(f64, f64, f64)> {
+        let full = self.duration.filter(|d| *d > 0.0)? / self.source_fraction.max(0.001);
+        let source_kbps = step
+            .kbps
+            .or_else(|| step.size.map(|size| size as f64 * 8.0 / 1000.0 / full))?;
+        let source_rate = f64::from(step.lines.max(1)).powi(2) * step.fps.unwrap_or(30.0);
+        let output_rate =
+            f64::from(self.output_lines().unwrap_or(step.lines).max(1)).powi(2) * self.output_fps().unwrap_or(30.0);
+        let scale = (output_rate / source_rate).powf(0.75);
+        let software = encode.hardware == Hardware::Software;
+        let codec = match encode.codec {
+            VideoCodec::H264 if software => 1.5,
+            VideoCodec::H264 => 2.2,
+            VideoCodec::Hevc if software => 1.0,
+            VideoCodec::Hevc => 1.4,
+            _ => 1.0,
+        };
+        // A newer codec needs fewer bits for the same picture, so its bitrate understates it.
+        let source = match step.source {
+            VideoCodec::Av1 => 1.1,
+            VideoCodec::Hevc => 0.85,
+            VideoCodec::H264 => 0.75,
+            _ => 1.0,
+        };
+        // A key frame every second (Edit) costs most on still pictures: up to 3.5× measured.
+        let keyframes = if encode.keyframe_seconds.is_some() { 1.6 } else { 1.0 };
+        // Content swings it two ways: half to double covers every case measured.
+        Some((source_kbps * scale * codec * source * keyframes, 0.5, 2.0))
+    }
+
+    /// ProRes 422 spends about 4.3 Mbit per 1080p frame whatever the picture
+    /// (measured 4.0–4.6), scaling with pixels.
     fn prores_kbps(&self) -> f64 {
         let Some(step) = &self.video else { return 0.0 };
         let lines = f64::from(self.output_lines().unwrap_or(step.lines));
-        let pixels = lines * lines * 16.0 / 9.0;
-        147_000.0 * (pixels / (1920.0 * 1080.0)) * (self.output_fps().unwrap_or(30.0) / 30.0)
+        4_300.0 * (lines / 1080.0).powi(2) * self.output_fps().unwrap_or(30.0)
     }
 
     /// The same recipe, encoding on the CPU: for when a hardware encoder
@@ -483,6 +523,42 @@ impl Recipe {
             encode.bitrate_kbps = Some(lower);
         }
         Some(recipe)
+    }
+}
+
+/// A size in bytes: the likely value, and the range it can reasonably land in.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SizeEstimate {
+    pub low: u64,
+    pub likely: u64,
+    pub high: u64,
+}
+
+impl SizeEstimate {
+    fn exact(bytes: f64) -> Self {
+        Self::spread(bytes, 1.0, 1.0)
+    }
+
+    fn spread(likely: f64, low: f64, high: f64) -> Self {
+        Self {
+            low: (likely * low) as u64,
+            likely: likely as u64,
+            high: (likely * high) as u64,
+        }
+    }
+
+    fn plus(self, bytes: f64) -> Self {
+        let bytes = bytes as u64;
+        Self {
+            low: self.low + bytes,
+            likely: self.likely + bytes,
+            high: self.high + bytes,
+        }
+    }
+
+    /// True when the range is wide enough to show instead of one number.
+    pub fn is_uncertain(&self) -> bool {
+        self.high > self.likely + self.likely / 10
     }
 }
 
@@ -785,6 +861,7 @@ impl<'a> Planner<'a> {
             fps: video.format.fps,
             hdr: video.hdr,
             size: video.format.filesize,
+            kbps: video.format.vbr.or(video.format.tbr),
             action,
         }
     }

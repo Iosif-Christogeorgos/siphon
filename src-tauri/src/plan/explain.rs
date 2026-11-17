@@ -18,8 +18,11 @@ pub struct PlanSummary {
     pub headline: String,
     /// "Plays natively on Windows 11. Original streams, no re-encoding."
     pub detail: String,
-    /// Bytes, when it can be predicted.
+    /// Bytes, when it can be predicted: the likely value.
     pub estimated_size: Option<u64>,
+    /// Bytes, low and high, when the size depends on the picture (a
+    /// constant-quality conversion): show this range rather than one number.
+    pub size_range: Option<[u64; 2]>,
     /// Roughly how long converting takes, in seconds, when anything is converted.
     pub convert_seconds: Option<f64>,
     pub hints: Vec<Hint>,
@@ -40,6 +43,7 @@ pub struct QualityOption {
     /// Picking this means converting.
     pub converts: bool,
     pub estimated_size: Option<u64>,
+    pub size_range: Option<[u64; 2]>,
 }
 
 /// Plans `choice` and describes the result, along with the size each other
@@ -60,6 +64,7 @@ pub fn summarize(video: &VideoInfo, choice: &Choice, trim: Option<Trim>, caps: &
                     value,
                     converts: other.encodes_video() || other.encodes_audio(),
                     estimated_size: other.estimated_size(),
+                    size_range: range(&other),
                 })
             })
             .collect(),
@@ -79,6 +84,7 @@ pub fn summarize(video: &VideoInfo, choice: &Choice, trim: Option<Trim>, caps: &
         headline: headline(&recipe, is_share),
         detail: detail(&recipe),
         estimated_size: recipe.estimated_size(),
+        size_range: range(&recipe),
         convert_seconds: convert_seconds(&recipe),
         hints: recipe.hints.clone(),
         quality,
@@ -87,6 +93,13 @@ pub fn summarize(video: &VideoInfo, choice: &Choice, trim: Option<Trim>, caps: &
         ext: recipe.container.ext(),
         blocked: recipe.blocked.clone(),
     })
+}
+
+fn range(recipe: &Recipe) -> Option<[u64; 2]> {
+    recipe
+        .estimate()
+        .filter(|estimate| estimate.is_uncertain())
+        .map(|estimate| [estimate.low, estimate.high])
 }
 
 /// "1080p60", "2160p", or "" when the site didn't report a resolution.
