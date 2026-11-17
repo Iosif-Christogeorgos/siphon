@@ -29,8 +29,12 @@ const FILENAME_STYLES: { id: FilenameStyle; label: string; example: string }[] =
 /** Mirrors `MAX_CONCURRENT_LIMIT` in settings.rs. */
 const MAX_CONCURRENT = 6;
 
-/** The speed limits offered with one click, in MB/s. */
-const SPEED_LIMITS = [2, 5, 10, 25];
+/**
+ * The speed limits offered with one click, in MB/s. Any other limit shows as
+ * Custom, with its value: that includes one saved from an earlier set of
+ * presets (2, 5, 10 and 25), so changing this list never changes a limit.
+ */
+const SPEED_LIMITS = [20, 30, 40, 50];
 
 /** Preferences: where files go, how they are named, how many download at once, and updates. */
 export function SettingsSheet() {
