@@ -1,6 +1,6 @@
 import { X } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { spring } from "@/lib/motion";
 import { type Toast, useToasts } from "@/stores/toasts";
 
@@ -34,15 +34,16 @@ function ToastCard({ toast }: { toast: Toast }) {
   const dismiss = useToasts((state) => state.dismiss);
   const timer = useRef<number | undefined>(undefined);
 
-  const start = () => {
+  const start = useCallback(() => {
     window.clearTimeout(timer.current);
     timer.current = window.setTimeout(() => dismiss(toast.id), VISIBLE_MS);
-  };
-  const hold = () => window.clearTimeout(timer.current);
+  }, [dismiss, toast.id]);
+  const hold = useCallback(() => window.clearTimeout(timer.current), []);
+  // A replaced toast (same id, new text) gets its full time again.
   useEffect(() => {
     start();
     return hold;
-  }, [toast]);
+  }, [start, hold, toast]);
 
   return (
     <div

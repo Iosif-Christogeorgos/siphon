@@ -1,4 +1,6 @@
-import type { ReactNode } from "react";
+import { Bookmark, Trash2 } from "lucide-react";
+import { type FormEvent, type ReactNode, useState } from "react";
+import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { formatBytes } from "@/lib/format";
@@ -11,7 +13,7 @@ import {
   VIDEO_CODEC_LABELS,
   videoFormats,
 } from "@/lib/formats";
-import { useOptions } from "@/stores/options";
+import { useChoices } from "@/stores/choices";
 import type { AudioCodec, Container, Content, Format, VideoCodec, VideoInfo } from "@/types";
 
 const CONTENT: { id: Content; label: string }[] = [
@@ -36,8 +38,12 @@ const sizeHint = (format: Format) =>
 
 /** Manual mode: pick the exact streams, container and codecs. */
 export function ManualPanel({ video, disabled }: { video: VideoInfo; disabled: boolean }) {
-  const manual = useOptions((state) => state.manual);
-  const setManual = useOptions((state) => state.setManual);
+  const choices = useChoices((state) => state.choices);
+  const setManual = useChoices((state) => state.setCustom);
+  if (!choices) return null;
+  const saved =
+    choices.active.kind === "saved" ? choices.saved.find((preset) => preset.id === (choices.active as { id: string }).id) : undefined;
+  const manual = saved?.options ?? choices.custom;
 
   const videos = videoFormats(video.formats);
   const audios = audioFormats(video.formats);
@@ -173,7 +179,49 @@ export function ManualPanel({ video, disabled }: { video: VideoInfo; disabled: b
           </Field>
         )}
       </div>
+      <SaveRow savedName={saved?.name ?? null} savedId={saved?.id ?? null} disabled={disabled} />
     </div>
+  );
+}
+
+/** Save these settings as a named preset, or delete the saved one shown. */
+function SaveRow({ savedName, savedId, disabled }: { savedName: string | null; savedId: string | null; disabled: boolean }) {
+  const [name, setName] = useState("");
+  const { savePreset, deleteSaved } = useChoices.getState();
+  if (savedId) {
+    return (
+      <div className="flex items-center justify-between gap-3 border-t pt-3 text-[13px]">
+        <span className="flex min-w-0 items-center gap-1.5 text-muted-foreground">
+          <Bookmark className="size-3.5 shrink-0 text-primary" />
+          <span className="truncate">Your preset “{savedName}”</span>
+        </span>
+        <Button variant="ghost" size="sm" disabled={disabled} onClick={() => deleteSaved(savedId)}>
+          <Trash2 /> Delete
+        </Button>
+      </div>
+    );
+  }
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    if (!name.trim()) return;
+    savePreset(name);
+    setName("");
+  };
+  return (
+    <form onSubmit={submit} className="flex items-center gap-2 border-t pt-3">
+      <input
+        value={name}
+        onChange={(event) => setName(event.target.value)}
+        maxLength={40}
+        disabled={disabled}
+        placeholder="Name these settings to use them again"
+        aria-label="Preset name"
+        className="h-8 min-w-0 flex-1 rounded-lg border border-border-strong bg-card px-3 text-[13px] outline-none transition-[border-color,box-shadow] duration-150 placeholder:text-subtle-foreground focus:border-primary/60 focus:shadow-[0_0_0_3px_var(--primary-soft)]"
+      />
+      <Button type="submit" variant="secondary" size="sm" disabled={disabled || !name.trim()}>
+        <Bookmark /> Save as preset
+      </Button>
+    </form>
   );
 }
 

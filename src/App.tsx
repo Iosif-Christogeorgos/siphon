@@ -11,6 +11,7 @@ import { onDownloadEvent, onToolStatus, onToolUpdated } from "@/lib/ipc";
 import { TOOL_NAMES } from "@/lib/tools";
 import { useAppUpdate } from "@/stores/appUpdate";
 import { selectAllUsable, useBinaries } from "@/stores/binaries";
+import { useChoices } from "@/stores/choices";
 import { useDownloads } from "@/stores/downloads";
 import { useToasts } from "@/stores/toasts";
 
@@ -32,6 +33,8 @@ export function App() {
         }),
       ),
     ];
+    // What was chosen last time (and, once, what an older version remembered).
+    void useChoices.getState().load();
     void useBinaries
       .getState()
       .sync()

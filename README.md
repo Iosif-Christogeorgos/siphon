@@ -56,7 +56,10 @@ Released versions are not built by hand: see [Releases](#releases).
 
 ```sh
 npm run typecheck                                  # TypeScript
+npm run lint                                       # oxlint: correctness, React hooks, unused code
+npm run knip                                       # unused files, exports and dependencies
 cargo test --manifest-path src-tauri/Cargo.toml    # Rust unit tests
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 ```
 
 ## How it works
@@ -88,13 +91,25 @@ On macOS, `yt-dlp/FFmpeg-Builds` publishes no builds, so Siphon uses the FFmpeg 
 
 ### Presets and the planner
 
-A preset says where the video will be watched (iPhone, Android, Windows 11, Mac, Smart TV), or what it is for (editing, sharing under a size limit, audio only, maximum quality). **Custom** lets you choose the streams, file type and codecs yourself.
+Presets start from where the video is going. Pick a **group**, then a **target** in it, and optionally a **quality**:
 
-The planner in `src-tauri/src/plan` turns that choice into a recipe: which streams to fetch, whether each is copied or converted, and the container. It copies original streams whenever the target can play them, because converting is slower and never improves quality. The summary shown above the Download button is generated from the same recipe that builds the commands, so the app cannot describe one thing and do another.
+| Group | Targets | What you get |
+| --- | --- | --- |
+| Watch | Windows · iPhone / iPad / Mac · Android · TV | The best version that plays natively on the device |
+| Edit | Premiere Pro · DaVinci Resolve · CapCut · Vegas | Constant frame rate H.264 with 48 kHz sound; or ProRes with **Smoothest editing (large files)** |
+| Audio | Music · Best audio (original) | MP3 or M4A at a chosen bitrate, or the original track untouched |
+| Max quality | | The best streams exactly as the site has them; may not play everywhere |
+| Share | Discord · WhatsApp · TikTok / Reels / Shorts | The best quality that fits the upload limit of your tier |
 
-When a conversion is needed, Siphon runs its own ffmpeg pass with a hardware encoder (NVENC, Quick Sync, AMF or VideoToolbox) if a short test encode shows it works on your machine, and falls back to software otherwise.
+The quality row offers **Best** and the resolutions the video actually has, each with its estimated size; a lower one downloads the matching stream, and nothing is upscaled. Music offers bitrates instead; Max quality and Share have no quality row. **Customize** (under the summary) opens the old manual mode, where you choose the streams, file type and codecs yourself, and can save them as a named preset that appears under **My presets**. Siphon remembers the last group, target, quality and Share tier.
 
-What each device can play, and the sources for it, are in [docs/device-support.md](docs/device-support.md).
+The presets are defined once, in `src-tauri/src/plan/registry.rs`, and the interface reads them from the backend. The planner in `src-tauri/src/plan` turns a choice into a recipe from the formats the video really offers: the same Apple preset copies X's 4K H.264 file but converts YouTube's 4K VP9 to HEVC. It copies original streams whenever the target can play them, because converting is slower and never improves quality. The summary above the Download button is generated from the same recipe that builds the commands, so the app cannot describe one thing and do another. It marks each plan **No quality loss**, **Converts** (with a rough time), **Size-optimized** or **May not play everywhere**.
+
+When a conversion is needed, Siphon runs its own ffmpeg pass with a hardware encoder (NVENC, Quick Sync, AMF or VideoToolbox) if a short test encode shows it works on your machine, and falls back to software otherwise. The downloaded source waits in a work folder until the finished file is written and checked, so a failed conversion can be tried again without downloading again.
+
+**Share** works out the bitrate from the limit and the length (the trimmed length, if you trimmed), picks the size and frame rate that look best for it (a clean 720p30 rather than a blocky 1080p60), and checks the finished file, encoding again a little smaller if it came out over. An original that already fits is copied as it is. A video too long to look decent under the limit isn't made at all: Siphon suggests trimming it instead.
+
+What each target plays or needs, the upload limits, and the sources for them are in [docs/presets.md](docs/presets.md).
 
 ### Trimming
 
@@ -126,9 +141,9 @@ Every download joins a queue. A set number run at once (three by default) and th
 - Every new try, automatic or with **Try again**, carries on from what the last one fetched instead of starting over.
 - Closing the app stops every download and deletes their partial files, so no yt-dlp or ffmpeg process and no half-finished file is left behind. The list itself is not kept between sessions.
 
-A playlist link shows its videos with checkboxes. The ones you select are added to the queue with the current preset, and the best format is worked out for each video when its turn comes. A YouTube video link that also names a playlist offers a way to the whole playlist.
+A playlist link shows its videos with checkboxes. The ones you select are added to the queue with the current preset, and the best format is worked out for each video when its turn comes. The estimated total size fills in as Siphon looks the selected videos up. A YouTube video link that also names a playlist offers a way to the whole playlist.
 
-**Settings** (the gear in the title bar) holds the download folder, the file-name style, the number of simultaneous downloads, the theme and the update choices. They are stored in `settings.json` in the app's config folder (`%APPDATA%\app.siphon.desktop` on Windows), except the theme, which only the interface uses and which is kept with it.
+**Settings** (the gear in the title bar) holds the download folder, the file-name style, the number of simultaneous downloads, the theme and the update choices. They are stored in `settings.json` in the app's config folder (`%APPDATA%\app.siphon.desktop` on Windows), except the theme, which only the interface uses and which is kept with it. The last preset choice and your saved presets are in `choices.json` next to it.
 
 The theme follows Windows' light or dark mode by default (**System**), and changes when Windows does. **Light** or **Dark** keeps Siphon in that theme whatever Windows uses.
 
@@ -173,15 +188,16 @@ Progress comes from `--progress-template` lines that the backend parses and fold
 ```
 src/                     React + TypeScript frontend
   components/            Shared UI (title bar, error card, shadcn/ui primitives)
-  features/              One folder per feature: setup, link, video, playlist, options, trim,
-                         download, queue, settings, home
+  features/              One folder per feature: setup, link, video, playlist, presets, options,
+                         trim, download, queue, settings, home
   lib/                   IPC wrappers, formatting, motion presets
-  stores/                Zustand stores (binaries, downloads, options, trim, toasts, appUpdate, ui)
+  stores/                Zustand stores (binaries, choices, downloads, trim, toasts, appUpdate, ui)
   types.ts               Types mirrored from the Rust backend
 src-tauri/               Rust backend (Tauri 2)
   src/binaries/          Download, verify, install and update the managed tools
   src/ytdlp/             Command building, metadata, progress parsing, error classification
-  src/plan/              Presets, codec rules and the planner (options → recipe → summary)
+  src/plan/              The preset registry, codec rules and the planner (choice → recipe → summary)
+  src/choices.rs         The remembered choice and saved presets (choices.json), and migrating old ones
   src/ffmpeg/            Hardware encoder detection and conversion arguments
   src/downloads/         The download queue, jobs (pause, resume, cancel) and progress tracking
   src/settings.rs        User preferences and where they are stored
@@ -189,7 +205,7 @@ src-tauri/               Rust backend (Tauri 2)
   src/preview.rs         Where the trim preview plays from (embed, stream or cached copy)
   src/commands.rs        The IPC surface
 .github/workflows/release.yml   Builds and signs a draft release when a version tag is pushed
-docs/device-support.md   What each preset assumes about its device, with sources
+docs/presets.md          What each preset does and assumes, with sources
 docs/decisions.md        Why things work the way they do, and known issues
 app-icon.svg             Icon source; regenerate with `npx tauri icon app-icon.svg`
 ```

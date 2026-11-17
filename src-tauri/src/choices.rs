@@ -1,0 +1,313 @@
+//! What Siphon remembers between downloads: the last group and target, the
+//! quality, the Share tiers and the user's own saved presets. Kept in
+//! `choices.json` in the app's config folder, next to `settings.json`.
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use tauri::{AppHandle, Manager};
+
+use crate::error::{AppError, Result};
+use crate::plan::registry::{Group, MusicFormat, TargetId, TierId};
+use crate::plan::{Content, ManualOptions};
+
+/// Which kind of choice is active.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Active {
+    /// A preset from the registry.
+    #[default]
+    Preset,
+    /// The custom settings being edited.
+    Custom,
+    /// One of the user's saved presets.
+    Saved { id: String },
+}
+
+/// Custom settings the user saved under a name.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SavedPreset {
+    pub id: String,
+    pub name: String,
+    pub options: ManualOptions,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Choices {
+    pub active: Active,
+    pub group: Group,
+    /// The target last used in each group.
+    pub targets: HashMap<Group, TargetId>,
+    /// The quality row for video: a resolution (short side). `None` is "Best".
+    pub quality: Option<u32>,
+    /// The quality row for Music: a bitrate in kbit/s. `None` is "Best".
+    pub music_kbps: Option<u32>,
+    /// The tier picked for each Share target.
+    pub tiers: HashMap<TargetId, TierId>,
+    pub music_format: MusicFormat,
+    pub smooth_editing: bool,
+    /// Trim: cut on exact frames (re-encodes) or fast (key frames).
+    pub exact_cut: bool,
+    pub custom: ManualOptions,
+    pub saved: Vec<SavedPreset>,
+}
+
+impl Default for Choices {
+    fn default() -> Self {
+        Self {
+            active: Active::Preset,
+            group: Group::Watch,
+            targets: HashMap::new(),
+            quality: None,
+            music_kbps: None,
+            tiers: HashMap::new(),
+            music_format: MusicFormat::default(),
+            smooth_editing: false,
+            exact_cut: true,
+            custom: ManualOptions::default(),
+            saved: Vec::new(),
+        }
+    }
+}
+
+/// The longest name a saved preset may have.
+const MAX_NAME: usize = 40;
+
+impl Choices {
+    /// Drops anything that no longer makes sense: a target remembered for the
+    /// wrong group, a tier of another target, a saved preset that is gone.
+    fn sanitized(mut self) -> Result<Self> {
+        self.targets.retain(|group, target| target.group() == *group);
+        self.tiers
+            .retain(|target, tier| target.info().tiers.iter().any(|known| known.id == *tier));
+        // Stream ids belong to one video, not to what is remembered.
+        self.custom.video_format = None;
+        self.custom.audio_format = None;
+        for preset in &mut self.saved {
+            preset.name = preset.name.trim().chars().take(MAX_NAME).collect();
+            // Stream ids belong to one video, not to a preset.
+            preset.options.video_format = None;
+            preset.options.audio_format = None;
+        }
+        if self.saved.iter().any(|preset| preset.name.is_empty()) {
+            return Err(AppError::internal("A saved preset needs a name."));
+        }
+        if let Active::Saved { id } = &self.active {
+            if !self.saved.iter().any(|preset| &preset.id == id) {
+                self.active = Active::Custom;
+            }
+        }
+        Ok(self)
+    }
+}
+
+pub struct ChoiceStore {
+    file: PathBuf,
+    current: Mutex<Choices>,
+}
+
+impl ChoiceStore {
+    pub fn load(app: &AppHandle) -> Result<Self> {
+        let dir = app
+            .path()
+            .app_config_dir()
+            .map_err(|err| AppError::setup("Couldn't locate the settings folder.").with_details(err.to_string()))?;
+        std::fs::create_dir_all(&dir)?;
+        let file = dir.join("choices.json");
+        // A missing or damaged file just means defaults.
+        let current = read(&file)
+            .and_then(|choices| choices.sanitized().ok())
+            .unwrap_or_default();
+        Ok(Self {
+            file,
+            current: Mutex::new(current),
+        })
+    }
+
+    pub fn get(&self) -> Choices {
+        self.current.lock().unwrap().clone()
+    }
+
+    /// True when nothing has been saved yet: an install from before presets
+    /// were remembered here, or a first launch.
+    pub fn is_new(&self) -> bool {
+        !self.file.exists()
+    }
+
+    /// Validates, saves and returns the choices as stored.
+    pub fn set(&self, choices: Choices) -> Result<Choices> {
+        let choices = choices.sanitized()?;
+        // Write-then-rename so a crash can't leave a half-written file.
+        let tmp = self.file.with_extension("json.tmp");
+        std::fs::write(&tmp, serde_json::to_vec_pretty(&choices)?)?;
+        std::fs::rename(&tmp, &self.file)?;
+        *self.current.lock().unwrap() = choices.clone();
+        Ok(choices)
+    }
+}
+
+fn read(file: &Path) -> Option<Choices> {
+    serde_json::from_slice(&std::fs::read(file).ok()?).ok()
+}
+
+// ── Migration ───────────────────────────────────────────────────────────
+//
+// Up to 0.6, the interface kept the last choice in the webview's storage
+// (`siphon.options`), with one flat list of presets. The frontend hands that
+// value over once; this turns it into the new choices. This is the only place
+// the old preset ids may appear.
+
+/// Builds choices from the old `siphon.options` state.
+pub fn from_legacy(old: &Value) -> Choices {
+    let mut choices = Choices::default();
+    let text = |key: &str| old.get(key).and_then(Value::as_str);
+
+    if let Some(exact) = old.get("exactCut").and_then(Value::as_bool) {
+        choices.exact_cut = exact;
+    }
+    if let Some(manual) = old.get("manual") {
+        choices.custom = ManualOptions {
+            content: field(manual, "content").unwrap_or(Content::VideoAudio),
+            video_format: None,
+            audio_format: None,
+            container: field(manual, "container"),
+            // The old custom mode offered no codec the new one lacks.
+            video_codec: field(manual, "video_codec"),
+            audio_codec: field(manual, "audio_codec"),
+        };
+    }
+
+    let size_limit = old.get("sizeLimitMb").and_then(Value::as_u64);
+    let target = match text("preset") {
+        Some("iphone" | "macos") => Some(TargetId::Apple),
+        Some("android") => Some(TargetId::Android),
+        Some("windows") => Some(TargetId::Windows),
+        Some("tv") => Some(TargetId::Tv),
+        Some("editing") => {
+            // The old editing preset made intermediate files.
+            choices.smooth_editing = true;
+            Some(TargetId::Premiere)
+        }
+        Some("audio") => Some(TargetId::Original),
+        Some("max") => Some(TargetId::Max),
+        Some("share") => {
+            let (target, tier) = match size_limit {
+                Some(16) => (TargetId::Whatsapp, TierId::WhatsappStandard),
+                Some(50) => (TargetId::Discord, TierId::DiscordNitroBasic),
+                Some(100) => (TargetId::Whatsapp, TierId::WhatsappHd),
+                Some(500) => (TargetId::Discord, TierId::DiscordNitro),
+                _ => (TargetId::Discord, TierId::DiscordFree),
+            };
+            choices.tiers.insert(target, tier);
+            Some(target)
+        }
+        _ => None,
+    };
+    if let Some(target) = target {
+        choices.group = target.group();
+        choices.targets.insert(target.group(), target);
+    }
+    if text("mode") == Some("manual") {
+        choices.active = Active::Custom;
+    }
+    choices.sanitized().unwrap_or_default()
+}
+
+fn field<T: serde::de::DeserializeOwned>(value: &Value, key: &str) -> Option<T> {
+    value
+        .get(key)
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plan::codecs::Container;
+    use serde_json::json;
+
+    #[test]
+    fn old_device_presets_become_watch_targets() {
+        let choices = from_legacy(&json!({"mode": "preset", "preset": "iphone", "exactCut": false}));
+        assert_eq!(choices.group, Group::Watch);
+        assert_eq!(choices.targets.get(&Group::Watch), Some(&TargetId::Apple));
+        assert!(!choices.exact_cut);
+        assert_eq!(choices.active, Active::Preset);
+        assert_eq!(
+            from_legacy(&json!({"preset": "macos"})).targets.get(&Group::Watch),
+            Some(&TargetId::Apple)
+        );
+    }
+
+    #[test]
+    fn the_old_share_limit_picks_a_target_and_tier() {
+        let choices = from_legacy(&json!({"preset": "share", "sizeLimitMb": 50}));
+        assert_eq!(choices.group, Group::Share);
+        assert_eq!(choices.targets.get(&Group::Share), Some(&TargetId::Discord));
+        assert_eq!(choices.tiers.get(&TargetId::Discord), Some(&TierId::DiscordNitroBasic));
+
+        let whatsapp = from_legacy(&json!({"preset": "share", "sizeLimitMb": 16}));
+        assert_eq!(whatsapp.targets.get(&Group::Share), Some(&TargetId::Whatsapp));
+    }
+
+    #[test]
+    fn editing_audio_and_max_carry_over() {
+        let editing = from_legacy(&json!({"preset": "editing"}));
+        assert_eq!(editing.targets.get(&Group::Edit), Some(&TargetId::Premiere));
+        assert!(editing.smooth_editing);
+        assert_eq!(from_legacy(&json!({"preset": "audio"})).group, Group::Audio);
+        assert_eq!(from_legacy(&json!({"preset": "max"})).group, Group::Max);
+    }
+
+    #[test]
+    fn custom_mode_keeps_its_settings_but_not_stream_ids() {
+        let choices = from_legacy(&json!({
+            "mode": "manual",
+            "preset": "windows",
+            "manual": {"content": "video_only", "container": "mkv", "video_format": "137", "video_codec": null}
+        }));
+        assert_eq!(choices.active, Active::Custom);
+        assert_eq!(choices.custom.content, Content::VideoOnly);
+        assert_eq!(choices.custom.container, Some(Container::Mkv));
+        assert_eq!(choices.custom.video_format, None);
+    }
+
+    #[test]
+    fn unknown_or_damaged_values_fall_back_to_defaults() {
+        assert_eq!(from_legacy(&json!({"preset": "toaster"})), Choices::default());
+        assert_eq!(from_legacy(&json!("nonsense")), Choices::default());
+    }
+
+    #[test]
+    fn saved_choices_are_checked() {
+        let mut choices = Choices::default();
+        choices.targets.insert(Group::Watch, TargetId::Discord);
+        choices.tiers.insert(TargetId::Discord, TierId::Tiktok);
+        choices.active = Active::Saved { id: "gone".into() };
+        let choices = choices.sanitized().unwrap();
+        assert!(choices.targets.is_empty());
+        assert!(choices.tiers.is_empty());
+        assert_eq!(choices.active, Active::Custom);
+
+        let unnamed = Choices {
+            saved: vec![SavedPreset {
+                id: "a".into(),
+                name: "  ".into(),
+                options: ManualOptions::default(),
+            }],
+            ..Choices::default()
+        };
+        assert!(unnamed.sanitized().is_err());
+    }
+
+    #[test]
+    fn choices_files_from_older_versions_fill_in_new_fields() {
+        let choices: Choices = serde_json::from_str(r#"{"group": "share"}"#).unwrap();
+        assert_eq!(choices.group, Group::Share);
+        assert!(choices.exact_cut);
+    }
+}

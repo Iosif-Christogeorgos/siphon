@@ -8,7 +8,7 @@ import { bestVideoFormat } from "@/lib/formats";
 import { spring } from "@/lib/motion";
 import { formatLength, formatTimecode } from "@/lib/time";
 import { cn } from "@/lib/utils";
-import { useOptions } from "@/stores/options";
+import { useChoices } from "@/stores/choices";
 import { useTrim } from "@/stores/trim";
 import type { VideoInfo } from "@/types";
 import type { PlayerHandle } from "./player";
@@ -32,8 +32,8 @@ export function TrimPanel({ video, duration, disabled }: { video: VideoInfo; dur
   const addSegment = useTrim((state) => state.addSegment);
   const removeSegment = useTrim((state) => state.removeSegment);
   const close = useTrim((state) => state.close);
-  const exactCut = useOptions((state) => state.exactCut);
-  const setExactCut = useOptions((state) => state.setExactCut);
+  const exactCut = useChoices((state) => state.choices?.exact_cut ?? true);
+  const setExactCut = useChoices((state) => state.setExactCut);
 
   const panel = useRef<HTMLDivElement>(null);
   const player = useRef<PlayerHandle>(null);
@@ -100,7 +100,7 @@ export function TrimPanel({ video, duration, disabled }: { video: VideoInfo; dur
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement;
       // Typing in a field or driving a menu takes priority.
-      if (target.closest("input, textarea, [role=listbox], [role=combobox]")) return;
+      if (target.closest("input, textarea, [role=listbox], [role=combobox], [role=radiogroup]")) return;
       if (event.ctrlKey || event.metaKey || event.altKey) return;
       const now = time.get();
       const actions: Record<string, () => void> = {

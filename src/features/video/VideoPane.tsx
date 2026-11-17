@@ -7,22 +7,21 @@ import { Button } from "@/components/ui/button";
 import { DownloadPanel } from "@/features/download/DownloadPanel";
 import { ManualPanel } from "@/features/options/ManualPanel";
 import { PlanCard } from "@/features/options/PlanCard";
-import { PresetPicker } from "@/features/options/PresetPicker";
-import { QualityPicker } from "@/features/options/QualityPicker";
+import { PresetArea } from "@/features/presets/PresetArea";
 import { TrimPanel } from "@/features/trim/TrimPanel";
 import { ipc, toAppError } from "@/lib/ipc";
 import { spring } from "@/lib/motion";
+import { useChoice, useChoices } from "@/stores/choices";
 import { useDownloadGroup, useDownloads } from "@/stores/downloads";
-import { useDownloadOptions, useOptions } from "@/stores/options";
 import { useTrim } from "@/stores/trim";
 import type { Trim, VideoInfo } from "@/types";
 import { VideoCard } from "./VideoCard";
 
 /** Everything shown for a loaded video: the card, the trimmer, the choices, the plan and the button. */
 export function VideoPane({ video }: { video: VideoInfo }) {
-  const mode = useOptions((state) => state.mode);
-  const exactCut = useOptions((state) => state.exactCut);
-  const options = useDownloadOptions();
+  const choice = useChoice();
+  const exactCut = useChoices((state) => state.choices?.exact_cut ?? true);
+  const customizing = useChoices((state) => state.choices !== null && state.choices.active.kind !== "preset");
 
   const trimOpen = useTrim((state) => state.open);
   const segments = useTrim((state) => state.segments);
@@ -34,9 +33,9 @@ export function VideoPane({ video }: { video: VideoInfo }) {
   // Choices are locked while a download runs: it was started with the ones shown.
   const running = download !== undefined && download.status !== "finished" && download.status !== "failed";
 
-  // Resolution, stream picks and trim ranges belong to the previous video.
+  // Stream picks and trim ranges belong to the previous video.
   useEffect(() => {
-    useOptions.getState().resetForVideo();
+    useChoices.getState().resetForVideo();
     useTrim.getState().reset();
   }, []);
 
@@ -55,7 +54,7 @@ export function VideoPane({ video }: { video: VideoInfo }) {
   const shownTrim = trims[Math.min(activeIndex, trims.length - 1)] ?? null;
 
   // Changing a choice after a download finished (or failed) brings back the Download button.
-  const choices = JSON.stringify([options, trims]);
+  const choices = JSON.stringify([choice, trims]);
   useEffect(() => {
     setDownloadIds((ids) =>
       ids.some((id) => {
@@ -68,11 +67,14 @@ export function VideoPane({ video }: { video: VideoInfo }) {
   }, [choices]);
 
   const plan = useQuery({
-    queryKey: ["plan", video.url, options, shownTrim],
-    queryFn: () => ipc.planDownload(video.url, options, shownTrim),
+    queryKey: ["plan", video.url, choice, shownTrim],
+    queryFn: () => (choice ? ipc.planDownload(video.url, choice, shownTrim) : Promise.reject(new Error("no choice"))),
+    enabled: choice !== null,
     // Keep showing the last plan while the next one is computed, so the layout doesn't jump.
     placeholderData: keepPreviousData,
   });
+  const openTrim = () => useTrim.getState().openFor(video.duration ?? 0);
+  const blocked = plan.data?.blocked ?? null;
 
   return (
     <>
@@ -80,12 +82,7 @@ export function VideoPane({ video }: { video: VideoInfo }) {
         video={video}
         action={
           video.duration && !trimOpen ? (
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={running}
-              onClick={() => useTrim.getState().openFor(video.duration ?? 0)}
-            >
+            <Button variant="outline" size="sm" disabled={running} onClick={openTrim}>
               <Scissors /> Trim
             </Button>
           ) : null
@@ -107,35 +104,49 @@ export function VideoPane({ video }: { video: VideoInfo }) {
       </AnimatePresence>
 
       <div className="space-y-2 pt-1">
-        <PresetPicker disabled={running} />
-        <AnimatePresence mode="popLayout" initial={false}>
-          <motion.div
-            key={mode}
-            initial={{ opacity: 0, y: -6 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0 }}
-            transition={spring}
-          >
-            {mode === "manual" ? (
+        <PresetArea summary={plan.data} disabled={running} />
+        <AnimatePresence initial={false}>
+          {customizing && (
+            <motion.div
+              key="custom"
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: "auto" }}
+              exit={{ opacity: 0, height: 0 }}
+              transition={spring}
+            >
               <ManualPanel video={video} disabled={running} />
-            ) : (
-              <QualityPicker plan={plan.data} disabled={running} />
-            )}
-          </motion.div>
+            </motion.div>
+          )}
         </AnimatePresence>
       </div>
 
       {plan.isError ? (
         <ErrorCard error={toAppError(plan.error)} />
       ) : (
-        <PlanCard plan={plan.data} clips={trims.length} />
+        <PlanCard
+          plan={plan.data}
+          clips={trims.length}
+          customizing={customizing}
+          onCustomize={() =>
+            customizing ? useChoices.getState().chooseGroup(useChoices.getState().choices?.group ?? "") : useChoices.getState().customize()
+          }
+          onTrim={video.duration && !trimOpen ? openTrim : undefined}
+        />
       )}
 
       <DownloadPanel
         download={download}
-        onStart={() => setDownloadIds(trims.map((trim) => start(video, options, trim)))}
-        disabled={!plan.isSuccess}
-        label={trims.length > 1 ? `Download ${trims.length} clips` : shownTrim ? "Download clip" : "Download"}
+        onStart={() => choice && setDownloadIds(trims.map((trim) => start(video, choice, trim)))}
+        disabled={!plan.isSuccess || blocked !== null}
+        label={
+          blocked
+            ? "Too long for this limit"
+            : trims.length > 1
+              ? `Download ${trims.length} clips`
+              : shownTrim
+                ? "Download clip"
+                : "Download"
+        }
       />
     </>
   );

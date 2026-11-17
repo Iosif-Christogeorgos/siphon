@@ -1,20 +1,20 @@
+import { useQueries } from "@tanstack/react-query";
 import { Check, ImageOff, ListPlus, ListVideo } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { PresetPicker } from "@/features/options/PresetPicker";
-import { QualityPicker } from "@/features/options/QualityPicker";
-import { formatDuration } from "@/lib/format";
+import { PresetArea } from "@/features/presets/PresetArea";
+import { formatBytes, formatDuration } from "@/lib/format";
+import { ipc } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
+import { useChoice, useChoices } from "@/stores/choices";
 import { useDownloads } from "@/stores/downloads";
-import { useDownloadOptions, useOptions } from "@/stores/options";
 import { useTrim } from "@/stores/trim";
 import { useUi } from "@/stores/ui";
 import type { PlaylistEntry, PlaylistInfo } from "@/types";
 
 /** A playlist: pick which videos to download, then add them to the queue in one go. */
 export function PlaylistPane({ playlist }: { playlist: PlaylistInfo }) {
-  const options = useDownloadOptions();
-  const mode = useOptions((state) => state.mode);
+  const choice = useChoice();
   const start = useDownloads((state) => state.start);
   const openPanel = useUi((state) => state.openPanel);
 
@@ -24,7 +24,7 @@ export function PlaylistPane({ playlist }: { playlist: PlaylistInfo }) {
 
   // Stream picks and trim ranges belong to a single video, not to a playlist.
   useEffect(() => {
-    useOptions.getState().resetForVideo();
+    useChoices.getState().resetForVideo();
     useTrim.getState().reset();
   }, []);
 
@@ -36,10 +36,24 @@ export function PlaylistPane({ playlist }: { playlist: PlaylistInfo }) {
     });
   const allSelected = selected.size === entries.length;
 
+  // The total size: each selected video is looked up (a few at a time) and planned.
+  const chosenUrls = entries.filter((entry) => selected.has(entry.url)).map((entry) => entry.url);
+  const estimates = useQueries({
+    queries: chosenUrls.map((url) => ({
+      queryKey: ["estimate", url, choice],
+      queryFn: () => (choice ? ipc.estimateDownload(url, choice) : Promise.resolve(null)),
+      enabled: choice !== null,
+      staleTime: Number.POSITIVE_INFINITY,
+    })),
+  });
+  const checked = estimates.filter((estimate) => estimate.isSuccess || estimate.isError).length;
+  const total = estimates.reduce((sum, estimate) => sum + (estimate.data ?? 0), 0);
+
   const addToQueue = () => {
+    if (!choice) return;
     const chosen = entries.filter((entry) => selected.has(entry.url));
     for (const entry of chosen) {
-      start({ url: entry.url, title: entry.title, thumbnail: entry.thumbnail }, options, null);
+      start({ url: entry.url, title: entry.title, thumbnail: entry.thumbnail }, choice, null);
     }
     setAdded(chosen.length);
     openPanel("downloads");
@@ -65,6 +79,14 @@ export function PlaylistPane({ playlist }: { playlist: PlaylistInfo }) {
         <div className="flex items-center justify-between border-b py-2 pr-2 pl-4">
           <span className="text-[13px] text-muted-foreground tabular-nums">
             {selected.size} of {entries.length} selected
+            {chosenUrls.length > 0 && choice && (
+              <span className="text-subtle-foreground">
+                {" · "}
+                {total === 0 && checked < chosenUrls.length
+                  ? "working out the total size…"
+                  : `≈ ${formatBytes(total)}${checked < chosenUrls.length ? ` so far (${checked} of ${chosenUrls.length} checked)` : ""}`}
+              </span>
+            )}
           </span>
           <Button
             variant="ghost"
@@ -83,17 +105,14 @@ export function PlaylistPane({ playlist }: { playlist: PlaylistInfo }) {
         </ul>
       </div>
 
-      <div className="space-y-2 pt-1">
-        <PresetPicker disabled={false} />
-        {/* No formats are known until each video is looked up, so only the upload limits apply here. */}
-        {mode === "preset" && <QualityPicker plan={undefined} disabled={false} />}
+      <div className="pt-1">
+        <PresetArea summary={undefined} disabled={false} playlist />
       </div>
       <p className="px-1 text-[13px] text-pretty text-muted-foreground">
-        The best quality and format for{" "}
-        {mode === "manual" ? "your custom settings" : "this preset"} are worked out for each video when its turn comes.
+        The best streams and format for each video are worked out from what it offers when its turn comes.
       </p>
 
-      <Button size="lg" className="h-13 w-full rounded-2xl" disabled={selected.size === 0} onClick={addToQueue}>
+      <Button size="lg" className="h-13 w-full rounded-2xl" disabled={selected.size === 0 || !choice} onClick={addToQueue}>
         <ListPlus className="size-4.5" />
         {selected.size === 0
           ? "Select videos to download"

@@ -21,11 +21,11 @@ use tokio::sync::Notify;
 
 use crate::binaries::{BinaryManager, Tool};
 use crate::error::{AppError, ErrorKind, Result, Retry};
-use crate::ffmpeg::{self, encoders::Encoders};
-use crate::plan::{self, DownloadOptions, Recipe, Trim};
+use crate::ffmpeg::{self, encoders::Hardware, Pass};
+use crate::plan::{self, Choice, Recipe, Trim};
 use crate::process;
 use crate::settings::{Settings, SettingsStore};
-use crate::state::{ChunkedRequests, EncoderCache, MediaCache};
+use crate::state::{CapabilityCache, MediaCache};
 use crate::ytdlp::metadata::{self, Media, VideoInfo};
 use crate::ytdlp::{self, args, errors, progress};
 use tracker::{Progress, Tracker};
@@ -47,12 +47,19 @@ const RETRY_LATER: &[Duration] = &[Duration::from_secs(30)];
 /// How long closing the app waits for running downloads to remove their files.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
 
+/// Share: how many more times a file that came out over the limit is encoded again.
+const MAX_SHRINKS: usize = 2;
+
+/// Work folders older than this are left over from a crash and are removed at launch.
+/// (Newer ones may belong to another copy of Siphon that is running.)
+const STALE_WORK: Duration = Duration::from_secs(24 * 60 * 60);
+
 #[derive(Debug, Deserialize)]
 pub struct DownloadRequest {
     /// Chosen by the frontend so it can match events to its own records.
     pub id: String,
     pub url: String,
-    pub options: DownloadOptions,
+    pub choice: Choice,
     /// Download only this part of the video.
     #[serde(default)]
     pub trim: Option<Trim>,
@@ -127,6 +134,8 @@ struct Leftovers {
     /// first started. yt-dlp would take that file for the result of a
     /// continued download, so this one starts over each time instead.
     replaces_existing: bool,
+    /// The download's work folder, holding a source that awaits converting.
+    work: Option<PathBuf>,
 }
 
 impl Leftovers {
@@ -135,6 +144,9 @@ impl Leftovers {
             let _ = tokio::fs::remove_file(file).await;
         }
         remove_partial_files(&self.stream_files).await;
+        if let Some(work) = &self.work {
+            let _ = tokio::fs::remove_dir_all(work).await;
+        }
     }
 }
 
@@ -198,7 +210,7 @@ impl DownloadManager {
                     // Read once the job starts, so changes made while it queued apply.
                     settings: app.state::<SettingsStore>().get(),
                 };
-                let outcome = manager.run(&job, &url, &request.options, request.trim).await;
+                let outcome = manager.run(&job, &url, &request.choice, request.trim).await;
                 manager.gate.lock().unwrap().running -= 1;
                 manager.gate_changed.notify_waiters();
                 outcome
@@ -340,13 +352,7 @@ impl DownloadManager {
     }
 
     /// Runs the whole job and returns the path of the finished file.
-    async fn run(
-        &self,
-        job: &JobContext<'_>,
-        url: &str,
-        options: &DownloadOptions,
-        trim: Option<Trim>,
-    ) -> Result<PathBuf> {
+    async fn run(&self, job: &JobContext<'_>, url: &str, choice: &Choice, trim: Option<Trim>) -> Result<PathBuf> {
         job.emit(Tracker::new(false).current());
 
         let output_dir = match &job.settings.output_dir {
@@ -363,7 +369,7 @@ impl DownloadManager {
         // Look the video up again instead of trusting what this session remembers.
         let mut refresh = false;
         loop {
-            let error = match self.attempt(job, url, options, trim, &output_dir, refresh).await {
+            let error = match self.attempt(job, url, choice, trim, &output_dir, refresh).await {
                 Ok(path) => return Ok(path),
                 Err(error) => error,
             };
@@ -432,55 +438,123 @@ impl DownloadManager {
         &self,
         job: &JobContext<'_>,
         url: &str,
-        options: &DownloadOptions,
+        choice: &Choice,
         trim: Option<Trim>,
         output_dir: &Path,
         refresh: bool,
     ) -> Result<PathBuf> {
         let video = self.video_info(job, url, refresh).await?;
-        let recipe = plan::plan(&video, options, trim)?;
+        let caps = job.app.state::<CapabilityCache>().get(job.bins).await;
+        let recipe = plan::plan(&video, choice, trim, &caps)?;
+        if let Some(reason) = &recipe.blocked {
+            return Err(AppError::new(ErrorKind::TooLong, reason.clone()));
+        }
         let mut tracker = Tracker::new(recipe.needs_ffmpeg_pass());
 
-        // A trimmed part is fetched by ffmpeg, which needs telling how much to
-        // ask the site for at a time (and has to be new enough to be told).
-        let section_request_size = match (recipe.trim, args::request_size(&recipe, &video)) {
-            (Some(_), Some(size)) if job.app.state::<ChunkedRequests>().supported(job.bins).await => Some(size),
-            _ => None,
-        };
+        // A source that is converted afterwards goes to the download's own work
+        // folder, and stays there until the finished file is written and checked.
+        let work = work_dir(job.app, job.id)?;
+        let fetch_dir = if recipe.needs_ffmpeg_pass() { &work } else { output_dir };
+        tokio::fs::create_dir_all(fetch_dir).await?;
         let downloaded = self
-            .fetch_streams(job, &video.url, &recipe, section_request_size, output_dir, &mut tracker)
+            .fetch_streams(job, &video.url, &recipe, fetch_dir, &mut tracker)
             .await?;
-        if !recipe.needs_ffmpeg_pass() {
-            return Ok(downloaded);
-        }
 
-        let output = converted_path(&downloaded, &recipe);
-        let encoders = job.app.state::<EncoderCache>().get(job.bins).await;
-        let mut result = self
-            .convert(job, &recipe, &encoders, &downloaded, &output, &mut tracker)
-            .await;
-        // A hardware encoder can refuse a job it passed the probe for (driver
-        // limits, too many sessions). The CPU encoders always work.
-        if result.is_err() && encoders != Encoders::SOFTWARE && self.stop_of(job.id).is_none() {
-            result = self
-                .convert(job, &recipe, &Encoders::SOFTWARE, &downloaded, &output, &mut tracker)
-                .await;
-        }
-
-        if result.is_err() {
-            let _ = tokio::fs::remove_file(&output).await;
-        }
-        if self.stop_of(job.id) == Some(Stop::Pause) {
-            // Keep the downloaded source: resuming goes straight back to converting.
-            let leftovers = Leftovers {
-                others: vec![downloaded],
-                ..Leftovers::default()
-            };
-            self.keep_leftovers(job.id, leftovers);
+        let (recipe, source) = if recipe.needs_ffmpeg_pass() {
+            (recipe, downloaded)
         } else {
-            let _ = tokio::fs::remove_file(&downloaded).await;
+            match (recipe.fallback.as_deref(), recipe.size_limit) {
+                // Share: an original that was expected to fit but came out over
+                // the limit (a fast cut runs a little long) is converted after all.
+                (Some(fallback), Some(limit)) if file_size(&downloaded) > limit => {
+                    let source = work.join(downloaded.file_name().unwrap_or_default());
+                    tokio::fs::create_dir_all(&work).await?;
+                    move_file(&downloaded, &source).await?;
+                    (fallback.clone(), source)
+                }
+                _ => {
+                    let _ = tokio::fs::remove_dir_all(&work).await;
+                    return Ok(downloaded);
+                }
+            }
+        };
+
+        let output = converted_path(&source, &recipe, output_dir);
+        let result = self
+            .convert_checked(job, &recipe, &source, &output, &work, &mut tracker)
+            .await;
+        match (&result, self.stop_of(job.id)) {
+            (Ok(()), _) | (Err(_), Some(Stop::Cancel)) => {
+                let _ = tokio::fs::remove_dir_all(&work).await;
+            }
+            // Paused, or the conversion failed: keep the source, so the next try
+            // goes straight back to converting instead of downloading it again.
+            (Err(_), _) => self.keep_leftovers(
+                job.id,
+                Leftovers {
+                    work: Some(work),
+                    ..Leftovers::default()
+                },
+            ),
         }
         result.map(|()| output)
+    }
+
+    /// Step 3, checked: converts (on the CPU if the hardware encoder refuses),
+    /// then makes sure a Share file is under its limit, encoding again a
+    /// little smaller if it isn't. The file only gets its final name once it
+    /// passes; until then it is written beside it under a temporary one.
+    async fn convert_checked(
+        &self,
+        job: &JobContext<'_>,
+        recipe: &Recipe,
+        source: &Path,
+        output: &Path,
+        work: &Path,
+        tracker: &mut Tracker,
+    ) -> Result<()> {
+        let partial = partial_path(output);
+        let mut recipe = recipe.clone();
+        let mut shrinks = 0;
+        loop {
+            let mut result = self.convert(job, &recipe, source, &partial, work, tracker).await;
+            // A hardware encoder can refuse a job it passed the probe for (driver
+            // limits, too many sessions). The CPU encoders always work.
+            let on_hardware = recipe
+                .video_encode()
+                .is_some_and(|encode| encode.hardware != Hardware::Software);
+            if result.is_err() && on_hardware && self.stop_of(job.id).is_none() {
+                recipe = recipe.on_software();
+                result = self.convert(job, &recipe, source, &partial, work, tracker).await;
+            }
+            if let Err(error) = result {
+                let _ = tokio::fs::remove_file(&partial).await;
+                return Err(error);
+            }
+            let size = file_size(&partial);
+            let Some(smaller) = recipe
+                .size_limit
+                .filter(|limit| size > *limit)
+                .map(|_| recipe.shrunk(size))
+            else {
+                break;
+            };
+            match smaller {
+                Some(smaller) if shrinks < MAX_SHRINKS => {
+                    shrinks += 1;
+                    recipe = smaller;
+                }
+                _ => {
+                    let _ = tokio::fs::remove_file(&partial).await;
+                    return Err(AppError::new(
+                        ErrorKind::TooLong,
+                        "The file kept coming out over the size limit. Trim the video, or pick a larger limit.",
+                    ));
+                }
+            }
+        }
+        tokio::fs::rename(&partial, output).await?;
+        Ok(())
     }
 
     /// The video's metadata: from this session's cache, or looked up now
@@ -511,14 +585,13 @@ impl DownloadManager {
         job: &JobContext<'_>,
         url: &str,
         recipe: &Recipe,
-        section_request_size: Option<u64>,
         output_dir: &Path,
         tracker: &mut Tracker,
     ) -> Result<PathBuf> {
         let mut cmd = ytdlp::command(job.bins);
         cmd.args(progress::template_args())
             .args(args::TRANSFER_ARGS)
-            .args(args::recipe_args(recipe, section_request_size))
+            .args(args::recipe_args(recipe))
             .args([
                 "--no-playlist",
                 // Stamp the file with the time it was downloaded, not uploaded.
@@ -528,10 +601,12 @@ impl DownloadManager {
         // What an earlier try at this download left: it was paused, or it failed.
         let previous = self.leftovers.lock().unwrap().remove(job.id);
         let continues = previous.as_ref().is_some_and(|left| !left.replaces_existing);
+        // (Its work folder is the one this try uses again; it is removed with the download.)
         let Leftovers {
             mut stream_files,
             others: earlier_files,
             mut replaces_existing,
+            work: _,
         } = previous.unwrap_or_default();
         if !continues {
             // A new download replaces whatever has its name: the same video
@@ -616,6 +691,7 @@ impl DownloadManager {
             stream_files,
             others: earlier_files.into_iter().chain(part_file).collect(),
             replaces_existing,
+            work: recipe.needs_ffmpeg_pass().then(|| output_dir.to_path_buf()),
         };
         if let Failure::Stopped(Stop::Cancel) = failure {
             leftovers.remove().await;
@@ -631,40 +707,51 @@ impl DownloadManager {
     }
 
     /// Step 3: Siphon's ffmpeg pass, for recipes that convert video or audio.
+    /// A size-targeted encode on the CPU runs twice; its first pass writes
+    /// what it measured to the work folder.
     async fn convert(
         &self,
         job: &JobContext<'_>,
         recipe: &Recipe,
-        encoders: &Encoders,
         input: &Path,
         output: &Path,
+        work: &Path,
         tracker: &mut Tracker,
     ) -> Result<()> {
         let ffmpeg = job
             .bins
             .ffmpeg()
             .ok_or_else(|| AppError::setup("FFmpeg isn't installed."))?;
-        let mut cmd = process::command(ffmpeg);
-        cmd.args(ffmpeg::convert_args(recipe, encoders, input, output));
+        let log = work.join("passlog");
+        let passes = if recipe.video_encode().is_some_and(|encode| encode.two_pass()) {
+            vec![Pass::First { log: &log }, Pass::Second { log: &log }]
+        } else {
+            vec![Pass::Only]
+        };
+        let share = 1.0 / passes.len() as f64;
 
         job.emit(tracker.on_convert(0.0));
-        let result = self
-            .run_child(job.bins, job.id, cmd, |event| {
-                let ChildEvent::Line(line) = event else { return };
-                if let (Some(done), Some(total)) = (ffmpeg::parse_progress(line), recipe.duration) {
-                    job.emit(tracker.on_convert(done / total));
+        for (index, pass) in passes.into_iter().enumerate() {
+            let mut cmd = process::command(&ffmpeg);
+            cmd.args(ffmpeg::convert_args(recipe, input, output, pass));
+            let result = self
+                .run_child(job.bins, job.id, cmd, |event| {
+                    let ChildEvent::Line(line) = event else { return };
+                    if let (Some(done), Some(total)) = (ffmpeg::parse_progress(line), recipe.duration) {
+                        job.emit(tracker.on_convert((index as f64 + done / total) * share));
+                    }
+                })
+                .await;
+            match result {
+                Ok(_) => {}
+                Err(Failure::Stopped(_)) => return Err(AppError::cancelled()),
+                Err(Failure::Exited(log)) => {
+                    return Err(AppError::internal("The video downloaded, but converting it failed.").with_details(log))
                 }
-            })
-            .await;
-
-        match result {
-            Ok(_) => Ok(()),
-            Err(Failure::Stopped(_)) => Err(AppError::cancelled()),
-            Err(Failure::Exited(log)) => {
-                Err(AppError::internal("The video downloaded, but converting it failed.").with_details(log))
+                Err(Failure::Spawn(error)) => return Err(error),
             }
-            Err(Failure::Spawn(error)) => Err(error),
         }
+        Ok(())
     }
 
     /// Runs a child process for a job: registers it so the job can be
@@ -753,11 +840,69 @@ pub fn default_output_dir(app: &AppHandle) -> Result<PathBuf> {
         .map_err(|err| AppError::internal("Couldn't find your Downloads folder.").with_details(err.to_string()))
 }
 
-/// `Title [id].source.mkv` → `Title [id].mp4`
-fn converted_path(downloaded: &Path, recipe: &Recipe) -> PathBuf {
-    let stem = downloaded.file_stem().and_then(|stem| stem.to_str()).unwrap_or("video");
+/// Where a download keeps a source that is converted afterwards:
+/// `<app cache>/work/<download id>/`.
+fn work_dir(app: &AppHandle, id: &str) -> Result<PathBuf> {
+    work_root(app).map(|root| root.join(id))
+}
+
+fn work_root(app: &AppHandle) -> Result<PathBuf> {
+    app.path()
+        .app_cache_dir()
+        .map(|dir| dir.join("work"))
+        .map_err(|err| AppError::internal("Couldn't locate the cache folder.").with_details(err.to_string()))
+}
+
+/// Removes work folders a crash left behind. Run at launch; folders from the
+/// last day are kept, because they may belong to another copy of Siphon
+/// (the dev and installed builds share this folder).
+pub fn sweep_work(app: &AppHandle) {
+    let Ok(Ok(entries)) = work_root(app).map(std::fs::read_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let stale = entry
+            .metadata()
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|age| age > STALE_WORK);
+        if stale {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
+/// `work/…/Title [id].source.mkv` → `<output_dir>/Title [id].mp4`
+///
+/// The one place a converted file's name is decided; giving a second download
+/// of the same video its own name would start here.
+fn converted_path(source: &Path, recipe: &Recipe, output_dir: &Path) -> PathBuf {
+    let stem = source.file_stem().and_then(|stem| stem.to_str()).unwrap_or("video");
     let stem = stem.strip_suffix(args::SOURCE_MARKER).unwrap_or(stem);
-    downloaded.with_file_name(format!("{stem}.{}", recipe.container.ext()))
+    output_dir.join(format!("{stem}.{}", recipe.container.ext()))
+}
+
+/// `Title [id].mp4` → `Title [id].converting.mp4`: where a conversion writes
+/// until the file is finished and checked. The extension stays, because
+/// ffmpeg picks the format from it.
+fn partial_path(output: &Path) -> PathBuf {
+    let stem = output.file_stem().and_then(|stem| stem.to_str()).unwrap_or("video");
+    let ext = output.extension().and_then(|ext| ext.to_str()).unwrap_or("mp4");
+    output.with_file_name(format!("{stem}.converting.{ext}"))
+}
+
+fn file_size(path: &Path) -> u64 {
+    std::fs::metadata(path).map_or(0, |meta| meta.len())
+}
+
+/// Moves a file, copying it when the destination is on another drive.
+async fn move_file(from: &Path, to: &Path) -> Result<()> {
+    if tokio::fs::rename(from, to).await.is_err() {
+        tokio::fs::copy(from, to).await?;
+        tokio::fs::remove_file(from).await?;
+    }
+    Ok(())
 }
 
 /// Reads a stream to the end, keeping the last [`MAX_LOG_LINES`] lines.
@@ -813,23 +958,37 @@ async fn remove_partial_files(stream_files: &[StreamFile]) {
 mod tests {
     use super::*;
     use crate::plan::codecs::Container;
+    use crate::plan::{Badge, Recipe};
 
-    #[test]
-    fn converted_file_drops_the_source_marker() {
-        let recipe = Recipe {
+    fn recipe(container: Container) -> Recipe {
+        Recipe {
             video: None,
             audio: None,
-            container: Container::Mp4,
+            container,
             strip_audio: false,
             reason: None,
             promise: String::new(),
             hints: Vec::new(),
-            qualities: Vec::new(),
             duration: None,
             trim: None,
             source_fraction: 1.0,
-        };
-        let path = converted_path(Path::new("/videos/A clip [abc].source.mkv"), &recipe);
+            badge: Badge::Lossless,
+            size_limit: None,
+            fits: None,
+            blocked: None,
+            section_request_size: None,
+            fallback: None,
+        }
+    }
+
+    #[test]
+    fn a_converted_file_lands_in_the_download_folder_without_the_source_marker() {
+        let path = converted_path(
+            Path::new("/cache/work/1/A clip [abc].source.mkv"),
+            &recipe(Container::Mp4),
+            Path::new("/videos"),
+        );
         assert_eq!(path, Path::new("/videos/A clip [abc].mp4"));
+        assert_eq!(partial_path(&path), Path::new("/videos/A clip [abc].converting.mp4"));
     }
 }
