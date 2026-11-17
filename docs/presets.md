@@ -11,11 +11,11 @@ Two rules apply throughout:
 
 | Group | Targets | What it makes |
 | --- | --- | --- |
-| Watch | Windows · iPhone / iPad / Mac · Android · TV | The best video and audio the device plays as they are; converted only when nothing native is offered at the chosen quality |
-| Edit | Premiere Pro · DaVinci Resolve · CapCut · Vegas | Constant frame rate H.264 with 48 kHz audio, or ProRes ("Smoothest editing") |
-| Audio | Music · Best audio (original) | MP3 or M4A at a chosen bitrate, or the original track untouched |
 | Max quality | (one click) | The best streams exactly as the site has them, in a container that needs no re-encoding |
+| Watch | Windows · iPhone / iPad / Mac · Android · TV | The best video and audio the device plays as they are; converted only when nothing native is offered at the chosen quality |
 | Share | Discord · WhatsApp · TikTok / Reels / Shorts | The best quality that fits the upload limit of the chosen tier |
+| Audio | Music · Best audio (original) | MP3 or M4A at a chosen bitrate, or the original track untouched |
+| Edit | Premiere Pro · DaVinci Resolve · CapCut · Vegas | Constant frame rate H.264 with 48 kHz audio, or ProRes ("Smoothest editing") |
 
 The quality row offers **Best** and the resolutions the video really has (no tiny ones unless that is all there is), with an estimated size under each. A lower resolution downloads the matching stream; nothing is upscaled. Max quality and Share have no quality row; Music offers bitrates instead.
 
