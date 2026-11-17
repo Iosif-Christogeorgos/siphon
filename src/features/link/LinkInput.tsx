@@ -123,17 +123,21 @@ export function LinkInput({ url, loading, onSubmit, onClear }: LinkInputProps) {
         </AnimatePresence>
       </div>
 
-      <AnimatePresence>
+      {/* Takes up room as it opens, so whatever sits below moves down instead of being covered. */}
+      <AnimatePresence initial={false}>
         {invalid && (
-          <motion.p
-            role="alert"
-            initial={{ opacity: 0, y: -4 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0 }}
-            className="absolute top-full left-4.5 mt-2 text-[13px] text-destructive"
+          <motion.div
+            key="invalid"
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+            className="overflow-hidden"
           >
-            That doesn’t look like a link. It should start with https://
-          </motion.p>
+            <p role="alert" className="pt-2 pl-4.5 text-[13px] text-destructive">
+              That doesn’t look like a link. It should start with https://
+            </p>
+          </motion.div>
         )}
       </AnimatePresence>
     </motion.form>
