@@ -381,6 +381,26 @@ fn an_exact_cut_re_encodes_in_the_same_codec_and_keeps_the_audio() {
 }
 
 #[test]
+fn an_exact_cut_counts_timestamps_from_the_start_of_the_video() {
+    use crate::ytdlp::args::recipe_args;
+    let ffmpeg_inputs = |trim| {
+        let recipe = plan(&youtube_4k(), &preset(PresetId::Iphone), trim).unwrap();
+        let args = recipe_args(&recipe, None);
+        args.iter()
+            .position(|arg| arg == "--downloader-args")
+            .map(|i| args[i + 1].clone())
+    };
+    // Twitch's timestamps start about a minute in; without -start_at_zero the
+    // cut window missed every video frame and the clip came out audio-only.
+    assert_eq!(
+        ffmpeg_inputs(cut(60.0, 90.0, true)).as_deref(),
+        Some("ffmpeg_i:-copyts -start_at_zero")
+    );
+    // A fast cut keeps the streams as they are and needs neither.
+    assert_eq!(ffmpeg_inputs(cut(60.0, 90.0, false)), None);
+}
+
+#[test]
 fn a_fast_cut_copies_the_streams_and_scales_the_size_estimate() {
     let whole = plan(&youtube_4k(), &preset(PresetId::Iphone), None).unwrap();
     let recipe = plan(&youtube_4k(), &preset(PresetId::Iphone), cut(0.0, 60.0, false)).unwrap();

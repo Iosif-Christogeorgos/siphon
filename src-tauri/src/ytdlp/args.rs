@@ -94,8 +94,12 @@ pub fn recipe_args(recipe: &Recipe, section_request_size: Option<u64>) -> Vec<St
         // yt-dlp hands a section to ffmpeg; this is what ffmpeg is told about its inputs.
         let mut input_args: Vec<String> = Vec::new();
         if recipe.exact_cut().is_some() {
-            // Keep the original timestamps so the exact cut can find its frames.
+            // Keep the original timestamps so the exact cut can find its
+            // frames, counted from the start of the video. Not every stream
+            // starts at zero: Twitch's start about a minute in, and without
+            // -start_at_zero the cut missed every video frame of the part.
             input_args.push("-copyts".into());
+            input_args.push("-start_at_zero".into());
         }
         if let Some(size) = section_request_size {
             // Left alone, ffmpeg asks for the rest of the stream in one request,
