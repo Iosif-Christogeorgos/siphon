@@ -291,11 +291,14 @@ fn video(raw: RawInfo, requested_url: &str) -> Result<VideoInfo> {
             "This video is protected by DRM, so it can't be downloaded. Siphon doesn't bypass copy protection.",
         ));
     }
-    let formats: Vec<Format> = raw_formats
+    let mut formats: Vec<Format> = raw_formats
         .into_iter()
         .filter(|f| !is_drm(f))
         .filter_map(format)
         .collect();
+    for format in &mut formats {
+        estimate_size(format, raw.duration);
+    }
 
     Ok(VideoInfo {
         id: raw.id.unwrap_or_default(),
@@ -308,6 +311,19 @@ fn video(raw: RawInfo, requested_url: &str) -> Result<VideoInfo> {
         extractor: raw.extractor_key,
         formats,
     })
+}
+
+/// Some sites (Twitch, for one) state a stream's bitrate but not its size,
+/// and yt-dlp doesn't estimate it. Without a size, a trimmed part shows no
+/// progress and the size presets can't tell what fits, so work it out.
+fn estimate_size(format: &mut Format, duration: Option<f64>) {
+    if format.filesize.is_some() {
+        return;
+    }
+    if let (Some(kbps), Some(seconds)) = (format.tbr, duration.filter(|d| *d > 0.0)) {
+        format.filesize = Some((kbps * 1000.0 / 8.0 * seconds) as u64);
+        format.filesize_estimated = true;
+    }
 }
 
 fn format(raw: RawFormat) -> Option<Format> {
@@ -451,6 +467,24 @@ mod tests {
         let size = |json: &str| format(serde_json::from_str(json).unwrap()).unwrap().http_chunk_size;
         assert_eq!(size(chunked), Some(10_485_760));
         assert_eq!(size(plain), None);
+    }
+
+    #[test]
+    fn works_out_a_size_from_the_bitrate_when_the_site_gives_none() {
+        // A Twitch VOD format: a bitrate, but no size and no estimate from yt-dlp.
+        let twitch = r#"{"format_id": "1080p60", "ext": "mp4", "protocol": "m3u8_native",
+            "vcodec": "avc1.64002A", "acodec": "mp4a.40.2", "tbr": 8000}"#;
+        let stated = r#"{"format_id": "18", "ext": "mp4", "vcodec": "avc1", "acodec": "mp4a.40.2",
+            "tbr": 8000, "filesize": 1234}"#;
+        let sized = |json: &str, duration: Option<f64>| {
+            let mut format = format(serde_json::from_str(json).unwrap()).unwrap();
+            estimate_size(&mut format, duration);
+            (format.filesize, format.filesize_estimated)
+        };
+        // 8000 kbit/s for 100 s is 100 MB.
+        assert_eq!(sized(twitch, Some(100.0)), (Some(100_000_000), true));
+        assert_eq!(sized(twitch, None), (None, true));
+        assert_eq!(sized(stated, Some(100.0)), (Some(1234), false));
     }
 
     #[test]
