@@ -20,14 +20,14 @@ const CLOSE_DELAY = 160;
 
 /**
  * One choice, folded down to its current value: "Quality  Best ›".
- * Pointing at it (or tabbing into it) unfolds the other options in place,
- * floating over its neighbours so nothing around it moves. An aqua mark
- * glides to the selected option, a soft highlight follows the pointer, and
- * the pointed-at option's small print shows at the end.
+ * Pointing at it (or tabbing into it) unfolds it across the whole row, over
+ * its neighbours, which fade out underneath so nothing around it moves or
+ * peeks out. It stays unfolded until the pointer (or focus) leaves. An aqua
+ * mark glides to the selected option, a soft highlight follows the pointer,
+ * and the pointed-at option's small print shows at the far end.
  *
- * Put facets in a row marked `data-facet-row`: an unfolded facet that would
- * run past the row's right edge slides left to stay inside it, and the
- * others fade back while one is open.
+ * Put facets in a row marked `data-facet-row` (and `relative`): that row is
+ * the width a facet unfolds to.
  */
 export function Facet<T extends string | number>({
   label,
@@ -52,11 +52,11 @@ export function Facet<T extends string | number>({
   const [open, setOpen] = useState(false);
   const [pointed, setPointed] = useState<T | null>(null);
   const anchor = useRef<HTMLDivElement>(null);
-  const content = useRef<HTMLDivElement>(null);
+  const ghost = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const closeTimer = useRef<number | undefined>(undefined);
-  const [width, setWidth] = useState<number | null>(null);
-  const [shift, setShift] = useState(0);
+  /** The folded width, and the row's width and this facet's offset in it: the two shapes the frame glides between. */
+  const [box, setBox] = useState<{ folded: number; row: number; offset: number } | null>(null);
 
   const selected = options.find((option) => option.id === value);
   const hasDetails = options.some((option) => option.detail);
@@ -82,26 +82,25 @@ export function Facet<T extends string | number>({
     row?.toggleAttribute("data-facet-open", row.querySelector("[aria-expanded=true]") !== null);
   }, [open]);
 
-  // The frame's width follows its content, so it can glide between folded and unfolded.
-  useLayoutEffect(() => {
-    const element = content.current;
-    if (!element) return;
-    const measure = () => setWidth(element.offsetWidth);
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(element);
-    return () => observer.disconnect();
+  // Measured again when the window or the folded value changes size, and on every unfold
+  // (a neighbour's new value can move this facet along the row).
+  const measure = useCallback(() => {
+    const row = anchor.current?.closest<HTMLElement>("[data-facet-row]");
+    if (!row || !anchor.current || !ghost.current) return;
+    setBox({ folded: ghost.current.offsetWidth, row: row.clientWidth, offset: anchor.current.offsetLeft });
   }, []);
-
-  // Unfolded past the row's right edge: slide left, but never past its left edge.
   useLayoutEffect(() => {
     const row = anchor.current?.closest<HTMLElement>("[data-facet-row]");
-    if (!open || !row || !anchor.current || width === null) return setShift(0);
-    const left = anchor.current.getBoundingClientRect().left - row.getBoundingClientRect().left;
-    const next = Math.max(-left, Math.min(0, row.clientWidth - (left + width)));
-    // Leaving a sliver of the facet underneath showing looks like a mistake: go flush instead.
-    setShift(next < 0 && left + next < 96 ? -left : next);
-  }, [open, width]);
+    if (!row || !ghost.current) return;
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(row);
+    observer.observe(ghost.current);
+    return () => observer.disconnect();
+  }, [measure]);
+  useLayoutEffect(() => {
+    if (open) measure();
+  }, [open, measure]);
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === "Escape" && open) {
@@ -129,8 +128,9 @@ export function Facet<T extends string | number>({
     <div
       ref={anchor}
       className={cn(
-        "relative h-9 transition-[opacity,filter] duration-200",
-        open ? "z-20" : "z-0 in-data-facet-open:opacity-35 in-data-facet-open:blur-[0.5px]",
+        "relative h-9 transition-opacity duration-150 ease-out",
+        // The others fade out completely: the unfolded one covers the row, and nothing should show at its edges as it grows.
+        open ? "z-20" : "z-0 in-data-facet-open:opacity-0",
       )}
       onPointerEnter={(event) => event.pointerType === "mouse" && openNow()}
       onPointerLeave={(event) => event.pointerType === "mouse" && closeSoon()}
@@ -141,7 +141,7 @@ export function Facet<T extends string | number>({
       onKeyDown={onKeyDown}
     >
       {/* Holds the folded size in the row, so the facets around it never move. */}
-      <div aria-hidden className="invisible flex h-9 items-center gap-2 border pr-2 pl-3">
+      <div ref={ghost} aria-hidden className="invisible flex h-9 w-max items-center gap-2 border pr-2 pl-3">
         {folded}
       </div>
 
@@ -152,10 +152,13 @@ export function Facet<T extends string | number>({
           disabled && "opacity-50",
         )}
         initial={false}
-        animate={width === null ? { x: shift } : { width, x: shift }}
+        // Unfolded: from the row's left edge to its right. Left and right edges move outward
+        // together, so the frame never slips out from under the pointer while it grows.
+        animate={box === null ? {} : open ? { width: box.row, x: -box.offset } : { width: box.folded, x: 0 }}
         transition={spring}
       >
-        <div ref={content} className="relative flex h-full w-max items-center">
+        {/* Full width while unfolded, so the small print rides the frame's right edge as it grows. */}
+        <div className={cn("relative flex h-full items-center", open ? "w-full" : "w-max")}>
           <button
             ref={trigger}
             type="button"
@@ -177,7 +180,7 @@ export function Facet<T extends string | number>({
             {open && (
               <motion.div
                 key="options"
-                className="flex h-full items-center"
+                className="flex h-full min-w-0 flex-1 items-center"
                 exit={{ opacity: 0, transition: { duration: 0.08 } }}
               >
                 <span aria-hidden className="mx-2 h-4 w-px bg-border-strong" />
@@ -232,7 +235,7 @@ export function Facet<T extends string | number>({
 
                 {/* The pointed-at option's small print; a fixed width keeps the frame still while it changes. */}
                 {hasDetails && (
-                  <span className="relative mr-3 ml-1 grid h-full w-24 items-center overflow-hidden border-l pl-3 text-xs text-muted-foreground tabular-nums">
+                  <span className="relative mr-3 ml-auto grid h-full w-24 shrink-0 items-center overflow-hidden border-l pl-3 text-xs text-muted-foreground tabular-nums">
                     <AnimatePresence initial={false} mode="popLayout">
                       <motion.span
                         key={caption ?? ""}
