@@ -1,4 +1,3 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { Folder, LoaderCircle, Minus, Plus, RefreshCw, RotateCcw } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
@@ -7,11 +6,13 @@ import { Segmented } from "@/components/ui/segmented";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet } from "@/components/ui/sheet";
 import { Hint } from "@/components/ui/tooltip";
-import { ipc, toAppError } from "@/lib/ipc";
+import { MB_PER_SECOND } from "@/lib/format";
+import { toAppError } from "@/lib/ipc";
 import { TOOL_NAMES, TOOL_ORDER, TOOL_ROLES } from "@/lib/tools";
 import { cn } from "@/lib/utils";
 import { useAppUpdate } from "@/stores/appUpdate";
 import { selectAvailable, useBinaries } from "@/stores/binaries";
+import { stripView, useSaveSettings, useSettings } from "@/stores/settings";
 import { useTheme } from "@/stores/theme";
 import { useToasts } from "@/stores/toasts";
 import { useUi } from "@/stores/ui";
@@ -27,19 +28,16 @@ const FILENAME_STYLES: { id: FilenameStyle; label: string; example: string }[] =
 
 /** Mirrors `MAX_CONCURRENT_LIMIT` in settings.rs. */
 const MAX_CONCURRENT = 6;
-const SETTINGS_KEY = ["settings"];
+
+/** The speed limits offered with one click, in MB/s. */
+const SPEED_LIMITS = [2, 5, 10, 25];
 
 /** Preferences: where files go, how they are named, how many download at once, and updates. */
 export function SettingsSheet() {
   const open = useUi((state) => state.panel === "settings");
   const closePanel = useUi((state) => state.closePanel);
-  const queryClient = useQueryClient();
-
-  const settings = useQuery({ queryKey: SETTINGS_KEY, queryFn: ipc.getSettings, staleTime: Number.POSITIVE_INFINITY });
-  const save = useMutation({
-    mutationFn: (next: Settings) => ipc.setSettings(next),
-    onSuccess: (saved) => queryClient.setQueryData(SETTINGS_KEY, saved),
-  });
+  const settings = useSettings();
+  const save = useSaveSettings();
 
   return (
     <Sheet open={open} onOpenChange={(next) => !next && closePanel()} title="Settings">
@@ -52,11 +50,6 @@ export function SettingsSheet() {
       )}
     </Sheet>
   );
-}
-
-/** The backend wants plain settings back, without the display-only extras. */
-function stripView({ default_output_dir: _default, ...settings }: SettingsView): Settings {
-  return settings;
 }
 
 function SettingsForm({
@@ -170,6 +163,8 @@ function SettingsForm({
             />
           }
         />
+
+        <SpeedLimitRow limit={settings.speed_limit} onChange={(speed_limit) => onChange({ speed_limit })} />
       </Group>
 
       <Group title="Appearance">
@@ -229,6 +224,76 @@ function SettingsForm({
 
       <Versions />
     </div>
+  );
+}
+
+/**
+ * One limit for all downloads together: off, a few common speeds, or the
+ * user's own. A new limit applies to running downloads at once.
+ */
+function SpeedLimitRow({ limit, onChange }: { limit: number | null; onChange: (limit: number | null) => void }) {
+  const preset = limit === null ? "off" : SPEED_LIMITS.find((mb) => mb * MB_PER_SECOND === limit);
+  // Custom stays open once chosen, even before a number is typed.
+  const [customOpen, setCustomOpen] = useState(preset === undefined);
+  // Focus the field when Custom is picked, not when the panel opens on a custom limit.
+  const [focusField, setFocusField] = useState(false);
+  const custom = customOpen || preset === undefined;
+  const toText = (bytes: number | null) => (bytes === null ? "" : String(Number((bytes / MB_PER_SECOND).toFixed(2))));
+  const [draft, setDraft] = useState(() => toText(limit));
+  useEffect(() => setDraft(toText(limit)), [limit]);
+
+  const choose = (id: number | "off" | "custom") => {
+    setCustomOpen(id === "custom");
+    setFocusField(id === "custom");
+    if (id === "off") onChange(null);
+    else if (typeof id === "number") onChange(id * MB_PER_SECOND);
+  };
+  const commit = () => {
+    const mb = Number.parseFloat(draft.replace(",", "."));
+    if (Number.isFinite(mb) && mb > 0) {
+      const bytes = Math.round(mb * MB_PER_SECOND);
+      if (bytes !== limit) onChange(bytes);
+    } else {
+      setDraft(toText(limit));
+    }
+  };
+
+  return (
+    <Row
+      title="Speed limit"
+      hint="In MB/s, for all downloads together, shared out evenly. A change applies to running downloads straight away."
+    >
+      <Segmented<number | "off" | "custom">
+        label="Speed limit"
+        group="speed-limit"
+        className="mt-2.5"
+        value={custom ? "custom" : (preset ?? null)}
+        options={[
+          { id: "off", label: "Unlimited" },
+          ...SPEED_LIMITS.map((mb) => ({ id: mb, label: String(mb) })),
+          { id: "custom", label: "Custom" },
+        ]}
+        onChange={choose}
+      />
+      {custom && (
+        <div className="mt-2 flex items-center gap-2">
+          <input
+            autoFocus={focusField}
+            // Typing replaces the limit shown rather than adding to it.
+            onFocus={(event) => event.currentTarget.select()}
+            inputMode="decimal"
+            value={draft}
+            placeholder="e.g. 3.5"
+            onChange={(event) => setDraft(event.target.value)}
+            onBlur={commit}
+            onKeyDown={(event) => event.key === "Enter" && event.currentTarget.blur()}
+            aria-label="Custom speed limit in MB/s"
+            className="h-9 w-24 rounded-lg border border-border-strong bg-card px-3 text-[13px] tabular-nums outline-none transition-[border-color,box-shadow] duration-150 focus:border-primary/60 focus:shadow-[0_0_0_3px_var(--primary-soft)]"
+          />
+          <span className="text-xs text-muted-foreground">MB/s</span>
+        </div>
+      )}
+    </Row>
   );
 }
 

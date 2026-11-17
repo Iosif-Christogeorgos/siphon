@@ -12,6 +12,7 @@ import type {
   Registry,
   Settings,
   SettingsView,
+  Speed,
   ToolStatus,
   Trim,
   UpdateNotice,
@@ -54,6 +55,10 @@ export const onToolUpdated = (handler: (notice: UpdateNotice) => void): Promise<
 
 export const onDownloadEvent = (handler: (event: DownloadEvent) => void): Promise<UnlistenFn> =>
   listen<DownloadEvent>("download://event", (event) => handler(event.payload));
+
+/** The total speed of all downloads, twice a second while anything downloads, then one zero. */
+export const onSpeed = (handler: (speed: Speed) => void): Promise<UnlistenFn> =>
+  listen<Speed>("speed://total", (event) => handler(event.payload));
 
 /** Commands reject with an `AppError`; anything else is wrapped to look like one. */
 export function toAppError(error: unknown): AppError {
