@@ -184,7 +184,7 @@ Two settings keep downloads fast. Segmented streams (HLS, DASH, which most sites
 
 Every download goes through a small HTTP proxy inside Siphon (`src-tauri/src/throttle`), which is how one speed limit covers all of them, including the parts ffmpeg fetches. Each download gets its own listener on `127.0.0.1`, on a port Windows picks, closed when the download ends. HTTPS passes through it as an untouched tunnel. If Windows or the `HTTP(S)_PROXY` variables name a proxy, Siphon's proxy goes through it. Why it works this way, and what was measured, is in [docs/decisions.md](docs/decisions.md#speed-limit).
 
-Progress comes from `--progress-template` lines that the backend parses and folds into one overall percentage, weighted by stream size. It reaches the UI as `download://event` events.
+Progress comes from `--progress-template` lines that the backend parses and folds into one overall percentage, weighted by stream size. Speed and time left are measured by Siphon from the bytes received over the last three seconds, rather than taken from yt-dlp, whose readings jump. It reaches the UI as `download://event` events.
 
 ## Project layout
 

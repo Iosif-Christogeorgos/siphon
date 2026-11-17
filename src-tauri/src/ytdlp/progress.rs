@@ -15,7 +15,9 @@ pub fn template_args() -> [&'static str; 15] {
         "--progress-delta",
         "0.1",
         "--progress-template",
-        "download:SIPHON_DL|%(progress.status)s|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(progress.speed)s|%(progress.eta)s|%(info.format_id)s|%(info.vcodec)s|%(info.acodec)s|%(progress.filename)s",
+        // No speed or time left: yt-dlp's are readings over a moment, so
+        // Siphon measures its own from the byte counts (see `downloads::tracker`).
+        "download:SIPHON_DL|%(progress.status)s|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(info.format_id)s|%(info.vcodec)s|%(info.acodec)s|%(progress.filename)s",
         "--progress-template",
         "postprocess:SIPHON_PP|%(progress.status)s|%(progress.postprocessor)s",
         // Which streams were picked and how big they are, before any bytes move.
@@ -57,10 +59,6 @@ pub struct DownloadTick {
     pub downloading: bool,
     pub downloaded: Option<u64>,
     pub total: Option<u64>,
-    /// Bytes per second.
-    pub speed: Option<f64>,
-    /// Seconds.
-    pub eta: Option<f64>,
     pub format_id: String,
     pub has_video: bool,
     pub has_audio: bool,
@@ -73,16 +71,14 @@ pub fn parse(line: &str) -> Option<Line> {
     let line = line.trim();
     if let Some(rest) = line.strip_prefix("SIPHON_DL|") {
         // The file name goes last because it may itself contain pipes.
-        let fields: Vec<&str> = rest.splitn(10, '|').collect();
-        let [status, downloaded, total, estimate, speed, eta, format_id, vcodec, acodec, filename] = fields[..] else {
+        let fields: Vec<&str> = rest.splitn(8, '|').collect();
+        let [status, downloaded, total, estimate, format_id, vcodec, acodec, filename] = fields[..] else {
             return None;
         };
         return Some(Line::Download(DownloadTick {
             downloading: status != "finished",
             downloaded: bytes(downloaded),
             total: bytes(total).or(bytes(estimate)),
-            speed: float(speed).filter(|speed| *speed > 0.0),
-            eta: float(eta).filter(|eta| *eta >= 0.0),
             format_id: format_id.to_string(),
             has_video: !matches!(vcodec, "none" | "NA"),
             has_audio: !matches!(acodec, "none" | "NA"),
@@ -146,7 +142,7 @@ mod tests {
 
     #[test]
     fn parses_a_download_tick() {
-        let line = r"SIPHON_DL|downloading|1048576|10485760.0|NA|524288.5|18|137|avc1.640028|none|C:\v\a|b.f137.mp4";
+        let line = r"SIPHON_DL|downloading|1048576|10485760.0|NA|137|avc1.640028|none|C:\v\a|b.f137.mp4";
         let Some(Line::Download(tick)) = parse(line) else {
             panic!("not a tick")
         };
@@ -154,18 +150,18 @@ mod tests {
         assert_eq!(tick.filename.as_deref(), Some(r"C:\v\a|b.f137.mp4"));
         assert_eq!(tick.downloaded, Some(1_048_576));
         assert_eq!(tick.total, Some(10_485_760));
-        assert_eq!(tick.eta, Some(18.0));
+        assert_eq!(tick.format_id, "137");
         assert!(tick.has_video && !tick.has_audio);
     }
 
     #[test]
     fn falls_back_to_the_size_estimate() {
-        let line = "SIPHON_DL|downloading|10|NA|2000.7|NA|NA|251|none|opus|a.webm";
+        let line = "SIPHON_DL|downloading|10|NA|2000.7|251|none|opus|a.webm";
         let Some(Line::Download(tick)) = parse(line) else {
             panic!("not a tick")
         };
         assert_eq!(tick.total, Some(2000));
-        assert_eq!(tick.speed, None);
+        assert!(!tick.has_video && tick.has_audio);
     }
 
     #[test]

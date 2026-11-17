@@ -42,9 +42,14 @@ const DOWNLOAD_SHARE: f64 = 0.97;
 /// … and when a conversion follows, which usually takes about as long again.
 const DOWNLOAD_SHARE_BEFORE_CONVERT: f64 = 0.5;
 
-/// How far back speed is measured when it is read off a growing file.
-/// ffmpeg writes in bursts, so a single 250 ms step swings wildly.
+/// How far back speed is measured. Bytes arrive in bursts (ffmpeg writes a
+/// trimmed part in bursts, and yt-dlp fetches YouTube in 10 MB requests), so
+/// a reading over a moment swings wildly: yt-dlp's own speed read up to
+/// 65.8 MB/s under a 20 MB/s limit while the file grew at 18.8.
 const SPEED_WINDOW: Duration = Duration::from_secs(3);
+
+/// Readings needed before a speed is shown at all, or the first burst reads as the speed.
+const SPEED_WARMUP: Duration = Duration::from_millis(500);
 
 #[derive(Debug)]
 pub struct Tracker {
@@ -52,7 +57,7 @@ pub struct Tracker {
     finished_streams: usize,
     download_share: f64,
     progress: Progress,
-    /// Recent file sizes and when they were read (see `on_bytes`).
+    /// Recent byte counts of the stream being fetched, and when they were read.
     samples: VecDeque<(Instant, u64)>,
 }
 
@@ -121,6 +126,10 @@ impl Tracker {
     }
 
     pub fn on_tick(&mut self, tick: &DownloadTick) -> Progress {
+        self.on_tick_at(tick, Instant::now())
+    }
+
+    fn on_tick_at(&mut self, tick: &DownloadTick, now: Instant) -> Progress {
         let stream_count = self.plan.len().max(self.finished_streams + 1);
         let index = self.finished_streams.min(stream_count - 1);
 
@@ -147,14 +156,17 @@ impl Tracker {
         };
         // Estimates wobble; the bar must never move backwards.
         self.progress.fraction = self.progress.fraction.max(overall);
-        if tick.downloading {
-            // Some ticks omit speed/ETA; keep the last reading rather than flicker.
-            self.progress.speed = tick.speed.or(self.progress.speed);
-            self.progress.eta = tick.eta.or(self.progress.eta);
-        } else {
+        if !tick.downloading {
+            // The next stream starts from nothing: measure it afresh.
+            self.samples.clear();
             self.progress.speed = None;
             self.progress.eta = None;
+        } else if let Some(downloaded) = tick.downloaded {
+            // Measured from the byte counts rather than taken from yt-dlp,
+            // whose speed (and so its time left) is a reading over a moment.
+            self.measure(downloaded, tick.total, now);
         }
+        // (A tick without a byte count keeps the last reading rather than flicker.)
         self.current()
     }
 
@@ -173,8 +185,18 @@ impl Tracker {
         };
         self.progress.stage = Stage::Downloading;
         self.progress.fraction = self.progress.fraction.max(within * self.download_share);
+        self.measure(written, Some(expected), now);
+        self.current()
+    }
 
-        self.samples.push_back((now, written));
+    /// Speed over the last few seconds, from the bytes the current stream has
+    /// so far, and the time left at that speed when the total is known.
+    fn measure(&mut self, bytes: u64, total: Option<u64>, now: Instant) {
+        // Fewer bytes than before: a new stream, or a try that started over.
+        if self.samples.back().is_some_and(|(_, last)| bytes < *last) {
+            self.samples.clear();
+        }
+        self.samples.push_back((now, bytes));
         while self
             .samples
             .front()
@@ -182,16 +204,20 @@ impl Tracker {
         {
             self.samples.pop_front();
         }
-        let (oldest_at, oldest) = self.samples.front().copied().unwrap_or((now, written));
-        let elapsed = now.duration_since(oldest_at).as_secs_f64();
-        // Half a second of readings at least, or the first burst reads as the speed.
-        if elapsed >= 0.5 {
-            let speed = written.saturating_sub(oldest) as f64 / elapsed;
-            self.progress.speed = Some(speed);
-            // The expected size is an estimate: once it is passed, the time left is unknown.
-            self.progress.eta = (speed > 0.0 && written < expected).then(|| (expected - written) as f64 / speed);
+        let (oldest_at, oldest) = self.samples.front().copied().unwrap_or((now, bytes));
+        let elapsed = now.duration_since(oldest_at);
+        if elapsed < SPEED_WARMUP {
+            // Not enough to go on yet: show nothing rather than a burst.
+            self.progress.speed = None;
+            self.progress.eta = None;
+            return;
         }
-        self.current()
+        let speed = bytes.saturating_sub(oldest) as f64 / elapsed.as_secs_f64();
+        self.progress.speed = Some(speed);
+        // The total may be an estimate: once it is passed, the time left is unknown.
+        self.progress.eta = total
+            .filter(|total| speed > 0.0 && bytes < *total)
+            .map(|total| (total - bytes) as f64 / speed);
     }
 
     pub fn on_postprocess(&mut self, name: &str) -> Progress {
@@ -238,8 +264,6 @@ mod tests {
             downloading,
             downloaded: Some(downloaded),
             total: Some(total),
-            speed: Some(1.0),
-            eta: Some(1.0),
             format_id: String::new(),
             has_video: video,
             has_audio: !video,
@@ -305,6 +329,59 @@ mod tests {
         let past = tracker.on_bytes_at(13_000_000, 12_000_000, at(6000));
         assert_eq!(past.eta, None);
         assert!(past.speed.is_some());
+    }
+
+    #[test]
+    fn speed_is_measured_over_seconds_from_the_byte_counts() {
+        let mut tracker = Tracker::new(false);
+        tracker.set_plan(vec![stream(100_000_000), stream(10_000_000)]);
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+
+        // The first moment of a stream says nothing yet.
+        let first = tracker.on_tick_at(&tick(true, 0, 100_000_000, true), at(0));
+        assert_eq!((first.speed, first.eta), (None, None));
+
+        // 20 MB/s, arriving in bursts: 2.5 MB at a time, and every fifth
+        // tenth of a second nothing.
+        let mut last = first;
+        let mut downloaded = 0;
+        for step in 1..=30 {
+            if step % 5 != 0 {
+                downloaded += 2_500_000;
+            }
+            last = tracker.on_tick_at(&tick(true, downloaded, 100_000_000, true), at(step * 100));
+        }
+        // 60 MB in 3 s.
+        assert!(
+            (last.speed.unwrap() - 20_000_000.0).abs() < 1_000_000.0,
+            "{:?}",
+            last.speed
+        );
+        // 40 MB left at 20 MB/s.
+        assert!((last.eta.unwrap() - 2.0).abs() < 0.2, "{:?}", last.eta);
+
+        // The video stream is done; the audio stream starts from nothing.
+        tracker.on_tick_at(&tick(false, 100_000_000, 100_000_000, true), at(3100));
+        let audio = tracker.on_tick_at(&tick(true, 100_000, 10_000_000, false), at(3200));
+        assert_eq!((audio.speed, audio.eta), (None, None));
+        let audio = tracker.on_tick_at(&tick(true, 5_100_000, 10_000_000, false), at(4200));
+        assert!((audio.speed.unwrap() - 5_000_000.0).abs() < 1.0);
+        assert!((audio.eta.unwrap() - 0.98).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_try_that_starts_over_is_measured_afresh() {
+        let mut tracker = Tracker::new(false);
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        tracker.on_tick_at(&tick(true, 0, 10_000_000, true), at(0));
+        tracker.on_tick_at(&tick(true, 5_000_000, 10_000_000, true), at(1000));
+        // Back to the start of the stream: no negative or stale speed.
+        let again = tracker.on_tick_at(&tick(true, 0, 10_000_000, true), at(1100));
+        assert_eq!(again.speed, None);
+        let again = tracker.on_tick_at(&tick(true, 1_000_000, 10_000_000, true), at(2100));
+        assert!((again.speed.unwrap() - 1_000_000.0).abs() < 1.0);
     }
 
     #[test]
