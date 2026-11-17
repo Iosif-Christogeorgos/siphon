@@ -119,6 +119,7 @@ pub struct Capabilities {
 
 impl Capabilities {
     /// No hardware encoders and nothing optional installed.
+    #[cfg(test)]
     pub const BASIC: Capabilities = Capabilities {
         encoders: Encoders::SOFTWARE,
         chunked_requests: false,

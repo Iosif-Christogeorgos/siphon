@@ -63,7 +63,6 @@ fn source(tool: Tool, channel: Channel) -> Option<Source> {
             let asset = match (OS, ARCH) {
                 ("windows", "x86_64") => "yt-dlp.exe",
                 ("windows", "aarch64") => "yt-dlp_arm64.exe",
-                ("macos", _) => "yt-dlp_macos",
                 _ => return None,
             };
             (repo, asset, "SHA2-256SUMS".to_string(), false)
@@ -82,8 +81,6 @@ fn source(tool: Tool, channel: Channel) -> Option<Source> {
             let asset = match (os, arch) {
                 ("windows", "x86_64") => "deno-x86_64-pc-windows-msvc.zip",
                 ("windows", "aarch64") => "deno-aarch64-pc-windows-msvc.zip",
-                ("macos", "x86_64") => "deno-x86_64-apple-darwin.zip",
-                ("macos", "aarch64") => "deno-aarch64-apple-darwin.zip",
                 _ => return None,
             };
             ("denoland/deno", asset, format!("{asset}.sha256sum"), false)
@@ -96,12 +93,6 @@ fn source(tool: Tool, channel: Channel) -> Option<Source> {
         checksums,
         rolling,
     })
-}
-
-/// Whether Siphon downloads and updates this tool on the current platform.
-/// (yt-dlp/FFmpeg-Builds has no macOS builds, so there ffmpeg comes from PATH.)
-pub fn is_managed(tool: Tool) -> bool {
-    source(tool, Channel::Stable).is_some()
 }
 
 /// Looks up the newest release of `tool` on GitHub.
@@ -193,7 +184,7 @@ mod tests {
         let sums = format!("{A}  yt-dlp\n{B}  yt-dlp.exe\n");
         assert_eq!(find_sha256(&sums, "yt-dlp.exe").as_deref(), Some(B));
         assert_eq!(find_sha256(&sums, "yt-dlp").as_deref(), Some(A));
-        assert_eq!(find_sha256(&sums, "yt-dlp_macos"), None);
+        assert_eq!(find_sha256(&sums, "yt-dlp_x86.exe"), None);
     }
 
     #[test]

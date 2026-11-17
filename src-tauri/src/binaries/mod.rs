@@ -16,7 +16,7 @@ mod notes;
 pub mod sources;
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -221,18 +221,13 @@ impl BinaryManager {
     }
 
     /// Folder holding ffmpeg and ffprobe, for yt-dlp's `--ffmpeg-location`.
-    /// `None` means "not managed here, let yt-dlp find it on PATH".
-    pub fn ffmpeg_dir(&self) -> Option<PathBuf> {
-        if sources::is_managed(Tool::Ffmpeg) {
-            Some(self.tool_dir(Tool::Ffmpeg))
-        } else {
-            find_system_ffmpeg()
-        }
+    pub fn ffmpeg_dir(&self) -> PathBuf {
+        self.tool_dir(Tool::Ffmpeg)
     }
 
     /// The ffmpeg executable itself, for Siphon's own conversions.
-    pub fn ffmpeg(&self) -> Option<PathBuf> {
-        self.ffmpeg_dir().map(|dir| dir.join(exe("ffmpeg")))
+    pub fn ffmpeg(&self) -> PathBuf {
+        self.ffmpeg_dir().join(exe("ffmpeg"))
     }
 
     // ── Status ──────────────────────────────────────────────────────────
@@ -247,10 +242,7 @@ impl BinaryManager {
 
     /// True when every tool can be launched.
     pub fn is_ready(&self) -> bool {
-        Tool::ALL.iter().all(|&tool| match sources::is_managed(tool) {
-            true => self.installed(tool).is_some(),
-            false => find_system_ffmpeg().is_some(),
-        })
+        Tool::ALL.iter().all(|&tool| self.installed(tool).is_some())
     }
 
     fn initial_status(&self, tool: Tool) -> ToolStatus {
@@ -262,14 +254,7 @@ impl BinaryManager {
             error: None,
             available: None,
         };
-        if !sources::is_managed(tool) {
-            if find_system_ffmpeg().is_some() {
-                status.state = ToolState::Ready;
-            } else {
-                status.state = ToolState::Failed;
-                status.error = Some("FFmpeg wasn't found. Install it with Homebrew: brew install ffmpeg".into());
-            }
-        } else if let Some(installed) = self.installed(tool) {
+        if let Some(installed) = self.installed(tool) {
             status.state = ToolState::Ready;
             status.version = Some(installed.version);
         }
@@ -353,8 +338,8 @@ impl BinaryManager {
     /// statuses, not as an error.
     pub async fn sync_all(&self, channel: Channel, policy: UpdatePolicy) -> Vec<ToolStatus> {
         let _guard = self.sync_lock.lock().await;
-        let managed = Tool::ALL.into_iter().filter(|&tool| sources::is_managed(tool));
-        let outcomes = futures_util::future::join_all(managed.map(|tool| self.sync_tool(tool, channel, policy))).await;
+        let outcomes =
+            futures_util::future::join_all(Tool::ALL.map(|tool| self.sync_tool(tool, channel, policy))).await;
         // A swap put off because a download was running should be retried
         // soon, so only a clean round counts as "checked".
         if outcomes.iter().all(|settled| *settled) {
@@ -480,17 +465,4 @@ impl BinaryManager {
         }
         Ok(notice)
     }
-}
-
-/// Looks for an ffmpeg the user installed themselves (macOS only in practice).
-/// GUI apps don't inherit the shell's PATH there, so check Homebrew's folders too.
-fn find_system_ffmpeg() -> Option<PathBuf> {
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    std::env::split_paths(&path)
-        .chain([PathBuf::from("/opt/homebrew/bin"), PathBuf::from("/usr/local/bin")])
-        .find(|dir| is_executable_in(dir, "ffmpeg") && is_executable_in(dir, "ffprobe"))
-}
-
-fn is_executable_in(dir: &Path, name: &str) -> bool {
-    dir.join(exe(name)).is_file()
 }

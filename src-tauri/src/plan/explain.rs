@@ -214,7 +214,6 @@ fn encoder_phrase(hardware: Hardware) -> &'static str {
         Hardware::Nvenc => "on your NVIDIA graphics card",
         Hardware::Qsv => "with Intel Quick Sync",
         Hardware::Amf => "on your AMD graphics card",
-        Hardware::VideoToolbox => "with Apple’s hardware encoder",
         Hardware::Software => "on the CPU (no hardware encoder found, so this is slower)",
     }
 }
@@ -233,7 +232,6 @@ fn convert_seconds(recipe: &Recipe) -> Option<f64> {
         (VideoCodec::Prores, _) => 4.0,
         (_, Hardware::Nvenc) => 10.0,
         (_, Hardware::Qsv | Hardware::Amf) => 7.0,
-        (_, Hardware::VideoToolbox) => 6.0,
         (VideoCodec::H264, Hardware::Software) => 2.5,
         (VideoCodec::Hevc, Hardware::Software) => 0.5,
         (VideoCodec::Av1, Hardware::Software) => 0.8,

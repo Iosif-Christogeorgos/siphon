@@ -828,10 +828,7 @@ impl DownloadManager {
         work: &Path,
         tracker: &mut Tracker,
     ) -> Result<()> {
-        let ffmpeg = job
-            .bins
-            .ffmpeg()
-            .ok_or_else(|| AppError::setup("FFmpeg isn't installed."))?;
+        let ffmpeg = job.bins.ffmpeg();
         let log = work.join("passlog");
         let passes = if recipe.video_encode().is_some_and(|encode| encode.two_pass()) {
             vec![Pass::First { log: &log }, Pass::Second { log: &log }]

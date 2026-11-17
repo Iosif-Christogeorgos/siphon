@@ -18,19 +18,13 @@ pub enum Hardware {
     Qsv,
     /// AMD
     Amf,
-    /// Apple
-    VideoToolbox,
     /// libx264 / libx265 on the CPU.
     Software,
 }
 
 impl Hardware {
     /// Tried in this order; the first that encodes successfully wins.
-    const CANDIDATES: &'static [Hardware] = if cfg!(target_os = "macos") {
-        &[Hardware::VideoToolbox]
-    } else {
-        &[Hardware::Nvenc, Hardware::Qsv, Hardware::Amf]
-    };
+    const CANDIDATES: &'static [Hardware] = &[Hardware::Nvenc, Hardware::Qsv, Hardware::Amf];
 
     /// ffmpeg's encoder name for `codec`, e.g. "hevc_nvenc". Codecs without
     /// hardware support here always use their software encoder.
@@ -39,11 +33,9 @@ impl Hardware {
             (VideoCodec::H264, Hardware::Nvenc) => "h264_nvenc",
             (VideoCodec::H264, Hardware::Qsv) => "h264_qsv",
             (VideoCodec::H264, Hardware::Amf) => "h264_amf",
-            (VideoCodec::H264, Hardware::VideoToolbox) => "h264_videotoolbox",
             (VideoCodec::Hevc, Hardware::Nvenc) => "hevc_nvenc",
             (VideoCodec::Hevc, Hardware::Qsv) => "hevc_qsv",
             (VideoCodec::Hevc, Hardware::Amf) => "hevc_amf",
-            (VideoCodec::Hevc, Hardware::VideoToolbox) => "hevc_videotoolbox",
             (VideoCodec::Hevc, Hardware::Software) => "libx265",
             (VideoCodec::Vp9 | VideoCodec::Vp8, _) => "libvpx-vp9",
             (VideoCodec::Av1, _) => "libsvtav1",
@@ -61,6 +53,7 @@ pub struct Encoders {
 }
 
 impl Encoders {
+    #[cfg(test)]
     pub const SOFTWARE: Encoders = Encoders {
         h264: Hardware::Software,
         hevc: Hardware::Software,
