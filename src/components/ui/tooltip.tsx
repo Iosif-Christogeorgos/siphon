@@ -29,20 +29,24 @@ function TooltipContent({
   );
 }
 
-/** A hover hint for icon-only controls. */
+/** A hover hint for icon-only controls, or the longer explanation behind a short label. */
 function Hint({
   label,
   children,
   side,
+  className,
 }: {
-  label: string;
+  label: React.ReactNode;
   children: React.ReactNode;
   side?: React.ComponentProps<typeof TooltipPrimitive.Content>["side"];
+  className?: string;
 }) {
   return (
     <TooltipPrimitive.Root>
       <TooltipPrimitive.Trigger asChild>{children}</TooltipPrimitive.Trigger>
-      <TooltipContent side={side}>{label}</TooltipContent>
+      <TooltipContent side={side} className={className}>
+        {label}
+      </TooltipContent>
     </TooltipPrimitive.Root>
   );
 }

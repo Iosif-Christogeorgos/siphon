@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { spring } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import { onRadioKeys } from "./radio-keys";
+import { Hint } from "./tooltip";
 
 /**
  * A small either/or switch: the options sit in one track and the selected
@@ -24,7 +25,8 @@ export function Segmented<T extends string | number>({
   group: string;
   /** null when no option is selected. */
   value: T | null;
-  options: { id: T; label: string; icon?: ReactNode }[];
+  /** `hint` explains an option on hover. */
+  options: { id: T; label: string; icon?: ReactNode; hint?: string }[];
   onChange: (value: T) => void;
   className?: string;
   /** "md" for a primary row, such as the preset groups. */
@@ -39,7 +41,7 @@ export function Segmented<T extends string | number>({
     >
       {options.map((option) => {
         const selected = option.id === value;
-        return (
+        const button = (
           <button
             key={option.id}
             type="button"
@@ -66,6 +68,13 @@ export function Segmented<T extends string | number>({
               {option.label}
             </span>
           </button>
+        );
+        return option.hint ? (
+          <Hint key={option.id} label={option.hint} className="max-w-64 text-pretty">
+            {button}
+          </Hint>
+        ) : (
+          button
         );
       })}
     </div>

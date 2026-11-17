@@ -1,7 +1,7 @@
 import { Bookmark, Trash2 } from "lucide-react";
 import { type FormEvent, type ReactNode, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Chip } from "@/components/ui/chip";
+import { Segmented } from "@/components/ui/segmented";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { formatBytes } from "@/lib/format";
 import {
@@ -54,20 +54,15 @@ export function ManualPanel({ video, disabled }: { video: VideoInfo; disabled: b
   return (
     <div className="space-y-3 rounded-2xl border bg-card p-3.5 shadow-card">
       {hasVideo && (
-        <div role="radiogroup" aria-label="Content" className="flex gap-0.5">
-          {CONTENT.map(({ id, label }) => (
-            <Chip
-              key={id}
-              group="content"
-              tone="soft"
-              selected={manual.content === id}
-              onSelect={() => setManual({ content: id })}
-              disabled={disabled}
-            >
-              {label}
-            </Chip>
-          ))}
-        </div>
+        <fieldset disabled={disabled} className="w-fit border-0 p-0">
+          <Segmented
+            label="Content"
+            group="content"
+            value={manual.content}
+            onChange={(content) => setManual({ content })}
+            options={CONTENT}
+          />
+        </fieldset>
       )}
 
       <div className="grid grid-cols-6 gap-x-3 gap-y-2.5">

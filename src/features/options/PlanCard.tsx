@@ -47,8 +47,8 @@ export function PlanCard({
 }) {
   if (!plan) {
     return (
-      <div aria-hidden className="flex gap-3 px-1 py-1">
-        <div className="skeleton size-8 shrink-0 rounded-lg" />
+      <div aria-hidden className="flex gap-3 px-1">
+        <div className="skeleton size-9 shrink-0 rounded-xl" />
         <div className="flex-1 space-y-2 py-0.5">
           <div className="skeleton h-3.5 w-2/5" />
           <div className="skeleton h-3 w-4/5" />
@@ -59,65 +59,87 @@ export function PlanCard({
 
   const badge = BADGES[plan.badge];
   const Icon = badge.icon;
-  const badgeText = [
-    badge.label,
-    // How long converting (or, for a copied clip, cutting) takes. Share's
-    // badge says enough on its own.
-    plan.convert_seconds !== null && plan.badge !== "size_optimized" && formatConvertTime(plan.convert_seconds),
-  ]
-    .filter(Boolean)
-    .join(" · ");
+  // How long converting (or, for a copied clip, cutting) takes. Share's badge says enough on its own.
+  const time =
+    plan.convert_seconds !== null && plan.badge !== "size_optimized" ? formatConvertTime(plan.convert_seconds) : null;
+  // Only warnings stay in view; the explanation and notes for the curious wait behind the ⓘ.
+  const notes = plan.hints.filter((hint) => hint.level === "info");
+  const warnings = plan.hints.filter((hint) => hint.level === "warning");
 
   return (
-    <div className="space-y-2.5 px-1 py-1">
-      <div className="flex gap-3">
+    <div className="space-y-2.5 py-1.5">
+      <div className="flex items-center gap-3 px-1">
         <div
           className={cn(
-            "grid size-8 shrink-0 place-items-center rounded-lg",
+            "grid size-9 shrink-0 place-items-center rounded-xl",
             badge.accent ? "bg-primary-soft text-primary" : "bg-secondary text-muted-foreground",
           )}
         >
           <Icon className="size-4" />
         </div>
+
         <div className="min-w-0 flex-1">
-          <div className="flex items-baseline justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-1">
             <p className="truncate font-medium">{plan.headline}</p>
-            {plan.estimated_size != null && (
-              <span className="shrink-0 text-[13px] text-muted-foreground tabular-nums">
-                {plan.size_range ? (
-                  // A conversion's size depends on the picture: say how far it can go.
-                  <Hint label={`Most likely about ${formatBytes(plan.estimated_size)}; it depends on the picture.`}>
-                    <span>{formatBytesRange(plan.size_range[0], plan.size_range[1])}</span>
-                  </Hint>
-                ) : (
-                  <>
-                    ≈ <AnimatedBytes bytes={plan.estimated_size} />
-                  </>
+            <Hint
+              label={
+                <span className="block space-y-1.5">
+                  <span className="block">{plan.detail}</span>
+                  {notes.map((note) => (
+                    <span key={note.text} className="block text-muted-foreground">
+                      {note.text}
+                    </span>
+                  ))}
+                </span>
+              }
+              className="max-w-80 px-3 py-2 leading-relaxed text-pretty"
+            >
+              <button
+                type="button"
+                aria-label="About this file"
+                className={cn(
+                  "grid size-6 shrink-0 place-items-center rounded-full transition-colors hover:bg-accent hover:text-foreground",
+                  notes.length > 0 ? "text-primary" : "text-subtle-foreground",
                 )}
-                {clips > 1 && " each"}
-              </span>
-            )}
+              >
+                <Info className="size-3.5" />
+              </button>
+            </Hint>
           </div>
-          <p className="text-[13px] text-pretty text-muted-foreground">{plan.detail}</p>
-          <div className="mt-1.5 flex items-center justify-between gap-3">
-            <span
-              className={cn(
-                "rounded-md px-1.5 py-0.5 text-[11px] font-medium",
-                badge.accent ? "bg-primary-soft text-primary" : "bg-secondary text-muted-foreground",
+          <p className="text-xs text-muted-foreground">
+            <span className={cn(badge.accent && "text-primary")}>{badge.label}</span>
+            {time && ` · ${time}`}
+          </p>
+        </div>
+
+        <div className="flex shrink-0 flex-col items-end">
+          {plan.estimated_size != null ? (
+            <span className="text-[15px] font-medium tabular-nums">
+              {plan.size_range ? (
+                // A conversion's size depends on the picture: say how far it can go.
+                <Hint label={`Most likely about ${formatBytes(plan.estimated_size)}; it depends on the picture.`}>
+                  <span>{formatBytesRange(plan.size_range[0], plan.size_range[1])}</span>
+                </Hint>
+              ) : (
+                <>
+                  <span className="text-muted-foreground">≈ </span>
+                  <AnimatedBytes bytes={plan.estimated_size} />
+                </>
               )}
-            >
-              {badgeText}
+              {clips > 1 && <span className="text-xs font-normal text-muted-foreground"> each</span>}
             </span>
-            <button
-              type="button"
-              onClick={onCustomize}
-              aria-pressed={customizing}
-              className="flex items-center gap-1 rounded-md px-1 text-xs text-subtle-foreground transition-colors hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-none"
-            >
-              <SlidersHorizontal className="size-3" />
-              {customizing ? "Back to presets" : "Customize"}
-            </button>
-          </div>
+          ) : (
+            <span className="h-[22px]" />
+          )}
+          <button
+            type="button"
+            onClick={onCustomize}
+            aria-pressed={customizing}
+            className="-mr-1 flex items-center gap-1 rounded-md px-1 text-xs text-subtle-foreground transition-colors hover:text-primary focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-none"
+          >
+            <SlidersHorizontal className="size-3" />
+            {customizing ? "Back to presets" : "Customize"}
+          </button>
         </div>
       </div>
 
@@ -132,8 +154,8 @@ export function PlanCard({
             )}
           </Note>
         )}
-        {plan.hints.map((hint) => (
-          <Note key={hint.text} warning={hint.level === "warning"}>
+        {warnings.map((hint) => (
+          <Note key={hint.text} warning>
             {hint.text}
           </Note>
         ))}

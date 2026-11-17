@@ -17,7 +17,7 @@ Two rules apply throughout:
 | Audio | Music · Best audio (original) | MP3 or M4A at a chosen bitrate, or the original track untouched |
 | Edit | Premiere Pro · DaVinci Resolve · CapCut · Vegas | Constant frame rate H.264 with 48 kHz audio, or ProRes ("Smoothest editing") |
 
-The quality row offers **Best** and the resolutions the video really has (no tiny ones unless that is all there is), with an estimated size under each. A lower resolution downloads the matching stream; nothing is upscaled. Max quality and Share have no quality row; Music offers bitrates instead.
+The quality choice offers **Best** and the resolutions the video really has (no tiny ones unless that is all there is). Like the other choices under the groups, it shows only its current value until pointed at, then unfolds; the estimated size of the resolution pointed at shows at its end. A lower resolution downloads the matching stream; nothing is upscaled. Max quality and Share have no quality row; Music offers bitrates instead.
 
 ## Watch
 
