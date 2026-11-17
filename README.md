@@ -107,7 +107,7 @@ What each device can play, and the sources for it, are in [docs/device-support.m
 | , / . | Step one frame back or forward |
 | I / O | Set the start or end of the part at the playhead |
 
-The preview comes from YouTube's embedded player for YouTube links, from a low-resolution stream for other sites, and from a small downloaded copy if neither plays.
+The preview comes from YouTube's embedded player for YouTube links, from a low-resolution stream for other sites (a plain file if the site has one, otherwise HLS, which is all Twitch offers), and from a small downloaded copy if neither plays.
 
 Only the selected part is downloaded (`--download-sections`). There are two ways to cut it:
 
