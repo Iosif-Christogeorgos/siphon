@@ -26,6 +26,7 @@ use crate::plan::{self, Choice, Recipe, Trim};
 use crate::process;
 use crate::settings::{Settings, SettingsStore};
 use crate::state::{CapabilityCache, MediaCache};
+use crate::throttle::{self, Throttle};
 use crate::ytdlp::metadata::{self, Media, VideoInfo};
 use crate::ytdlp::{self, args, errors, progress};
 use tracker::{Progress, Tracker};
@@ -104,6 +105,10 @@ struct Job {
     /// The child process currently working for this job, if any.
     pid: Option<u32>,
     stop: Option<Stop>,
+    /// The job's way through the speed limit, while it runs. It goes with the
+    /// job (see `end_job`), whether that finished, failed, was paused or was
+    /// cancelled, which closes its proxy listener and connections.
+    flow: Option<throttle::Flow>,
 }
 
 /// Who may run: jobs take a slot in the order they were added.
@@ -190,8 +195,7 @@ impl DownloadManager {
     pub fn start(self: &Arc<Self>, app: AppHandle, request: DownloadRequest) -> Result<()> {
         let url = ytdlp::validate_url(&request.url)?.to_string();
         let id = request.id;
-        self.jobs.lock().unwrap().insert(id.clone(), Job::default());
-        self.gate.lock().unwrap().waiting.push_back(id.clone());
+        self.register(&id);
 
         let manager = Arc::clone(self);
         tauri::async_runtime::spawn(async move {
@@ -205,14 +209,20 @@ impl DownloadManager {
             );
 
             let outcome = if manager.wait_for_slot(&app, &id).await {
-                let job = JobContext {
-                    app: &app,
-                    bins: &bins,
-                    id: &id,
-                    // Read once the job starts, so changes made while it queued apply.
-                    settings: app.state::<SettingsStore>().get(),
+                let outcome = match app.state::<Arc<Throttle>>().flow().await {
+                    Ok(flow) => {
+                        manager.attach_flow(&id, flow);
+                        let job = JobContext {
+                            app: &app,
+                            bins: &bins,
+                            id: &id,
+                            // Read once the job starts, so changes made while it queued apply.
+                            settings: app.state::<SettingsStore>().get(),
+                        };
+                        manager.run(&job, &url, &request.choice, request.trim).await
+                    }
+                    Err(error) => Err(error),
                 };
-                let outcome = manager.run(&job, &url, &request.choice, request.trim).await;
                 manager.gate.lock().unwrap().running -= 1;
                 manager.gate_changed.notify_waiters();
                 outcome
@@ -220,8 +230,7 @@ impl DownloadManager {
                 Err(AppError::cancelled())
             };
 
-            let stop = manager.jobs.lock().unwrap().remove(&id).and_then(|job| job.stop);
-            manager.claimed.lock().unwrap().retain(|_, owner| owner != &id);
+            let stop = manager.end_job(&id);
             if stop == Some(Stop::Cancel) {
                 // Including what an earlier try left, if it was cancelled between tries.
                 manager.discard_leftovers(&id).await;
@@ -242,6 +251,40 @@ impl DownloadManager {
             let _ = app.emit(EVENT, event);
         });
         Ok(())
+    }
+
+    /// Adds a job to the list and to the back of the queue.
+    fn register(&self, id: &str) {
+        self.jobs.lock().unwrap().insert(id.to_string(), Job::default());
+        self.gate.lock().unwrap().waiting.push_back(id.to_string());
+    }
+
+    /// Gives a job that is about to run its way through the speed limit.
+    fn attach_flow(&self, id: &str, flow: throttle::Flow) {
+        if let Some(job) = self.jobs.lock().unwrap().get_mut(id) {
+            job.flow = Some(flow);
+        }
+    }
+
+    /// Sends a yt-dlp command's downloads through the job's flow.
+    fn route(&self, id: &str, cmd: &mut Command) -> Result<()> {
+        let jobs = self.jobs.lock().unwrap();
+        // Never download around the limit.
+        let flow = jobs
+            .get(id)
+            .and_then(|job| job.flow.as_ref())
+            .ok_or_else(|| AppError::internal("Couldn't prepare the download."))?;
+        flow.route(cmd);
+        Ok(())
+    }
+
+    /// The one way out for every job, however it ended: takes it off the
+    /// list, which closes its proxy listener and connections, and releases
+    /// the names it claimed. Returns why it was stopped, if it was.
+    fn end_job(&self, id: &str) -> Option<Stop> {
+        let job = self.jobs.lock().unwrap().remove(id);
+        self.claimed.lock().unwrap().retain(|_, owner| owner != id);
+        job.and_then(|job| job.stop)
     }
 
     /// Waits until this job is first in line and a slot is free.
@@ -325,6 +368,11 @@ impl DownloadManager {
         let deadline = Instant::now() + SHUTDOWN_GRACE;
         while !self.is_idle() && Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        // A job that hasn't ended by now still loses its proxy: no listener
+        // is left open, whatever the job is stuck on.
+        for job in self.jobs.lock().unwrap().values_mut() {
+            job.flow = None;
         }
         // What is left belongs to downloads that were paused or had failed.
         let leftovers: Vec<Leftovers> = self.leftovers.lock().unwrap().drain().map(|(_, left)| left).collect();
@@ -625,6 +673,7 @@ impl DownloadManager {
                     // Stamp the file with the time it was downloaded, not uploaded.
                     "--no-mtime",
                 ]);
+            self.route(job.id, &mut cmd)?;
             if !continues {
                 // A new download ignores partial files of the same name; a
                 // later try leaves this out and carries on from them instead.
@@ -1148,5 +1197,75 @@ mod naming_tests {
         assert_eq!(manager.unique_output(file("Other.mp4"), "b"), file("Other (2).mp4"));
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod proxy_tests {
+    use std::net::SocketAddr;
+
+    use tokio::net::TcpStream;
+
+    use super::*;
+
+    /// A job as `start` sets it up once it has a slot, with its proxy listening.
+    async fn running_job(manager: &DownloadManager, throttle: &Throttle, id: &str) -> SocketAddr {
+        manager.register(id);
+        let flow = throttle.flow().await.unwrap();
+        let address = flow.address();
+        manager.attach_flow(id, flow);
+        assert!(listening(address).await, "the proxy should listen while the job runs");
+        address
+    }
+
+    async fn listening(address: SocketAddr) -> bool {
+        // Let an aborted proxy task finish closing first.
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        TcpStream::connect(address).await.is_ok()
+    }
+
+    #[tokio::test]
+    async fn the_proxy_closes_however_a_download_ends() {
+        let manager = DownloadManager::default();
+        let throttle = Throttle::new(None);
+
+        // Finished, or failed: `run` returned, and the job ends with no stop.
+        for id in ["finished", "failed"] {
+            let address = running_job(&manager, &throttle, id).await;
+            assert_eq!(manager.end_job(id), None);
+            assert!(!listening(address).await, "{id}: the proxy is still listening");
+        }
+
+        // Paused: its files are kept for later, but not its proxy.
+        let address = running_job(&manager, &throttle, "paused").await;
+        manager.pause("paused").await;
+        manager.keep_leftovers("paused", Leftovers::default());
+        assert_eq!(manager.end_job("paused"), Some(Stop::Pause));
+        assert!(!listening(address).await, "paused: the proxy is still listening");
+
+        // Cancelled.
+        let address = running_job(&manager, &throttle, "cancelled").await;
+        manager.cancel("cancelled").await;
+        assert_eq!(manager.end_job("cancelled"), Some(Stop::Cancel));
+        assert!(!listening(address).await, "cancelled: the proxy is still listening");
+
+        // A job that has ended can't download any more: never around the limit.
+        let mut cmd = Command::new("yt-dlp");
+        assert!(manager.route("finished", &mut cmd).is_err());
+    }
+
+    #[tokio::test]
+    async fn quitting_closes_every_proxy_even_of_a_download_that_wont_stop() {
+        let manager = DownloadManager::default();
+        let throttle = Throttle::new(None);
+        // Two downloads still running when the app quits, whose jobs never get to end.
+        let first = running_job(&manager, &throttle, "a").await;
+        let second = running_job(&manager, &throttle, "b").await;
+
+        manager.shut_down().await;
+        assert!(!listening(first).await);
+        assert!(!listening(second).await);
     }
 }

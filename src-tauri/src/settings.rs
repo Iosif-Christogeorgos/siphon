@@ -50,6 +50,10 @@ pub enum UpdateMode {
 
 pub const MAX_CONCURRENT_LIMIT: usize = 6;
 
+/// The slowest and fastest speed limits, in bytes per second: 0.1 and 1000 MB/s.
+pub const MIN_SPEED_LIMIT: u64 = 100 * 1024;
+pub const MAX_SPEED_LIMIT: u64 = 1000 * 1024 * 1024;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -63,6 +67,9 @@ pub struct Settings {
     /// yt-dlp's release channel. Nightly gets site fixes sooner.
     pub update_channel: Channel,
     pub update_mode: UpdateMode,
+    /// All downloads together get at most this many bytes per second;
+    /// `None` is unlimited. (MB here is 1,048,576 bytes, as speeds are shown.)
+    pub speed_limit: Option<u64>,
 }
 
 impl Default for Settings {
@@ -74,6 +81,7 @@ impl Default for Settings {
             max_concurrent: 3,
             update_channel: Channel::Stable,
             update_mode: UpdateMode::Auto,
+            speed_limit: None,
         }
     }
 }
@@ -82,6 +90,9 @@ impl Settings {
     /// Brings values from disk or the UI into their allowed ranges.
     fn sanitized(mut self) -> Result<Self> {
         self.max_concurrent = self.max_concurrent.clamp(1, MAX_CONCURRENT_LIMIT);
+        self.speed_limit = self
+            .speed_limit
+            .map(|limit| limit.clamp(MIN_SPEED_LIMIT, MAX_SPEED_LIMIT));
         self.custom_template = self.custom_template.trim().to_string();
         if self.filename == FilenameStyle::Custom {
             let template = &self.custom_template;
@@ -124,15 +135,22 @@ impl SettingsStore {
             .app_config_dir()
             .map_err(|err| AppError::setup("Couldn't locate the settings folder.").with_details(err.to_string()))?;
         std::fs::create_dir_all(&dir)?;
-        let file = dir.join("settings.json");
-        // A missing or damaged file just means defaults.
+        Ok(Self::open(dir.join("settings.json")))
+    }
+
+    /// The settings stored in `file`. A missing or damaged file just means defaults.
+    fn open(file: PathBuf) -> Self {
         let current = read(&file)
             .and_then(|settings| settings.sanitized().ok())
             .unwrap_or_default();
-        Ok(Self {
+        Self::at(file, current)
+    }
+
+    fn at(file: PathBuf, current: Settings) -> Self {
+        Self {
             file,
             current: Mutex::new(current),
-        })
+        }
     }
 
     pub fn get(&self) -> Settings {
@@ -198,5 +216,49 @@ mod tests {
         let settings: Settings = serde_json::from_str(r#"{"max_concurrent": 2}"#).unwrap();
         assert_eq!(settings.max_concurrent, 2);
         assert_eq!(settings.filename, FilenameStyle::TitleId);
+        // Files from before the speed limit mean no limit.
+        assert_eq!(settings.speed_limit, None);
+    }
+
+    #[test]
+    fn speed_limit_is_kept_in_range() {
+        let limited = |limit| {
+            Settings {
+                speed_limit: limit,
+                ..Settings::default()
+            }
+            .sanitized()
+            .unwrap()
+            .speed_limit
+        };
+        assert_eq!(limited(None), None);
+        assert_eq!(limited(Some(5 * 1024 * 1024)), Some(5 * 1024 * 1024));
+        assert_eq!(limited(Some(0)), Some(MIN_SPEED_LIMIT));
+        assert_eq!(limited(Some(u64::MAX)), Some(MAX_SPEED_LIMIT));
+    }
+
+    #[test]
+    fn speed_limit_is_saved_and_survives_a_restart() {
+        let dir = std::env::temp_dir().join(format!("siphon-settings-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("settings.json");
+
+        let store = SettingsStore::at(file.clone(), Settings::default());
+        store
+            .set(Settings {
+                speed_limit: Some(5 * 1024 * 1024),
+                ..Settings::default()
+            })
+            .unwrap();
+        // What the next launch reads.
+        assert_eq!(
+            SettingsStore::open(file.clone()).get().speed_limit,
+            Some(5 * 1024 * 1024)
+        );
+
+        // And taking it off again sticks too.
+        store.set(Settings::default()).unwrap();
+        assert_eq!(SettingsStore::open(file).get().speed_limit, None);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -7,12 +7,13 @@ import { Home } from "@/features/home/Home";
 import { QueueSheet } from "@/features/queue/QueueSheet";
 import { SettingsSheet } from "@/features/settings/SettingsSheet";
 import { SetupScreen } from "@/features/setup/SetupScreen";
-import { onDownloadEvent, onToolStatus, onToolUpdated } from "@/lib/ipc";
+import { onDownloadEvent, onSpeed, onToolStatus, onToolUpdated } from "@/lib/ipc";
 import { TOOL_NAMES } from "@/lib/tools";
 import { useAppUpdate } from "@/stores/appUpdate";
 import { selectAllUsable, useBinaries } from "@/stores/binaries";
 import { useChoices } from "@/stores/choices";
 import { useDownloads } from "@/stores/downloads";
+import { useSpeed } from "@/stores/speed";
 import { useToasts } from "@/stores/toasts";
 
 export function App() {
@@ -24,6 +25,7 @@ export function App() {
     const subscriptions = [
       onToolStatus(useBinaries.getState().apply),
       onDownloadEvent(useDownloads.getState().apply),
+      onSpeed(useSpeed.getState().apply),
       // A subtle note when a tool was updated in the background.
       onToolUpdated((notice) =>
         useToasts.getState().show({

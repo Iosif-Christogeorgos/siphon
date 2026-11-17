@@ -31,6 +31,16 @@ export function formatSpeed(bytesPerSecond: number | null | undefined): string {
   return `${formatBytes(bytesPerSecond)}/s`;
 }
 
+/** One megabyte per second, in the unit speeds are shown in. */
+export const MB_PER_SECOND = 1024 * 1024;
+
+/** A speed limit, without needless decimals: "5 MB/s", "53.5 MB/s", "500 KB/s". */
+export function formatLimit(bytesPerSecond: number): string {
+  const mb = bytesPerSecond / MB_PER_SECOND;
+  if (mb < 1) return `${Math.round(bytesPerSecond / 1024)} KB/s`;
+  return `${Number(mb.toFixed(1))} MB/s`;
+}
+
 /** 3725 → "1:02:05", 65 → "1:05". */
 export function formatDuration(totalSeconds: number | null | undefined): string {
   if (totalSeconds == null || !Number.isFinite(totalSeconds)) return "";

@@ -4,6 +4,7 @@ import { AnimatePresence, motion } from "motion/react";
 import type { ReactNode } from "react";
 import { LogoGlyph } from "@/components/Logo";
 import { Hint } from "@/components/ui/tooltip";
+import { SpeedIndicator } from "@/features/speed/SpeedIndicator";
 import { spring } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import { selectActiveCount, useDownloads } from "@/stores/downloads";
@@ -28,6 +29,7 @@ export function TitleBar() {
       </div>
 
       <div className="flex h-full items-center">
+        <SpeedIndicator />
         <div className="mr-1.5 flex items-center gap-0.5">
           <Hint label="Downloads">
             <button

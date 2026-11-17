@@ -13,6 +13,7 @@ mod preview;
 mod process;
 mod settings;
 mod state;
+mod throttle;
 mod ytdlp;
 
 use std::sync::Arc;
@@ -48,7 +49,12 @@ fn main() {
             let binaries = binaries::BinaryManager::new(app.handle())?;
             app.manage(Arc::new(binaries));
             app.manage(Arc::new(downloads::DownloadManager::default()));
-            app.manage(settings::SettingsStore::load(app.handle())?);
+            let settings = settings::SettingsStore::load(app.handle())?;
+            // Every download goes through the speed limit, set or not.
+            let throttle = throttle::Throttle::new(settings.get().speed_limit);
+            throttle.start(app.handle().clone());
+            app.manage(Arc::new(throttle));
+            app.manage(settings);
             app.manage(choices::ChoiceStore::load(app.handle())?);
             app.manage(state::MediaCache::default());
             app.manage(state::CapabilityCache::default());

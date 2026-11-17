@@ -296,6 +296,11 @@ export interface Settings {
   update_channel: "stable" | "nightly";
   /** Install new versions of the tools without asking, or ask first. */
   update_mode: "auto" | "ask";
+  /**
+   * All downloads together get at most this many bytes per second; null is
+   * unlimited. MB is 1,048,576 bytes here, as speeds are shown.
+   */
+  speed_limit: number | null;
 }
 
 /** What `get_settings` returns: the settings plus facts for displaying them. */
@@ -341,6 +346,11 @@ export interface Progress {
   speed: number | null;
   /** Seconds. */
   eta: number | null;
+}
+
+/** The total download speed (`speed://total`), measured as the bytes pass through Siphon. */
+export interface Speed {
+  bytes_per_second: number;
 }
 
 export interface DownloadRequest {
