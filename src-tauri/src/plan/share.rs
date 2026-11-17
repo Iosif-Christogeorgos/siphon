@@ -144,8 +144,6 @@ impl Planner<'_> {
 
         // First choice: an original that already fits, and is no less sharp than the encode.
         let fits = |video: &Video| {
-            // A fast cut starts at the key frame before the cut, so it runs a little long.
-            let slack = if self.trim.is_some() { 1.15 } else { 1.0 };
             let audio = if video.has_audio() { None } else { aac.as_ref() };
             let carries_aac = if video.has_audio() {
                 AudioCodec::of(video.format) == AudioCodec::Aac
@@ -155,12 +153,12 @@ impl Planner<'_> {
             carries_aac
                 && video
                     .size_with(audio)
-                    .is_some_and(|size| size as f64 * self.source_fraction * slack <= budget)
+                    .is_some_and(|size| size as f64 * self.source_fraction <= budget)
         };
         let copyable = pool
             .iter()
             .copied()
-            .filter(|video| video.codec == VideoCodec::H264 && !self.cuts())
+            .filter(|video| video.codec == VideoCodec::H264)
             .filter(|video| rung.is_none_or(|rung| video.lines >= rung.lines))
             .filter(fits);
         let copied = max_by_key(copyable, |video| (video.lines, video.fps as u32, video.bitrate_rank()));

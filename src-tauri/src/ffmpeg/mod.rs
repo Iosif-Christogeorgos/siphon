@@ -5,6 +5,7 @@
 //! progress readout.
 
 pub mod encoders;
+pub mod smart_cut;
 
 use std::ffi::OsString;
 use std::path::Path;
@@ -42,16 +43,29 @@ pub enum Pass<'a> {
     },
 }
 
+/// [`convert_args_shifted`] for a part whose audio and video share a clock.
+#[cfg(test)]
+pub fn convert_args(recipe: &Recipe, input: &Path, output: &Path, pass: Pass) -> Vec<OsString> {
+    convert_args_shifted(recipe, input, output, pass, None)
+}
+
 /// Builds the ffmpeg arguments that turn the downloaded `input` into the
 /// file the recipe describes. Every value is its own argument; nothing is
-/// ever passed through a shell.
-pub fn convert_args(recipe: &Recipe, input: &Path, output: &Path, pass: Pass) -> Vec<OsString> {
+/// ever passed through a shell. For a cut, `audio_shift` moves the audio
+/// that many seconds onto the video's clock (see `smart_cut::clock_shift`).
+pub fn convert_args_shifted(
+    recipe: &Recipe,
+    input: &Path,
+    output: &Path,
+    pass: Pass,
+    audio_shift: Option<f64>,
+) -> Vec<OsString> {
     let mut args: Vec<OsString> = Vec::new();
     let mut push = |values: &[&str]| args.extend(values.iter().map(OsString::from));
 
     push(&["-hide_banner", "-nostdin", "-y", "-loglevel", "error"]);
     // ── Input options ──
-    let cut = recipe.exact_cut();
+    let cut = recipe.cut();
     if cut.is_some() {
         // The section was downloaded with its original timestamps (see
         // `ytdlp::args`), starting at a key frame somewhere before the cut.
@@ -61,6 +75,12 @@ pub fn convert_args(recipe: &Recipe, input: &Path, output: &Path, pass: Pass) ->
     // Machine-readable progress on stdout (see `parse_progress`).
     push(&["-progress", "pipe:1", "-nostats", "-i"]);
     args.push(input.into());
+    // The audio read a second time, moved onto the video's clock.
+    let audio_shift = audio_shift.filter(|_| cut.is_some());
+    if let Some(shift) = audio_shift {
+        args.extend(["-itsoffset".into(), shift.to_string().into(), "-i".into()]);
+        args.push(input.into());
+    }
     let mut push = |values: &[&str]| args.extend(values.iter().map(OsString::from));
 
     // ── Streams ──
@@ -69,6 +89,7 @@ pub fn convert_args(recipe: &Recipe, input: &Path, output: &Path, pass: Pass) ->
     let first_pass = matches!(pass, Pass::First { .. });
     push(&["-map", "0:v:0"]);
     match recipe.audio_codec() {
+        Some(_) if !first_pass && audio_shift.is_some() => push(&["-map", "1:a:0?"]),
         Some(_) if !first_pass => push(&["-map", "0:a:0?"]),
         _ => push(&["-an"]),
     }
@@ -91,13 +112,30 @@ pub fn convert_args(recipe: &Recipe, input: &Path, output: &Path, pass: Pass) ->
 
     if let (Some(audio), Some(_), false) = (&recipe.audio, recipe.audio_codec(), first_pass) {
         match audio.action {
-            AudioAction::Copy => push(&["-c:a", "copy"]),
+            AudioAction::Copy => {
+                push(&["-c:a", "copy"]);
+                if let Some(cut) = cut {
+                    // The downloaded part runs from a key frame before the cut
+                    // to a little after it: keep the packets whose middle falls
+                    // inside it, picked by their own timestamps.
+                    push(&[
+                        "-bsf:a",
+                        &format!(
+                            "noise=drop=lt(pts*tb+duration*tb/2\\,{})+gte(pts*tb+duration*tb/2\\,{})",
+                            cut.start, cut.end
+                        ),
+                    ]);
+                }
+            }
             AudioAction::Encode {
                 codec,
                 bitrate_kbps,
                 sample_rate,
                 stereo,
             } => {
+                if let Some(cut) = cut {
+                    push(&["-af", &format!("atrim=start={}:end={}", cut.start, cut.end)]);
+                }
                 for arg in audio_encode_args(codec, bitrate_kbps, sample_rate, stereo) {
                     push(&[&arg]);
                 }
@@ -243,7 +281,7 @@ fn video_encode_args(video: &VideoStep, encode: &VideoEncode, cut: Option<Trim>,
     args
 }
 
-fn audio_encode_args(
+pub(crate) fn audio_encode_args(
     codec: AudioCodec,
     bitrate_kbps: Option<u32>,
     sample_rate: Option<u32>,

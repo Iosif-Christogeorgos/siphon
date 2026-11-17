@@ -20,7 +20,6 @@ import { VideoCard } from "./VideoCard";
 /** Everything shown for a loaded video: the card, the trimmer, the choices, the plan and the button. */
 export function VideoPane({ video }: { video: VideoInfo }) {
   const choice = useChoice();
-  const exactCut = useChoices((state) => state.choices?.exact_cut ?? true);
   const customizing = useChoices((state) => state.choices !== null && state.choices.active.kind !== "preset");
 
   const trimOpen = useTrim((state) => state.open);
@@ -45,9 +44,9 @@ export function VideoPane({ video }: { video: VideoInfo }) {
     const whole = (start: number, end: number) => start <= 0.05 && end >= (video.duration ?? 0) - 0.05;
     const parts = segments
       .filter((segment) => !whole(segment.start, segment.end))
-      .map((segment) => ({ start: segment.start, end: segment.end, exact: exactCut }));
+      .map((segment) => ({ start: segment.start, end: segment.end }));
     return parts.length > 0 ? parts : [null];
-  }, [trimOpen, segments, exactCut, video.duration]);
+  }, [trimOpen, segments, video.duration]);
 
   // The summary describes the part being edited (they all get the same treatment).
   const activeIndex = Math.max(0, segments.findIndex((segment) => segment.id === activeSegment));

@@ -61,7 +61,9 @@ export function PlanCard({
   const Icon = badge.icon;
   const badgeText = [
     badge.label,
-    plan.convert_seconds !== null && plan.badge === "converts" && formatConvertTime(plan.convert_seconds),
+    // How long converting (or, for a copied clip, cutting) takes. Share's
+    // badge says enough on its own.
+    plan.convert_seconds !== null && plan.badge !== "size_optimized" && formatConvertTime(plan.convert_seconds),
   ]
     .filter(Boolean)
     .join(" · ");

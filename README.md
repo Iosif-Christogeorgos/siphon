@@ -121,12 +121,12 @@ What each target plays or needs, the upload limits, and the sources for them are
 
 The preview comes from YouTube's embedded player for YouTube links, from a low-resolution stream for other sites (a plain file if the site has one, otherwise HLS, which is all Twitch offers), and from a small low-resolution copy if neither plays.
 
-Only the selected part is downloaded (`--download-sections`). There are two ways to cut it:
+Only the selected part is downloaded (`--download-sections`), and every clip starts and ends on the exact frames chosen. There is no choice to make:
 
-- **Exact cut** lands on the precise frames. The video is re-encoded once with a hardware encoder; the audio is left untouched.
-- **Fast cut** keeps the original streams and takes no extra time, but starts on a key frame, which can be a few seconds early.
+- **When the stream is kept as it is** (H.264 or HEVC), Siphon makes a **smart cut**: it re-encodes only the frames from the start of the clip to the next key frame and from the last key frame to the end, about two seconds each, and copies everything in between untouched. The re-encoded frames match the original's settings and are visually lossless. An hour of 1080p60 from Twitch is cut in about 20 seconds.
+- **When the video is converted anyway** (Edit, Share at a lower size, VP9 or AV1 kept as they are, or a clip for iPhone / iPad / Mac), the cut is made during that conversion.
 
-Why Siphon makes exact cuts itself instead of using yt-dlp's `--force-keyframes-at-cuts` is explained in [docs/decisions.md](docs/decisions.md#trimming).
+Every smart cut is checked before it is kept: every frame at its time, the sound in sync from start to end, and the joins decoding exactly like the original. If anything is off, the whole clip is re-encoded instead, so a clip never comes out broken. `siphon.log` (in `%LOCALAPPDATA%\app.siphon.desktop\logs`) records which way each cut was made. How it works, and what was measured, is in [docs/decisions.md](docs/decisions.md#trimming).
 
 ### Queue, playlists and settings
 
