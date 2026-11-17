@@ -13,11 +13,8 @@ permissions:
 
 jobs:
   build:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+    # Siphon is a Windows app.
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
 

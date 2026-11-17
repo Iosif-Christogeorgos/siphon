@@ -9,9 +9,7 @@ import { cn } from "@/lib/utils";
 import { selectActiveCount, useDownloads } from "@/stores/downloads";
 import { useUi } from "@/stores/ui";
 
-// macOS keeps its native traffic lights (see tauri.macos.conf.json);
-// everywhere else the window is frameless and we draw the controls.
-const isMac = navigator.userAgent.includes("Mac");
+// The window is frameless (tauri.conf.json), so the title bar draws its own controls.
 
 export function TitleBar() {
   const appWindow = getCurrentWindow();
@@ -21,7 +19,7 @@ export function TitleBar() {
   return (
     <header
       data-tauri-drag-region
-      className={cn("flex h-11 shrink-0 items-center justify-between", isMac ? "pl-20" : "pl-4")}
+      className="flex h-11 shrink-0 items-center justify-between pl-4"
     >
       {/* pointer-events-none lets drags on the label reach the drag region. */}
       <div className="pointer-events-none flex items-center gap-2 text-[13px] font-medium tracking-tight text-muted-foreground">
@@ -61,7 +59,6 @@ export function TitleBar() {
             </button>
           </Hint>
         </div>
-      {!isMac && (
         <div className="flex h-full">
           <WindowButton label="Minimize" onClick={() => appWindow.minimize()}>
             <Minus className="size-4" strokeWidth={1.5} />
@@ -73,7 +70,6 @@ export function TitleBar() {
             <X className="size-4" strokeWidth={1.5} />
           </WindowButton>
         </div>
-      )}
       </div>
     </header>
   );

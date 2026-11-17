@@ -282,7 +282,7 @@ function Versions() {
             name={TOOL_NAMES[tool]}
             // When a newer version waits, say what it changes instead.
             role={status.available ? status.available.summary : TOOL_ROLES[tool]}
-            current={status.version ?? "system"}
+            current={status.version ?? "not installed"}
             next={status.available?.version}
           />
         );

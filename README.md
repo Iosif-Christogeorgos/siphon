@@ -1,6 +1,6 @@
 # Siphon
 
-A minimal desktop video downloader for Windows 11 (macOS is supported on a best-effort basis). Siphon is a GUI for [yt-dlp](https://github.com/yt-dlp/yt-dlp) and [FFmpeg](https://ffmpeg.org): paste a link, see what it is, download it.
+A minimal desktop video downloader for Windows 11 (Windows only). Siphon is a GUI for [yt-dlp](https://github.com/yt-dlp/yt-dlp) and [FFmpeg](https://ffmpeg.org): paste a link, see what it is, download it.
 
 Siphon is a personal-use tool. It does not bypass DRM; protected videos get a clear message instead of a download.
 
@@ -20,10 +20,9 @@ Siphon was built in phases, and all five are done. This is **v0.7.1**.
 
 - [Node.js](https://nodejs.org) 20 or newer
 - [Rust](https://rustup.rs) (stable)
-- **Windows:** Microsoft C++ Build Tools ("Desktop development with C++") and WebView2, which ships with Windows 11
-- **macOS:** Xcode Command Line Tools, plus FFmpeg from Homebrew (`brew install ffmpeg`)
+- Microsoft C++ Build Tools ("Desktop development with C++") and WebView2, which ships with Windows 11
 
-You do not need to install yt-dlp, FFmpeg or Deno yourself on Windows. Siphon downloads them on first launch.
+Siphon is Windows only. You do not need to install yt-dlp, FFmpeg or Deno yourself: Siphon downloads them on first launch.
 
 ## Run it
 
@@ -40,7 +39,7 @@ The first launch shows a setup screen while Siphon downloads its engines (about 
 npm run tauri build
 ```
 
-The installer is written to `src-tauri/target/release/bundle/` (`nsis/` on Windows, `dmg/` on macOS).
+The installer is written to `src-tauri/target/release/bundle/nsis/`.
 
 The build also signs the installer for the self-update, so it needs the signing key. Without it the build stops at the end with an error about a missing private key. In PowerShell:
 
@@ -87,8 +86,6 @@ At launch, and once a day while it is open, Siphon asks the GitHub API for the l
 
 A new version is downloaded to a staging folder, checked against its published SHA-256, swapped in with a rename, and then started once as a self-test. If the self-test fails, the previous version is put back. FFmpeg's rolling builds are refreshed at most once every 30 days, because they change daily but rarely matter.
 
-On macOS, `yt-dlp/FFmpeg-Builds` publishes no builds, so Siphon uses the FFmpeg it finds on your `PATH` or in Homebrew's folders.
-
 ### Presets and the planner
 
 Presets start from where the video is going. Pick a **group**, then a **target** in it, and optionally a **quality**:
@@ -105,7 +102,7 @@ The quality row offers **Best** and the resolutions the video actually has, each
 
 The presets are defined once, in `src-tauri/src/plan/registry.rs`, and the interface reads them from the backend. The planner in `src-tauri/src/plan` turns a choice into a recipe from the formats the video really offers: the same Apple preset copies X's 4K H.264 file but converts YouTube's 4K VP9 to HEVC. It copies original streams whenever the target can play them, because converting is slower and never improves quality. The summary above the Download button is generated from the same recipe that builds the commands, so the app cannot describe one thing and do another. It marks each plan **No quality loss**, **Converts** (with a rough time), **Size-optimized** or **May not play everywhere**.
 
-When a conversion is needed, Siphon runs its own ffmpeg pass with a hardware encoder (NVENC, Quick Sync, AMF or VideoToolbox) if a short test encode shows it works on your machine, and falls back to software otherwise. The downloaded source waits in a work folder until the finished file is written and checked, so a failed conversion can be tried again without downloading again.
+When a conversion is needed, Siphon runs its own ffmpeg pass with a hardware encoder (NVENC, Quick Sync or AMF) if a short test encode shows it works on your machine, and falls back to software otherwise. The downloaded source waits in a work folder until the finished file is written and checked, so a failed conversion can be tried again without downloading again.
 
 **Share** works out the bitrate from the limit and the length (the trimmed length, if you trimmed), picks the size and frame rate that look best for it (a clean 720p30 rather than a blocky 1080p60), and checks the finished file, encoding again a little smaller if it came out over. An original that already fits is copied as it is. A video too long to look decent under the limit isn't made at all: Siphon suggests trimming it instead.
 

@@ -29,9 +29,7 @@ pub fn command(bins: &BinaryManager) -> Command {
     ]);
     // YouTube needs a JavaScript runtime; point yt-dlp at our managed Deno.
     cmd.arg("--js-runtimes").arg(format!("deno:{}", bins.deno().display()));
-    if let Some(dir) = bins.ffmpeg_dir() {
-        cmd.arg("--ffmpeg-location").arg(dir);
-    }
+    cmd.arg("--ffmpeg-location").arg(bins.ffmpeg_dir());
     cmd
 }
 

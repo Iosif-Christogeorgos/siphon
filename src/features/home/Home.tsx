@@ -15,8 +15,6 @@ import { gentleSpring, riseIn } from "@/lib/motion";
 import { parseVideoUrl, playlistUrlOf } from "@/lib/url";
 import { cn } from "@/lib/utils";
 
-const isMac = navigator.userAgent.includes("Mac");
-
 function Kbd({ children }: { children: string }) {
   return (
     <kbd className="rounded-md border border-border-strong bg-card px-1.5 py-0.5 font-sans text-[11px] font-medium text-muted-foreground">
@@ -117,7 +115,7 @@ export function Home() {
               exit={{ opacity: 0, transition: { duration: 0.1 } }}
               className="mt-4 text-center text-xs text-subtle-foreground"
             >
-              or press <Kbd>{isMac ? "⌘" : "Ctrl"}</Kbd> <Kbd>V</Kbd> anywhere in the window
+              or press <Kbd>Ctrl</Kbd> <Kbd>V</Kbd> anywhere in the window
             </motion.p>
           )}
         </AnimatePresence>

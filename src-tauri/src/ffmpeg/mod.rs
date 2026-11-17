@@ -193,7 +193,6 @@ fn video_encode_args(video: &VideoStep, encode: &VideoEncode, cut: Option<Trim>,
                 Hardware::Nvenc => push(&["-preset", "p6", "-tune", "hq", "-rc", "vbr", "-multipass", "fullres"]),
                 Hardware::Amf => push(&["-quality", "quality", "-rc", "vbr_peak"]),
                 Hardware::Qsv | Hardware::Software => push(&["-preset", "medium"]),
-                Hardware::VideoToolbox => {}
             }
             push(&[
                 "-b:v",
@@ -227,7 +226,6 @@ fn video_encode_args(video: &VideoStep, encode: &VideoEncode, cut: Option<Trim>,
             let (i, p) = if hevc { ("22", "24") } else { ("20", "22") };
             push(&["-quality", "quality", "-rc", "cqp", "-qp_i", i, "-qp_p", p]);
         }
-        (None, Hardware::VideoToolbox) => push(&["-q:v", if hevc { "60" } else { "65" }]),
         (None, Hardware::Software) => match encode.codec {
             VideoCodec::Hevc => push(&["-preset", "medium", "-crf", "22"]),
             VideoCodec::Vp9 | VideoCodec::Vp8 => push(&["-crf", "31", "-b:v", "0", "-row-mt", "1", "-cpu-used", "2"]),

@@ -10,15 +10,12 @@ use tokio::process::Command;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-/// A command with no stdin, no console window, and its own process group so
-/// the whole tree can be stopped together.
+/// A command with no stdin and no console window.
 pub fn command(program: impl AsRef<OsStr>) -> Command {
     let mut cmd = Command::new(program);
     cmd.stdin(Stdio::null()).kill_on_drop(true);
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW);
-    #[cfg(unix)]
-    cmd.process_group(0);
     cmd
 }
 
@@ -44,19 +41,7 @@ pub async fn output_within(mut cmd: Command, limit: Duration) -> std::io::Result
 /// interpreter, which in turn spawns ffmpeg. Killing only the launcher would
 /// leave the others running, so the whole tree has to go.
 pub async fn kill_tree(pid: u32) {
-    #[cfg(windows)]
-    let mut killer = {
-        let mut cmd = command("taskkill");
-        cmd.args(["/PID", &pid.to_string(), "/T", "/F"]);
-        cmd
-    };
-    #[cfg(unix)]
-    let mut killer = {
-        // The child leads its own process group (see `command`), so signalling
-        // the negative pid reaches every descendant.
-        let mut cmd = Command::new("kill");
-        cmd.args(["-TERM", "--", &format!("-{pid}")]);
-        cmd
-    };
+    let mut killer = command("taskkill");
+    killer.args(["/PID", &pid.to_string(), "/T", "/F"]);
     let _ = killer.stdout(Stdio::null()).stderr(Stdio::null()).status().await;
 }

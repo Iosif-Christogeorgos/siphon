@@ -59,12 +59,7 @@ impl CapabilityCache {
             .0
             .get_or_init(|| async {
                 let _in_use = bins.in_use().await;
-                let Some(ffmpeg) = bins.ffmpeg() else {
-                    return Capabilities {
-                        windows: windows_codecs().await,
-                        ..Capabilities::BASIC
-                    };
-                };
+                let ffmpeg = bins.ffmpeg();
                 let (encoders, chunked_requests, windows) = tokio::join!(
                     encoders::detect(&ffmpeg),
                     ffmpeg::supports_request_size(&ffmpeg),
@@ -83,9 +78,6 @@ impl CapabilityCache {
 /// Which of Microsoft's optional video extensions this PC has, so the
 /// Windows preset copies VP9, AV1 or HEVC only when Media Player can play it.
 async fn windows_codecs() -> WindowsCodecs {
-    if !cfg!(windows) {
-        return WindowsCodecs::default();
-    }
     let mut cmd = process::command("powershell");
     cmd.args([
         "-NoProfile",

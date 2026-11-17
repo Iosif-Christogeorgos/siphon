@@ -38,11 +38,8 @@ export const useBinaries = create<BinariesState>((set, get) => ({
   },
 }));
 
-/**
- * A tool is usable when some version is installed, even while a newer one
- * downloads. (`ready` without a version is a system-provided tool.)
- */
-export const isUsable = (status: ToolStatus) => status.version !== null || status.state === "ready";
+/** A tool is usable when some version is installed, even while a newer one downloads. */
+export const isUsable = (status: ToolStatus) => status.version !== null;
 
 /** Tools with a newer version waiting for the user's go-ahead. */
 export const selectAvailable = (state: BinariesState) =>
