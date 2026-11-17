@@ -189,8 +189,7 @@ impl Tracker {
             let speed = written.saturating_sub(oldest) as f64 / elapsed;
             self.progress.speed = Some(speed);
             // The expected size is an estimate: once it is passed, the time left is unknown.
-            self.progress.eta = (speed > 0.0 && written < expected)
-                .then(|| (expected - written) as f64 / speed);
+            self.progress.eta = (speed > 0.0 && written < expected).then(|| (expected - written) as f64 / speed);
         }
         self.current()
     }

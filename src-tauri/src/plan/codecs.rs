@@ -12,8 +12,8 @@ pub enum VideoCodec {
     Vp9,
     Av1,
     Vp8,
-    /// Intra-frame editing codec. Only ever an encode target.
-    Dnxhr,
+    /// Apple ProRes 422: the intra-frame editing codec. Only ever an encode target.
+    Prores,
     Other,
 }
 
@@ -47,7 +47,7 @@ impl VideoCodec {
             VideoCodec::Vp9 => "VP9",
             VideoCodec::Av1 => "AV1",
             VideoCodec::Vp8 => "VP8",
-            VideoCodec::Dnxhr => "DNxHR",
+            VideoCodec::Prores => "ProRes 422",
             VideoCodec::Other => "video",
         }
     }
@@ -60,7 +60,7 @@ impl VideoCodec {
             VideoCodec::Vp9 | VideoCodec::Hevc => 3,
             VideoCodec::H264 => 2,
             VideoCodec::Vp8 => 1,
-            VideoCodec::Dnxhr | VideoCodec::Other => 0,
+            VideoCodec::Prores | VideoCodec::Other => 0,
         }
     }
 }
@@ -185,7 +185,7 @@ impl Container {
             Container::Mkv => true,
             Container::Mp4 => matches!(codec, H264 | Hevc | Av1 | Vp9),
             Container::Webm => matches!(codec, Vp9 | Vp8 | Av1),
-            Container::Mov => matches!(codec, H264 | Hevc | Dnxhr),
+            Container::Mov => matches!(codec, H264 | Hevc | Prores),
             _ => false,
         }
     }

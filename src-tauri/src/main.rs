@@ -3,6 +3,7 @@
 
 mod app_update;
 mod binaries;
+mod choices;
 mod commands;
 mod downloads;
 mod error;
@@ -43,13 +44,14 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             preview::clear_cache(app.handle());
+            downloads::sweep_work(app.handle());
             let binaries = binaries::BinaryManager::new(app.handle())?;
             app.manage(Arc::new(binaries));
             app.manage(Arc::new(downloads::DownloadManager::default()));
             app.manage(settings::SettingsStore::load(app.handle())?);
+            app.manage(choices::ChoiceStore::load(app.handle())?);
             app.manage(state::MediaCache::default());
-            app.manage(state::EncoderCache::default());
-            app.manage(state::ChunkedRequests::default());
+            app.manage(state::CapabilityCache::default());
             tauri::async_runtime::spawn(keep_tools_updated(app.handle().clone()));
             Ok(())
         })
@@ -57,7 +59,12 @@ fn main() {
             commands::binaries_status,
             commands::binaries_sync,
             commands::fetch_media,
+            commands::get_presets,
+            commands::get_choices,
+            commands::set_choices,
+            commands::import_legacy_choices,
             commands::plan_download,
+            commands::estimate_download,
             commands::preview_source,
             commands::start_download,
             commands::cancel_download,

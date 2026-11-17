@@ -1,6 +1,5 @@
 //! Translates a [`Recipe`] into yt-dlp arguments.
 
-use super::metadata::VideoInfo;
 use crate::plan::codecs::{AudioCodec, Container, VideoCodec};
 use crate::plan::{AudioAction, Recipe};
 
@@ -55,28 +54,13 @@ fn clock(seconds: f64) -> String {
     }
 }
 
-/// The request size the site expects for the streams this recipe downloads,
-/// when it names one (YouTube does: 10 MB).
-pub fn request_size(recipe: &Recipe, video: &VideoInfo) -> Option<u64> {
-    let chosen = [
-        recipe.video.as_ref().map(|step| step.format_id.as_str()),
-        recipe.audio.as_ref().and_then(|step| step.format_id.as_deref()),
-    ];
-    video
-        .formats
-        .iter()
-        .filter(|format| chosen.contains(&Some(format.id.as_str())))
-        .filter_map(|format| format.http_chunk_size)
-        .min()
-}
-
 /// The arguments that select streams and do the lossless post-processing
 /// (merge, remux, audio extraction). Conversions are not yt-dlp's job; see
 /// `crate::ffmpeg`.
 ///
-/// `section_request_size` is the size of the requests ffmpeg should fetch a
-/// trimmed part in; `None` leaves ffmpeg to ask for everything at once.
-pub fn recipe_args(recipe: &Recipe, section_request_size: Option<u64>) -> Vec<String> {
+/// A trimmed part is fetched in `recipe.section_request_size` requests when
+/// the site names a size; otherwise ffmpeg asks for everything at once.
+pub fn recipe_args(recipe: &Recipe) -> Vec<String> {
     let mut args: Vec<String> = vec!["--format".into(), recipe.format_selector()];
     let mut push = |values: &[&str]| args.extend(values.iter().map(|value| value.to_string()));
 
@@ -101,7 +85,7 @@ pub fn recipe_args(recipe: &Recipe, section_request_size: Option<u64>) -> Vec<St
             input_args.push("-copyts".into());
             input_args.push("-start_at_zero".into());
         }
-        if let Some(size) = section_request_size {
+        if let Some(size) = recipe.section_request_size {
             // Left alone, ffmpeg asks for the rest of the stream in one request,
             // and YouTube answers that at about twice playback speed. Measured
             // on a five-minute 1080p part: 172 s that way, 6 s in 10 MB requests.
@@ -135,8 +119,12 @@ pub fn recipe_args(recipe: &Recipe, section_request_size: Option<u64>) -> Vec<St
         push(&["--extract-audio"]);
         let natural = Container::natural(None, Some(audio.source));
         match audio.action {
-            AudioAction::Encode { codec, .. } => {
-                push(&["--audio-format", audio_format(codec), "--audio-quality", "0"]);
+            AudioAction::Encode {
+                codec, bitrate_kbps, ..
+            } => {
+                // A set bitrate, or else the encoder's best variable quality.
+                let quality = bitrate_kbps.map_or("0".to_string(), |kbps| format!("{kbps}K"));
+                push(&["--audio-format", audio_format(codec), "--audio-quality", &quality]);
             }
             AudioAction::Copy if recipe.container != natural => {
                 push(&["--audio-format", audio_format(recipe.container.default_audio())]);

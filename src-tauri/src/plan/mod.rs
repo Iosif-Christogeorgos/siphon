@@ -1,43 +1,63 @@
 //! Turns "what the user asked for" into "exactly what will happen".
 //!
-//! [`plan`] is a pure function from a video's formats and the chosen options
-//! to a [`Recipe`]: which streams to fetch, whether each is copied or
-//! converted, and into which container. The same recipe drives both the
-//! plain-language summary shown before downloading and the yt-dlp/ffmpeg
-//! commands, so the app can never describe one thing and do another.
+//! [`plan`] is a pure function from a video's formats, the chosen preset (or
+//! custom settings), the trim range and what this machine can do, to a
+//! [`Recipe`]: which streams to fetch, whether each is copied or converted
+//! and how, into which container. The same recipe drives the summary shown
+//! before downloading and the yt-dlp/ffmpeg arguments, so the app can never
+//! describe one thing and do another.
+//!
+//! Every decision is made from the formats this video actually offers, never
+//! from what a site usually has: the same preset copies a stream on one site
+//! and converts on another.
 //!
 //! Guiding rule: copy original streams whenever the target can play them.
 //! Converting is slower and never improves quality, so it only happens when
 //! the target needs it or the user explicitly asks.
 
+mod audio;
 pub mod codecs;
+mod custom;
+mod edit;
 pub mod explain;
-pub mod presets;
+pub mod registry;
+mod share;
+mod watch;
 
 use std::cmp::Ordering;
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::{AppError, ErrorKind, Result};
+use crate::ffmpeg::encoders::{Encoders, Hardware};
 use crate::ytdlp::metadata::{Format, FormatKind, VideoInfo};
 use codecs::{AudioCodec, Container, VideoCodec};
-use presets::{DeviceProfile, PresetId};
+use registry::{Group, MusicFormat, QualityKind, TargetId, TierId};
 
-// ── Options (from the frontend) ─────────────────────────────────────────
+// ── What the user chose (from the frontend) ─────────────────────────────
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case")]
-pub enum DownloadOptions {
-    Preset {
-        preset: PresetId,
-        /// A specific resolution (short side, e.g. 1080). `None` lets the preset decide.
-        #[serde(default)]
-        max_lines: Option<u32>,
-        /// Share preset only: the upload limit to fit under.
-        #[serde(default)]
-        size_limit_mb: Option<u32>,
-    },
-    Manual(ManualOptions),
+pub enum Choice {
+    Preset(PresetChoice),
+    Custom(ManualOptions),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PresetChoice {
+    pub target: TargetId,
+    /// The quality row: a resolution (short side, e.g. 1080), or a bitrate in
+    /// kbit/s for Music. `None` is "Best".
+    #[serde(default)]
+    pub quality: Option<u32>,
+    /// Share targets: the account tier. `None` is the target's first tier.
+    #[serde(default)]
+    pub tier: Option<TierId>,
+    #[serde(default)]
+    pub music_format: MusicFormat,
+    /// Edit targets: an intermediate codec instead of H.264.
+    #[serde(default)]
+    pub smooth_editing: bool,
 }
 
 /// The part of the video to keep, in seconds from its start.
@@ -57,32 +77,81 @@ impl Trim {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Content {
+    #[default]
     VideoAudio,
     VideoOnly,
     AudioOnly,
 }
 
-/// Everything in manual mode is optional: `None` means "best available" for
+/// Custom mode. Everything is optional: `None` means "best available" for
 /// streams and "keep the original" for codecs and container.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ManualOptions {
     pub content: Content,
-    #[serde(default)]
     pub video_format: Option<String>,
-    #[serde(default)]
     pub audio_format: Option<String>,
-    #[serde(default)]
     pub container: Option<Container>,
-    #[serde(default)]
     pub video_codec: Option<VideoCodec>,
-    #[serde(default)]
     pub audio_codec: Option<AudioCodec>,
 }
 
+// ── What this machine can do ────────────────────────────────────────────
+
+/// Which of Microsoft's optional video extensions are installed (Windows only).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WindowsCodecs {
+    pub vp9: bool,
+    pub av1: bool,
+    pub hevc: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Capabilities {
+    pub encoders: Encoders,
+    /// Whether ffmpeg can fetch a trimmed part in requests of a set size.
+    pub chunked_requests: bool,
+    pub windows: WindowsCodecs,
+}
+
+impl Capabilities {
+    /// No hardware encoders and nothing optional installed.
+    pub const BASIC: Capabilities = Capabilities {
+        encoders: Encoders::SOFTWARE,
+        chunked_requests: false,
+        windows: WindowsCodecs {
+            vp9: false,
+            av1: false,
+            hevc: false,
+        },
+    };
+
+    fn hardware(&self, codec: VideoCodec) -> Hardware {
+        self.encoders.for_codec(codec)
+    }
+
+    fn has_hardware(&self, codec: VideoCodec) -> bool {
+        self.hardware(codec) != Hardware::Software
+    }
+}
+
 // ── Recipe (what will happen) ───────────────────────────────────────────
+
+/// How the summary line marks a plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Badge {
+    /// Original streams, copied.
+    Lossless,
+    Converts,
+    /// Encoded to fit under an upload limit.
+    SizeOptimized,
+    /// The best streams as they are, in whatever format they come (Max quality).
+    MayNotPlay,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Recipe {
@@ -91,19 +160,28 @@ pub struct Recipe {
     pub container: Container,
     /// Drop the audio track of a stream that has video and audio in one.
     pub strip_audio: bool,
-    /// Why something is converted, as a clause: "iPhone can't play VP9".
+    /// Why something is converted, as a clause: "Apple devices can't play VP9".
     pub reason: Option<String>,
-    /// "Plays natively on iPhone", "Ready for Premiere and DaVinci Resolve", …
+    /// "Plays natively on Apple devices", "Ready for Premiere Pro", …
     pub promise: String,
     pub hints: Vec<Hint>,
-    /// Resolutions the user could pick instead.
-    pub qualities: Vec<QualityOption>,
     /// Seconds of output, when known (needed for size estimates and conversion progress).
     pub duration: Option<f64>,
     /// Only this part of the video is downloaded.
     pub trim: Option<Trim>,
     /// Share of each source stream that gets downloaded: 1 unless trimmed.
     pub source_fraction: f64,
+    pub badge: Badge,
+    /// Share: the finished file must not be larger than this, in bytes.
+    pub size_limit: Option<u64>,
+    /// Share: "fits Discord (10 MB)", for the headline.
+    pub fits: Option<String>,
+    /// Why this can't be downloaded as chosen; the plan is shown but Download is not offered.
+    pub blocked: Option<String>,
+    /// The request size ffmpeg should fetch a trimmed part in, when the site names one.
+    pub section_request_size: Option<u64>,
+    /// Share: how to convert a copied file that turns out larger than the limit.
+    pub fallback: Option<Box<Recipe>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -130,6 +208,8 @@ pub enum VideoAction {
 #[derive(Debug, Clone, PartialEq)]
 pub struct VideoEncode {
     pub codec: VideoCodec,
+    /// The encoder, picked from what this machine has.
+    pub hardware: Hardware,
     /// Target bitrate for size-limited output; `None` means constant quality.
     pub bitrate_kbps: Option<u32>,
     /// Scale down to this short side (never up).
@@ -137,6 +217,29 @@ pub struct VideoEncode {
     pub max_fps: Option<f64>,
     /// Force a constant frame rate (editing).
     pub constant_frame_rate: bool,
+    /// A key frame at least this often, so editors can scrub smoothly.
+    pub keyframe_seconds: Option<f64>,
+}
+
+impl VideoEncode {
+    fn quality(codec: VideoCodec, hardware: Hardware) -> Self {
+        Self {
+            codec,
+            hardware,
+            bitrate_kbps: None,
+            scale_lines: None,
+            max_fps: None,
+            constant_frame_rate: false,
+            keyframe_seconds: None,
+        }
+    }
+
+    /// A size-targeted encode on the CPU runs twice: the first pass measures
+    /// the video so the second can spend the bits where they show. Hardware
+    /// encoders do their own look-ahead in one run.
+    pub fn two_pass(&self) -> bool {
+        self.bitrate_kbps.is_some() && self.hardware == Hardware::Software && self.codec == VideoCodec::H264
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -155,7 +258,22 @@ pub enum AudioAction {
     Encode {
         codec: AudioCodec,
         bitrate_kbps: Option<u32>,
+        /// Resample to this rate (editors expect 48 kHz).
+        sample_rate: Option<u32>,
+        /// Mix down to stereo (Share: surround is wasted on a phone).
+        stereo: bool,
     },
+}
+
+impl AudioAction {
+    fn encode(codec: AudioCodec, bitrate_kbps: Option<u32>) -> Self {
+        AudioAction::Encode {
+            codec,
+            bitrate_kbps,
+            sample_rate: None,
+            stereo: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -169,13 +287,6 @@ pub enum HintLevel {
 pub struct Hint {
     pub level: HintLevel,
     pub text: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct QualityOption {
-    pub lines: u32,
-    /// Picking this resolution means converting the video.
-    pub converts: bool,
 }
 
 impl Recipe {
@@ -197,6 +308,13 @@ impl Recipe {
                 ..
             })
         )
+    }
+
+    pub fn video_encode(&self) -> Option<&VideoEncode> {
+        match &self.video.as_ref()?.action {
+            VideoAction::Encode(encode) => Some(encode),
+            VideoAction::Copy => None,
+        }
     }
 
     /// True when Siphon runs its own ffmpeg pass after the download.
@@ -255,7 +373,7 @@ impl Recipe {
         let step = self.video.as_ref()?;
         let fps = step.fps?;
         Some(match &step.action {
-            VideoAction::Encode(VideoEncode { max_fps: Some(max), .. }) if fps > *max => fps / 2.0,
+            VideoAction::Encode(VideoEncode { max_fps: Some(max), .. }) if fps > *max + 0.5 => fps / 2.0,
             _ => fps,
         })
     }
@@ -277,15 +395,31 @@ impl Recipe {
     /// Best guess at the finished file's size in bytes.
     pub fn estimated_size(&self) -> Option<u64> {
         let duration = self.duration;
+        let bitrate = |kbps: f64| duration.map(|d| (kbps * 1000.0 / 8.0 * d) as u64);
         let video = match &self.video {
             None => Some(0),
             Some(step) => match &step.action {
                 VideoAction::Copy => step.size.map(|size| (size as f64 * self.source_fraction) as u64),
                 VideoAction::Encode(encode) => match (encode.codec, encode.bitrate_kbps) {
-                    (_, Some(kbps)) => duration.map(|d| (kbps as f64 * 1000.0 / 8.0 * d) as u64),
-                    (VideoCodec::Dnxhr, None) => duration.map(|d| (self.dnxhr_bitrate() / 8.0 * d) as u64),
-                    // Constant-quality encodes depend on the content.
-                    _ => None,
+                    (_, Some(kbps)) => bitrate(f64::from(kbps)),
+                    (VideoCodec::Prores, None) => bitrate(self.prores_kbps()),
+                    // Constant-quality encodes depend on the content: assume
+                    // about what the source spends, scaled to the new size.
+                    (codec, None) => step.size.zip(duration.filter(|d| *d > 0.0)).map(|(size, _)| {
+                        let scale = match (encode.scale_lines, step.lines) {
+                            (Some(lines), source) if source > 0 && lines < source => {
+                                (f64::from(lines) / f64::from(source)).powi(2)
+                            }
+                            _ => 1.0,
+                        };
+                        let efficiency = match (step.source, codec) {
+                            (VideoCodec::Av1, VideoCodec::H264) => 1.8,
+                            (VideoCodec::Vp9, VideoCodec::H264) | (VideoCodec::Av1, VideoCodec::Hevc) => 1.4,
+                            (VideoCodec::H264, VideoCodec::Hevc) => 0.7,
+                            _ => 1.0,
+                        };
+                        (size as f64 * self.source_fraction * scale * efficiency) as u64
+                    }),
                 },
             },
         }?;
@@ -298,25 +432,57 @@ impl Recipe {
                 AudioAction::Copy => step.size.map(|size| (size as f64 * self.source_fraction) as u64),
                 AudioAction::Encode {
                     codec: AudioCodec::Pcm, ..
-                } => duration.map(|d| (1536.0 * 1000.0 / 8.0 * d) as u64),
+                } => bitrate(1536.0),
                 AudioAction::Encode {
                     bitrate_kbps: Some(kbps),
                     ..
-                } => duration.map(|d| (kbps as f64 * 1000.0 / 8.0 * d) as u64),
-                AudioAction::Encode { .. } => None,
+                } => bitrate(f64::from(kbps)),
+                AudioAction::Encode { .. } => step.source_kbps.and_then(bitrate),
             },
         }?;
         Some(video + audio)
     }
 
-    /// DNxHR HQ is ~220 Mbit/s at 1080p30 and scales with pixels and frame rate.
-    fn dnxhr_bitrate(&self) -> f64 {
+    /// ProRes 422 is ~147 Mbit/s at 1080p30 and scales with pixels and frame rate.
+    fn prores_kbps(&self) -> f64 {
         let Some(step) = &self.video else { return 0.0 };
-        let pixels = match (step.width, step.height) {
-            (Some(w), Some(h)) => (w * h) as f64,
-            _ => (step.lines * step.lines) as f64 * 16.0 / 9.0,
-        };
-        220e6 * (pixels / (1920.0 * 1080.0)) * (step.fps.unwrap_or(30.0) / 30.0)
+        let lines = f64::from(self.output_lines().unwrap_or(step.lines));
+        let pixels = lines * lines * 16.0 / 9.0;
+        147_000.0 * (pixels / (1920.0 * 1080.0)) * (self.output_fps().unwrap_or(30.0) / 30.0)
+    }
+
+    /// The same recipe, encoding on the CPU: for when a hardware encoder
+    /// refuses a job it passed the probe for (driver limits, too many sessions).
+    pub fn on_software(&self) -> Recipe {
+        let mut recipe = self.clone();
+        if let Some(VideoStep {
+            action: VideoAction::Encode(encode),
+            ..
+        }) = &mut recipe.video
+        {
+            encode.hardware = Hardware::Software;
+        }
+        recipe
+    }
+
+    /// Share: the same recipe aiming lower, after an encode came out at
+    /// `actual` bytes, over the limit. `None` when there is nothing to lower.
+    pub fn shrunk(&self, actual: u64) -> Option<Recipe> {
+        let limit = self.size_limit?;
+        let kbps = self.video_encode()?.bitrate_kbps?;
+        // Scale by how far over it came out, aiming for the usual margin, and
+        // always by a little at least.
+        let scale = (limit as f64 * share::SAFETY / actual.max(1) as f64).min(0.95);
+        let lower = ((f64::from(kbps) * scale) as u32).max(40);
+        let mut recipe = self.clone();
+        if let Some(VideoStep {
+            action: VideoAction::Encode(encode),
+            ..
+        }) = &mut recipe.video
+        {
+            encode.bitrate_kbps = Some(lower);
+        }
+        Some(recipe)
     }
 }
 
@@ -341,6 +507,16 @@ impl Video<'_> {
     /// the higher bitrate wins.
     fn bitrate_rank(&self) -> (bool, f64) {
         (!self.format.segmented, self.format.tbr.unwrap_or(0.0))
+    }
+
+    /// Bytes of the whole stream, with its sound if a separate track goes with it.
+    fn size_with(&self, audio: Option<&Audio>) -> Option<u64> {
+        let video = self.format.filesize?;
+        match (self.has_audio(), audio) {
+            (true, _) => Some(video),
+            (false, Some(audio)) => audio.format.filesize.map(|audio| video + audio),
+            (false, None) => Some(video),
+        }
     }
 }
 
@@ -398,16 +574,99 @@ fn warning(text: impl Into<String>) -> Hint {
 // ── Planning ────────────────────────────────────────────────────────────
 
 /// Decides what to download and how to process it. Pure: no I/O.
-pub fn plan(video: &VideoInfo, options: &DownloadOptions, trim: Option<Trim>) -> Result<Recipe> {
+pub fn plan(video: &VideoInfo, choice: &Choice, trim: Option<Trim>, caps: &Capabilities) -> Result<Recipe> {
     if trim.is_some_and(|trim| !(trim.start >= 0.0 && trim.end > trim.start)) {
         return Err(AppError::internal("The selected part of the video is empty."));
     }
-    let planner = Planner::new(video, trim);
-    let mut recipe = planner.dispatch(options)?;
+    let planner = Planner::new(video, trim, caps);
+    if planner.videos.is_empty() && planner.audios.is_empty() {
+        return Err(AppError::new(
+            ErrorKind::Unavailable,
+            "This link has no downloadable video or audio.",
+        ));
+    }
+    let mut recipe = match choice {
+        Choice::Custom(manual) => planner.custom(manual)?,
+        Choice::Preset(preset) => planner.preset(preset),
+    };
     if recipe.exact_cut().is_some() && recipe.reason.is_none() {
         recipe.reason = Some("an exact cut has to rebuild the frames at its edges".into());
     }
+    if recipe.trim.is_some() && caps.chunked_requests {
+        recipe.section_request_size = request_size(&recipe, video);
+    }
+    if let Some(fallback) = recipe.fallback.as_deref_mut() {
+        fallback.section_request_size = recipe.section_request_size;
+    }
+    recipe.badge = badge(&recipe, choice);
     Ok(recipe)
+}
+
+/// The values the quality row offers for this choice and video, best first:
+/// resolutions the video has, or bitrates for Music. Empty when there is no row.
+pub fn quality_options(video: &VideoInfo, choice: &Choice, caps: &Capabilities) -> (QualityKind, Vec<u32>) {
+    let Choice::Preset(preset) = choice else {
+        return (QualityKind::None, Vec::new());
+    };
+    let planner = Planner::new(video, None, caps);
+    let kind = preset.target.info().quality;
+    let values = match kind {
+        QualityKind::Resolution if planner.videos.is_empty() => Vec::new(),
+        QualityKind::Resolution => {
+            let (max_lines, max_fps) = match preset.target.group() {
+                Group::Watch => (watch::MAX_LINES, watch::MAX_FPS),
+                _ => (u32::MAX, f64::MAX),
+            };
+            resolutions(&planner.pool(max_lines, max_fps))
+        }
+        QualityKind::Bitrate => registry::MUSIC_BITRATES.iter().rev().copied().collect(),
+        QualityKind::None => Vec::new(),
+    };
+    let kind = if values.is_empty() { QualityKind::None } else { kind };
+    (kind, values)
+}
+
+/// Distinct resolutions on offer, highest first, without the tiny ones
+/// (unless they are all there is).
+fn resolutions(videos: &[Video]) -> Vec<u32> {
+    let mut lines: Vec<u32> = videos.iter().map(|video| video.lines).filter(|l| *l > 0).collect();
+    lines.sort_unstable_by(|a, b| b.cmp(a));
+    lines.dedup();
+    let useful: Vec<u32> = lines.iter().copied().filter(|lines| *lines >= 360).collect();
+    if useful.is_empty() {
+        lines
+    } else {
+        useful
+    }
+}
+
+fn badge(recipe: &Recipe, choice: &Choice) -> Badge {
+    let group = match choice {
+        Choice::Preset(preset) => Some(preset.target.group()),
+        Choice::Custom(_) => None,
+    };
+    let converts = recipe.encodes_video() || recipe.encodes_audio();
+    match group {
+        Some(Group::Max) if !converts => Badge::MayNotPlay,
+        Some(Group::Share) if converts => Badge::SizeOptimized,
+        _ if converts => Badge::Converts,
+        _ => Badge::Lossless,
+    }
+}
+
+/// The request size the site expects for the streams this recipe downloads,
+/// when it names one (YouTube does: 10 MB).
+fn request_size(recipe: &Recipe, video: &VideoInfo) -> Option<u64> {
+    let chosen = [
+        recipe.video.as_ref().map(|step| step.format_id.as_str()),
+        recipe.audio.as_ref().and_then(|step| step.format_id.as_deref()),
+    ];
+    video
+        .formats
+        .iter()
+        .filter(|format| chosen.contains(&Some(format.id.as_str())))
+        .filter_map(|format| format.http_chunk_size)
+        .min()
 }
 
 struct Planner<'a> {
@@ -417,64 +676,11 @@ struct Planner<'a> {
     duration: Option<f64>,
     trim: Option<Trim>,
     source_fraction: f64,
+    caps: &'a Capabilities,
 }
 
 impl<'a> Planner<'a> {
-    fn dispatch(&self, options: &DownloadOptions) -> Result<Recipe> {
-        let planner = self;
-        if planner.videos.is_empty() && planner.audios.is_empty() {
-            return Err(AppError::new(
-                ErrorKind::Unavailable,
-                "This link has no downloadable video or audio.",
-            ));
-        }
-        match options {
-            DownloadOptions::Manual(manual) => planner.manual(manual),
-            // An audio-only source (a podcast, a song) makes every preset an audio download.
-            DownloadOptions::Preset { .. } if planner.videos.is_empty() => Ok(planner.audio_only()),
-            DownloadOptions::Preset {
-                preset,
-                max_lines,
-                size_limit_mb,
-            } => Ok(match presets::device(*preset) {
-                Some(profile) => planner.device(profile, *max_lines),
-                None => match preset {
-                    PresetId::Audio => planner.audio_only(),
-                    PresetId::Editing => planner.editing(*max_lines),
-                    PresetId::Share => planner.share(size_limit_mb.unwrap_or(presets::SHARE_LIMITS_MB[0])),
-                    _ => planner.max_quality(*max_lines),
-                },
-            }),
-        }
-    }
-
-    /// True when the video will be cut on exact frames, so it is re-encoded
-    /// whatever else is decided.
-    fn cuts(&self) -> bool {
-        self.trim.is_some_and(|trim| trim.exact)
-    }
-
-    /// The codec an exact cut is encoded with when the stream would otherwise
-    /// have been copied: the same one where a hardware encoder exists.
-    fn cut_codec(source: VideoCodec, lines: u32) -> VideoCodec {
-        match source {
-            VideoCodec::H264 | VideoCodec::Hevc => source,
-            _ if lines > 1080 => VideoCodec::Hevc,
-            _ => VideoCodec::H264,
-        }
-    }
-
-    fn encode(codec: VideoCodec) -> VideoAction {
-        VideoAction::Encode(VideoEncode {
-            codec,
-            bitrate_kbps: None,
-            scale_lines: None,
-            max_fps: None,
-            constant_frame_rate: false,
-        })
-    }
-
-    fn new(info: &'a VideoInfo, trim: Option<Trim>) -> Self {
+    fn new(info: &'a VideoInfo, trim: Option<Trim>, caps: &'a Capabilities) -> Self {
         let videos = info
             .formats
             .iter()
@@ -507,6 +713,44 @@ impl<'a> Planner<'a> {
                 (Some(trim), Some(full)) => (trim.duration() / full).clamp(0.0, 1.0),
                 _ => 1.0,
             },
+            caps,
+        }
+    }
+
+    fn preset(&self, choice: &PresetChoice) -> Recipe {
+        let target = choice.target.info();
+        // An audio-only source (a podcast, a song) makes every video preset an audio download.
+        if self.videos.is_empty() && target.group != Group::Audio {
+            return self.original_audio();
+        }
+        match target.group {
+            Group::Watch => self.watch(target, choice.quality),
+            Group::Edit => self.edit(target, choice.quality, choice.smooth_editing),
+            Group::Audio if target.id == TargetId::Music => self.music(choice.music_format, choice.quality),
+            Group::Audio => self.original_audio(),
+            Group::Max => self.max_quality(),
+            Group::Share => self.share(target, target.tier(choice.tier).expect("share targets have tiers")),
+        }
+    }
+
+    /// True when the video will be cut on exact frames, so it is re-encoded
+    /// whatever else is decided.
+    fn cuts(&self) -> bool {
+        self.trim.is_some_and(|trim| trim.exact)
+    }
+
+    /// A constant-quality encode to `codec` on the best encoder this machine has.
+    fn encode(&self, codec: VideoCodec) -> VideoEncode {
+        VideoEncode::quality(codec, self.caps.hardware(codec))
+    }
+
+    /// The codec an exact cut is encoded with when the stream would otherwise
+    /// have been copied: the same one where it can be, else H.264 or HEVC.
+    fn cut_codec(source: VideoCodec, lines: u32) -> VideoCodec {
+        match source {
+            VideoCodec::H264 | VideoCodec::Hevc => source,
+            _ if lines > 1080 => VideoCodec::Hevc,
+            _ => VideoCodec::H264,
         }
     }
 
@@ -519,10 +763,15 @@ impl<'a> Planner<'a> {
             reason: None,
             promise: promise.into(),
             hints: Vec::new(),
-            qualities: Vec::new(),
             duration: self.duration,
             trim: self.trim,
             source_fraction: self.source_fraction,
+            badge: Badge::Lossless,
+            size_limit: None,
+            fits: None,
+            blocked: None,
+            section_request_size: None,
+            fallback: None,
         }
     }
 
@@ -538,18 +787,6 @@ impl<'a> Planner<'a> {
             size: video.format.filesize,
             action,
         }
-    }
-
-    /// Distinct resolutions on offer, highest first.
-    fn resolutions(videos: &[Video]) -> Vec<u32> {
-        let mut lines: Vec<u32> = videos
-            .iter()
-            .map(|video| video.lines)
-            .filter(|lines| *lines > 0)
-            .collect();
-        lines.sort_unstable_by(|a, b| b.cmp(a));
-        lines.dedup();
-        lines
     }
 
     /// Videos to choose from for a playback target: within its limits and,
@@ -568,7 +805,8 @@ impl<'a> Planner<'a> {
         narrow(pool, &|v| !v.hdr)
     }
 
-    /// The pool cut down to one resolution: the requested one, or the closest below it.
+    /// The pool cut down to one resolution: the requested one, or the closest
+    /// below it. Never above it: a lower choice downloads a lower stream.
     fn at_resolution(pool: &[Video<'a>], lines: u32) -> Vec<Video<'a>> {
         let target = pool
             .iter()
@@ -589,10 +827,7 @@ impl<'a> Planner<'a> {
             let action = if accepted.contains(&codec) {
                 AudioAction::Copy
             } else {
-                AudioAction::Encode {
-                    codec: fallback,
-                    bitrate_kbps: Some(lossy_target_kbps(kbps)),
-                }
+                AudioAction::encode(fallback, Some(lossy_target_kbps(kbps)))
             };
             AudioStep {
                 format_id,
@@ -606,11 +841,7 @@ impl<'a> Planner<'a> {
         if video.has_audio() {
             return Some(step(None, AudioCodec::of(video.format), video.format.abr, None));
         }
-        // A copyable track beats a slightly higher-bitrate one that needs converting.
-        let best = max_by_key(self.audios.iter().copied(), |audio| {
-            let (language, plain, direct, kbps) = audio.rank();
-            (language, plain, accepted.contains(&audio.codec), direct, kbps)
-        })?;
+        let best = self.best_audio_track(accepted)?;
         Some(step(
             Some(best.format.id.clone()),
             best.codec,
@@ -619,168 +850,13 @@ impl<'a> Planner<'a> {
         ))
     }
 
-    // ── Device presets ──────────────────────────────────────────────────
-
-    fn device(&self, profile: &DeviceProfile, max_lines: Option<u32>) -> Recipe {
-        let pool = self.pool(profile.max_lines, profile.max_fps);
-        let cut = self.cuts();
-        // An exact cut re-encodes the video anyway. Streams whose codec has a
-        // hardware encoder are re-encoded as they are; the rest are treated
-        // like unplayable ones and converted to the device's own format.
-        let native_rank = |video: &Video| {
-            profile
-                .tier_of(video.codec)
-                .filter(|_| !cut || matches!(video.codec, VideoCodec::H264 | VideoCodec::Hevc))
-                .map(|(index, _)| profile.tiers.len() - index)
-        };
-
-        let playable_lines = pool
-            .iter()
-            .filter(|v| profile.tier_of(v.codec).is_some())
-            .map(|v| v.lines)
-            .max();
-        let candidates = match (max_lines, playable_lines) {
-            (Some(lines), _) => Self::at_resolution(&pool, lines),
-            // Cutting must not change which resolution the preset picks.
-            (None, Some(lines)) if cut => Self::at_resolution(&pool, lines),
-            (None, _) => pool.clone(),
-        };
-        // Highest resolution and frame rate among natively playable streams …
-        let native = max_by_key(
-            candidates.iter().copied().filter(|v| native_rank(v).is_some()),
-            |video| (video.lines, video.fps as u32, native_rank(video), video.bitrate_rank()),
-        );
-        // … otherwise the best stream of any kind, to be converted.
-        let any = max_by_key(candidates.iter().copied(), |video| {
-            (
-                video.lines,
-                video.fps as u32,
-                video.codec.efficiency(),
-                video.bitrate_rank(),
-            )
-        });
-
-        let mut recipe = self.recipe(Container::Mp4, format!("Plays natively on {}", profile.name));
-        recipe.qualities = Self::resolutions(&pool)
-            .into_iter()
-            .map(|lines| QualityOption {
-                lines,
-                converts: !pool.iter().any(|v| v.lines == lines && native_rank(v).is_some()),
-            })
-            .collect();
-
-        match (native, any) {
-            (Some(video), _) => {
-                let (_, tier) = profile.tier_of(video.codec).expect("native videos have a tier");
-                recipe.container = tier.container;
-                recipe.audio = self.audio_for(&video, tier.audio, tier.container.default_audio());
-                if let Some(caveat) = tier.caveat {
-                    recipe.hints.push(info(caveat));
-                }
-                if recipe.encodes_audio() {
-                    let source = recipe
-                        .audio
-                        .as_ref()
-                        .map(|audio| audio.source.label())
-                        .unwrap_or("audio");
-                    recipe.reason = Some(format!("{} can’t play {source} audio in this file type", profile.name));
-                }
-                // Tell the user when a sharper version exists but would need converting.
-                let best_available = pool.iter().map(|v| v.lines).max().unwrap_or(0);
-                if max_lines.is_none() && best_available > video.lines {
-                    recipe.hints.push(info(format!(
-                        "{best_available}p is available too, but {} can’t play it as-is. Pick it above to convert it (slower).",
-                        profile.name
-                    )));
-                }
-                let action = if cut {
-                    Self::encode(video.codec)
-                } else {
-                    VideoAction::Copy
-                };
-                recipe.video = Some(Self::video_step(&video, action));
-            }
-            (None, Some(video)) => {
-                let codec = profile.encode_target(video.lines);
-                let accepted = profile
-                    .tier_of(codec)
-                    .map(|(_, tier)| tier.audio)
-                    .unwrap_or(&[AudioCodec::Aac]);
-                recipe.audio = self.audio_for(&video, accepted, AudioCodec::Aac);
-                recipe.reason = Some(format!(
-                    "{} can’t play {} out of the box",
-                    profile.name,
-                    video.codec.label()
-                ));
-                recipe.video = Some(Self::video_step(
-                    &video,
-                    VideoAction::Encode(VideoEncode {
-                        codec,
-                        bitrate_kbps: None,
-                        scale_lines: None,
-                        max_fps: None,
-                        constant_frame_rate: false,
-                    }),
-                ));
-            }
-            (None, None) => unreachable!("plan() checks that videos exist"),
-        }
-        if recipe.video.as_ref().is_some_and(|video| video.hdr) {
-            recipe.hints.push(warning(
-                "This video is HDR. On screens without HDR, colours may look washed out.",
-            ));
-        }
-        recipe
-    }
-
-    // ── Maximum quality ─────────────────────────────────────────────────
-
-    fn max_quality(&self, max_lines: Option<u32>) -> Recipe {
-        let candidates = match max_lines {
-            Some(lines) => Self::at_resolution(&self.videos, lines),
-            None => self.videos.clone(),
-        };
-        let video = max_by_key(candidates.iter().copied(), |video| {
-            (
-                video.lines,
-                video.fps as u32,
-                video.hdr,
-                video.codec.efficiency(),
-                video.bitrate_rank(),
-            )
+    /// The best separate audio track; a copyable one beats a slightly
+    /// higher-bitrate one that would need converting.
+    fn best_audio_track(&self, accepted: &[AudioCodec]) -> Option<Audio<'a>> {
+        max_by_key(self.audios.iter().copied(), |audio| {
+            let (language, plain, direct, kbps) = audio.rank();
+            (language, plain, accepted.contains(&audio.codec), direct, kbps)
         })
-        .expect("plan() checks that videos exist");
-
-        let mut recipe = self.recipe(Container::Mkv, "The best streams the site offers");
-        // Every audio codec is accepted: nothing gets converted here.
-        recipe.audio = self.audio_for(&video, ALL_AUDIO, AudioCodec::Aac);
-        let (codec, action) = if self.cuts() {
-            let codec = Self::cut_codec(video.codec, video.lines);
-            (codec, Self::encode(codec))
-        } else {
-            (video.codec, VideoAction::Copy)
-        };
-        recipe.container = Container::natural(Some(codec), recipe.audio.as_ref().map(|audio| audio.source));
-        recipe.qualities = Self::resolutions(&self.videos)
-            .into_iter()
-            .map(|lines| QualityOption { lines, converts: false })
-            .collect();
-        if matches!(codec, VideoCodec::Av1 | VideoCodec::Vp9) || recipe.container != Container::Mp4 {
-            recipe.hints.push(info(
-                "Not every device plays this format. VLC does; for a phone or TV, a device preset is the safer pick.",
-            ));
-        }
-        recipe.video = Some(Self::video_step(&video, action));
-        recipe
-    }
-
-    // ── Audio only ──────────────────────────────────────────────────────
-
-    fn audio_only(&self) -> Recipe {
-        let mut recipe = self.recipe(Container::Mkv, "The original audio, untouched");
-        recipe.audio = self.best_audio(None);
-        recipe.container = Container::natural(None, recipe.audio.as_ref().map(|audio| audio.source));
-        recipe
     }
 
     /// The best audio track, or the one with `id`. Falls back to the audio
@@ -816,339 +892,35 @@ impl<'a> Planner<'a> {
         })
     }
 
-    // ── Editing ─────────────────────────────────────────────────────────
+    // ── Max quality ─────────────────────────────────────────────────────
 
-    /// DNxHR HQ + PCM in MOV at a constant frame rate: every frame is a key
-    /// frame, so Premiere and Resolve scrub it smoothly and cut it exactly.
-    fn editing(&self, max_lines: Option<u32>) -> Recipe {
-        // 1080p unless asked: editing files are enormous.
-        let pool = self.pool(max_lines.unwrap_or(1080), 120.0);
-        let video = max_by_key(Self::at_resolution(&pool, max_lines.unwrap_or(1080)), |video| {
+    fn max_quality(&self) -> Recipe {
+        let video = max_by_key(self.videos.iter().copied(), |video| {
             (
                 video.lines,
                 video.fps as u32,
+                video.hdr,
                 video.codec.efficiency(),
                 video.bitrate_rank(),
             )
         })
         .expect("plan() checks that videos exist");
 
-        let mut recipe = self.recipe(Container::Mov, "Ready for Premiere Pro and DaVinci Resolve");
-        recipe.audio = self.audio_for(&video, &[], AudioCodec::Pcm);
-        recipe.reason = Some("editors work best with a constant frame rate and frames that stand on their own".into());
-        recipe.qualities = Self::resolutions(&self.pool(2160, 120.0))
-            .into_iter()
-            .map(|lines| QualityOption { lines, converts: false })
-            .collect();
-        recipe.video = Some(Self::video_step(
-            &video,
-            VideoAction::Encode(VideoEncode {
-                codec: VideoCodec::Dnxhr,
-                bitrate_kbps: None,
-                scale_lines: None,
-                max_fps: None,
-                constant_frame_rate: true,
-            }),
-        ));
+        let mut recipe = self.recipe(Container::Mkv, "The best streams the site offers");
+        // Every audio codec is accepted: nothing gets converted here.
+        recipe.audio = self.audio_for(&video, ALL_AUDIO, AudioCodec::Aac);
+        let (codec, action) = if self.cuts() {
+            let codec = Self::cut_codec(video.codec, video.lines);
+            (codec, VideoAction::Encode(self.encode(codec)))
+        } else {
+            (video.codec, VideoAction::Copy)
+        };
+        recipe.container = Container::natural(Some(codec), recipe.audio.as_ref().map(|audio| audio.source));
         recipe.hints.push(info(
-            "Editing files are large by design: they trade size for smooth scrubbing. Picture quality matches the source; it can’t exceed it.",
+            "Not every device plays this format. VLC does; for a phone or TV, Watch is the safer pick.",
         ));
+        recipe.video = Some(Self::video_step(&video, action));
         recipe
-    }
-
-    // ── Share (size limit) ──────────────────────────────────────────────
-
-    fn share(&self, limit_mb: u32) -> Recipe {
-        // Aim a little under the limit: services count megabytes differently.
-        let budget = limit_mb as f64 * 1_000_000.0 * 0.96;
-        let promise = format!("Fits under {limit_mb} MB");
-        let mut recipe = self.recipe(Container::Mp4, promise);
-        let pool = self.pool(1080, 60.0);
-
-        // Sharing wants a small stereo track, not a 384 kbps surround mix that eats the budget.
-        let modest: Vec<Audio> = self
-            .audios
-            .iter()
-            .copied()
-            .filter(|audio| audio.kbps <= 160.0)
-            .collect();
-        let lean = Planner {
-            videos: Vec::new(),
-            audios: if modest.is_empty() { self.audios.clone() } else { modest },
-            duration: self.duration,
-            trim: self.trim,
-            source_fraction: self.source_fraction,
-        };
-
-        // First choice: an H.264 + AAC combination that already fits. No conversion at all.
-        let aac = max_by_key(
-            lean.audios.iter().copied().filter(|a| a.codec == AudioCodec::Aac),
-            Audio::rank,
-        );
-        let fits = pool
-            .iter()
-            .copied()
-            .filter(|video| video.codec == VideoCodec::H264)
-            .filter(|video| {
-                let total = match (video.has_audio(), video.format.filesize) {
-                    (true, Some(size)) if AudioCodec::of(video.format) == AudioCodec::Aac => Some(size),
-                    (false, Some(size)) => aac.and_then(|audio| audio.format.filesize).map(|audio| size + audio),
-                    _ => None,
-                };
-                total.is_some_and(|total| total as f64 <= budget)
-            });
-        // (An exact cut is re-encoded anyway, so it goes straight to the bitrate route.)
-        let fits = fits.filter(|_| !self.cuts());
-        if let Some(video) = max_by_key(fits, |video| (video.lines, video.fps as u32, video.bitrate_rank())) {
-            // Don't settle for a postage stamp when converting would look far better.
-            if video.lines >= 480 || video.lines >= pool.iter().map(|v| v.lines).max().unwrap_or(0) {
-                recipe.audio = lean.audio_for(&video, &[AudioCodec::Aac], AudioCodec::Aac);
-                recipe.video = Some(Self::video_step(&video, VideoAction::Copy));
-                return recipe;
-            }
-        }
-
-        // Otherwise convert to a bitrate that lands under the limit.
-        let Some(duration) = self.duration else {
-            let video = max_by_key(Self::at_resolution(&pool, 480), |video| video.bitrate_rank())
-                .expect("plan() checks that videos exist");
-            recipe.audio = lean.audio_for(&video, &[AudioCodec::Aac], AudioCodec::Aac);
-            recipe.video = Some(Self::video_step(&video, VideoAction::Copy));
-            recipe.promise = "A small version of the video".into();
-            recipe.hints.push(warning(format!(
-                "The site didn’t say how long this video is, so Siphon can’t guarantee it fits under {limit_mb} MB."
-            )));
-            return recipe;
-        };
-
-        let total_kbps = budget * 8.0 / duration / 1000.0;
-        let audio_kbps: u32 = if total_kbps >= 700.0 {
-            96
-        } else if total_kbps >= 250.0 {
-            64
-        } else {
-            48
-        };
-        // ~2% of an MP4 at these sizes is container overhead.
-        let video_kbps = (total_kbps * 0.98 - audio_kbps as f64).max(40.0) as u32;
-        let (target_lines, max_fps) = match video_kbps {
-            4500.. => (1080, 60.0),
-            2200.. => (720, 60.0),
-            1000.. => (720, 30.0),
-            500.. => (480, 30.0),
-            250.. => (360, 30.0),
-            _ => (240, 30.0),
-        };
-
-        // Fetch the smallest source that still covers the target resolution.
-        let source_lines = pool
-            .iter()
-            .map(|video| video.lines)
-            .filter(|lines| *lines >= target_lines)
-            .min()
-            .or_else(|| pool.iter().map(|video| video.lines).max())
-            .unwrap_or(0);
-        let video = max_by_key(pool.iter().copied().filter(|v| v.lines == source_lines), |video| {
-            (
-                video.fps <= max_fps + 0.5,
-                video.codec == VideoCodec::H264,
-                video.bitrate_rank(),
-            )
-        })
-        .expect("plan() checks that videos exist");
-
-        recipe.audio = lean.audio_for(&video, &[], AudioCodec::Aac).map(|mut audio| {
-            audio.action = AudioAction::Encode {
-                codec: AudioCodec::Aac,
-                bitrate_kbps: Some(audio_kbps),
-            };
-            audio
-        });
-        recipe.reason = Some(format!("no original stream fits under {limit_mb} MB"));
-        recipe.video = Some(Self::video_step(
-            &video,
-            VideoAction::Encode(VideoEncode {
-                codec: VideoCodec::H264,
-                bitrate_kbps: Some(video_kbps),
-                scale_lines: (video.lines > target_lines).then_some(target_lines),
-                max_fps: Some(max_fps),
-                constant_frame_rate: false,
-            }),
-        ));
-        if video_kbps < 250 {
-            recipe.hints.push(warning(format!(
-                "This video is long for a {limit_mb} MB limit, so it will look rough. A larger limit, or trimming it, will help."
-            )));
-        }
-        recipe
-    }
-
-    // ── Manual mode ─────────────────────────────────────────────────────
-
-    fn manual(&self, options: &ManualOptions) -> Result<Recipe> {
-        let unknown = |id: &str| {
-            AppError::new(
-                ErrorKind::Unavailable,
-                format!("The chosen stream ({id}) isn’t offered for this video any more."),
-            )
-        };
-        let mut recipe = self.recipe(Container::Mkv, "Your custom settings");
-
-        // Audio only.
-        if options.content == Content::AudioOnly || self.videos.is_empty() {
-            let mut audio = self
-                .best_audio(options.audio_format.as_deref())
-                .ok_or_else(|| AppError::new(ErrorKind::Unavailable, "This video has no audio track."))?;
-            let container = options.container.filter(|container| container.is_audio_only());
-            let target = options
-                .audio_codec
-                .or(container
-                    .filter(|c| !c.holds_audio(audio.source))
-                    .map(Container::default_audio))
-                .unwrap_or(audio.source);
-            if target != audio.source {
-                recipe
-                    .hints
-                    .extend(audio_conversion_hint(audio.source, target, audio.source_kbps));
-                audio.action = AudioAction::Encode {
-                    codec: target,
-                    bitrate_kbps: None,
-                };
-            }
-            recipe.container = container
-                .filter(|container| container.holds_audio(target))
-                .unwrap_or_else(|| Container::natural(None, Some(target)));
-            recipe.audio = Some(audio);
-            return Ok(recipe);
-        }
-
-        // Video, with or without audio.
-        let want_audio = options.content == Content::VideoAudio;
-        let video = match options.video_format.as_deref() {
-            Some(id) => self
-                .videos
-                .iter()
-                .copied()
-                .find(|video| video.format.id == id)
-                .ok_or_else(|| unknown(id))?,
-            None => max_by_key(self.videos.iter().copied(), |video| {
-                // With "video only", prefer streams that don't carry audio to strip.
-                (
-                    want_audio || !video.has_audio(),
-                    video.lines,
-                    video.fps as u32,
-                    video.codec.efficiency(),
-                    video.bitrate_rank(),
-                )
-            })
-            .expect("videos is not empty"),
-        };
-
-        let mut audio = match (want_audio, options.audio_format.as_deref()) {
-            (false, _) => None,
-            (true, Some(id)) => Some(self.best_audio(Some(id)).ok_or_else(|| unknown(id))?),
-            (true, None) => self.audio_for(&video, ALL_AUDIO, AudioCodec::Aac),
-        };
-        // A combined stream already has sound; a second audio download replaces nothing.
-        if video.has_audio()
-            && audio
-                .as_ref()
-                .is_some_and(|step| step.format_id.as_deref() == Some(&video.format.id))
-        {
-            audio = audio.map(|step| AudioStep {
-                format_id: None,
-                ..step
-            });
-        }
-        recipe.strip_audio = !want_audio && video.has_audio();
-
-        let cut = self.cuts();
-        let kept = if cut {
-            Self::cut_codec(video.codec, video.lines)
-        } else {
-            video.codec
-        };
-        let wanted_video = options.video_codec.unwrap_or(kept);
-        let wanted_audio = audio.as_ref().map(|step| options.audio_codec.unwrap_or(step.source));
-        let container = options
-            .container
-            .filter(|container| !container.is_audio_only())
-            .unwrap_or_else(|| Container::natural(Some(wanted_video), wanted_audio));
-
-        // The container has the final say: swap in a codec it can hold.
-        let video_target = if container.holds_video(wanted_video) {
-            wanted_video
-        } else {
-            container.default_video()
-        };
-        let audio_target = wanted_audio.map(|codec| {
-            if container.holds_audio(codec) {
-                codec
-            } else {
-                container.default_audio()
-            }
-        });
-
-        if video_target != wanted_video {
-            recipe.hints.push(info(format!(
-                "{} files can’t hold {} video, so it will be converted to {}.",
-                container.label(),
-                wanted_video.label(),
-                video_target.label()
-            )));
-        }
-        if let (Some(target), Some(wanted)) = (audio_target, wanted_audio) {
-            if target != wanted {
-                recipe.hints.push(info(format!(
-                    "{} files can’t hold {} audio, so it will be converted to {}.",
-                    container.label(),
-                    wanted.label(),
-                    target.label()
-                )));
-            }
-        }
-
-        let video_action = if video_target == video.codec {
-            if cut {
-                Self::encode(video_target)
-            } else {
-                VideoAction::Copy
-            }
-        } else if options.video_codec.is_none() && cut {
-            // Not the user's choice: the cut needs an encode and this codec has no fast encoder.
-            Self::encode(video_target)
-        } else {
-            recipe.hints.push(warning(format!(
-                "Converting {} to {} takes time and loses a little quality; it never adds any. Keep the original codec unless a device needs {}.",
-                video.codec.label(),
-                video_target.label(),
-                video_target.label()
-            )));
-            VideoAction::Encode(VideoEncode {
-                codec: video_target,
-                bitrate_kbps: None,
-                scale_lines: None,
-                max_fps: None,
-                constant_frame_rate: false,
-            })
-        };
-        if let (Some(step), Some(target)) = (audio.as_mut(), audio_target) {
-            if target != step.source {
-                recipe
-                    .hints
-                    .extend(audio_conversion_hint(step.source, target, step.source_kbps));
-                let bitrate_kbps = (!target.is_lossless()).then(|| lossy_target_kbps(step.source_kbps));
-                step.action = AudioAction::Encode {
-                    codec: target,
-                    bitrate_kbps,
-                };
-            }
-        }
-
-        recipe.container = container;
-        recipe.video = Some(Self::video_step(&video, video_action));
-        recipe.audio = audio;
-        Ok(recipe)
     }
 }
 

@@ -3,19 +3,23 @@
 use std::path::PathBuf;
 
 use serde::Serialize;
+use serde_json::Value;
 use std::sync::Arc;
 
 use tauri::{AppHandle, State};
 use tauri_plugin_opener::OpenerExt;
+use tokio::sync::Semaphore;
 
 use crate::binaries::{BinaryManager, ToolStatus, UpdatePolicy};
+use crate::choices::{self, ChoiceStore, Choices};
 use crate::downloads::{self, DownloadManager, DownloadRequest};
 use crate::error::{AppError, ErrorKind, Result};
 use crate::plan::explain::{self, PlanSummary};
-use crate::plan::{self, DownloadOptions, Trim};
+use crate::plan::registry::{self, Registry};
+use crate::plan::{self, Choice, Trim};
 use crate::preview::{self, Preview};
 use crate::settings::{Settings, SettingsStore};
-use crate::state::{EncoderCache, MediaCache};
+use crate::state::{CapabilityCache, MediaCache};
 use crate::ytdlp::metadata::{self, Media};
 
 type Binaries<'a> = State<'a, Arc<BinaryManager>>;
@@ -57,21 +61,83 @@ pub async fn fetch_media(bins: Binaries<'_>, cache: State<'_, MediaCache>, url: 
     Ok(media)
 }
 
-/// Describes what downloading `url` with `options` would do, without doing it.
+/// Every preset group, target and tier: the frontend defines none itself.
+#[tauri::command]
+pub fn get_presets() -> Registry {
+    registry::registry()
+}
+
+/// What was chosen last time, and the user's saved presets.
+#[tauri::command]
+pub fn get_choices(store: State<'_, ChoiceStore>) -> Choices {
+    store.get()
+}
+
+#[tauri::command]
+pub fn set_choices(store: State<'_, ChoiceStore>, choices: Choices) -> Result<Choices> {
+    store.set(choices)
+}
+
+/// Takes over the choice an older version kept in the webview's storage
+/// (`siphon.options`). Only the first time: once Siphon has saved choices of
+/// its own, those win.
+#[tauri::command]
+pub fn import_legacy_choices(store: State<'_, ChoiceStore>, old: Value) -> Result<Choices> {
+    if !store.is_new() {
+        return Ok(store.get());
+    }
+    store.set(choices::from_legacy(&old))
+}
+
+/// Describes what downloading `url` with `choice` would do, without doing it.
 #[tauri::command]
 pub async fn plan_download(
     bins: Binaries<'_>,
     cache: State<'_, MediaCache>,
-    encoders: State<'_, EncoderCache>,
+    caps: State<'_, CapabilityCache>,
     url: String,
-    options: DownloadOptions,
+    choice: Choice,
     trim: Option<Trim>,
 ) -> Result<PlanSummary> {
     let video = cache
         .get(&url)
         .ok_or_else(|| AppError::internal("Siphon lost track of this video. Paste the link again."))?;
-    let recipe = plan::plan(&video, &options, trim)?;
-    Ok(explain::summarize(&recipe, &encoders.get(&bins).await))
+    explain::summarize(&video, &choice, trim, &caps.get(&bins).await)
+}
+
+/// At most this many playlist videos are looked up at once for size estimates.
+static ESTIMATES: Semaphore = Semaphore::const_new(3);
+
+/// The estimated size of downloading `url` with `choice`, looking the video
+/// up first if this session hasn't. For the total under a playlist.
+#[tauri::command]
+pub async fn estimate_download(
+    bins: Binaries<'_>,
+    cache: State<'_, MediaCache>,
+    caps: State<'_, CapabilityCache>,
+    url: String,
+    choice: Choice,
+) -> Result<Option<u64>> {
+    ensure_ready(&bins)?;
+    let video = match cache.get(url.trim()) {
+        Some(video) => video,
+        None => {
+            let _permit = ESTIMATES
+                .acquire()
+                .await
+                .map_err(|err| AppError::internal("Couldn't look the video up.").with_details(err.to_string()))?;
+            match metadata::fetch(&bins, &url).await? {
+                Media::Video(video) => {
+                    let video = Arc::new(*video);
+                    cache.insert(url.trim(), Arc::clone(&video));
+                    video
+                }
+                Media::Playlist(_) => return Ok(None),
+            }
+        }
+    };
+    let recipe = plan::plan(&video, &choice, None, &caps.get(&bins).await)?;
+    Ok(recipe.estimated_size())
 }
 
 /// Where the trim preview should play from. `level` starts at 0; ask again

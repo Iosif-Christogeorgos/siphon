@@ -25,6 +25,8 @@ pub enum ErrorKind {
     Setup,
     /// Can't be done right now because something else is using it.
     Busy,
+    /// Share: too long to fit the size limit at a quality worth having.
+    TooLong,
     Internal,
 }
 

@@ -13,7 +13,7 @@ use std::time::Duration;
 use crate::plan::codecs::{AudioCodec, Container, VideoCodec};
 use crate::plan::{AudioAction, Recipe, Trim, VideoAction, VideoEncode, VideoStep};
 use crate::process;
-use encoders::{Encoders, Hardware};
+use encoders::Hardware;
 
 /// Whether this ffmpeg can fetch a stream in requests of a set size
 /// (`-request_size`). Builds from before the option existed stop with
@@ -27,14 +27,30 @@ pub async fn supports_request_size(ffmpeg: &Path) -> bool {
     }
 }
 
+/// Which run of an encode this is. A size-targeted encode on the CPU runs
+/// twice (see `VideoEncode::two_pass`); everything else runs once.
+#[derive(Debug, Clone, Copy)]
+pub enum Pass<'a> {
+    Only,
+    /// Measures the video and writes what it learnt to `log`; produces no file.
+    First {
+        log: &'a Path,
+    },
+    /// Encodes using what the first pass wrote to `log`.
+    Second {
+        log: &'a Path,
+    },
+}
+
 /// Builds the ffmpeg arguments that turn the downloaded `input` into the
 /// file the recipe describes. Every value is its own argument; nothing is
 /// ever passed through a shell.
-pub fn convert_args(recipe: &Recipe, encoders: &Encoders, input: &Path, output: &Path) -> Vec<OsString> {
+pub fn convert_args(recipe: &Recipe, input: &Path, output: &Path, pass: Pass) -> Vec<OsString> {
     let mut args: Vec<OsString> = Vec::new();
     let mut push = |values: &[&str]| args.extend(values.iter().map(OsString::from));
 
     push(&["-hide_banner", "-nostdin", "-y", "-loglevel", "error"]);
+    // ── Input options ──
     let cut = recipe.exact_cut();
     if cut.is_some() {
         // The section was downloaded with its original timestamps (see
@@ -47,12 +63,14 @@ pub fn convert_args(recipe: &Recipe, encoders: &Encoders, input: &Path, output: 
     args.push(input.into());
     let mut push = |values: &[&str]| args.extend(values.iter().map(OsString::from));
 
+    // ── Streams ──
     // First video track, and the first audio track if we keep one. Drops
     // subtitles, thumbnails and data tracks that some containers reject.
+    let first_pass = matches!(pass, Pass::First { .. });
     push(&["-map", "0:v:0"]);
     match recipe.audio_codec() {
-        Some(_) => push(&["-map", "0:a:0?"]),
-        None => push(&["-an"]),
+        Some(_) if !first_pass => push(&["-map", "0:a:0?"]),
+        _ => push(&["-an"]),
     }
 
     if let Some(video) = &recipe.video {
@@ -64,28 +82,37 @@ pub fn convert_args(recipe: &Recipe, encoders: &Encoders, input: &Path, output: 
                 }
             }
             VideoAction::Encode(encode) => {
-                let hardware = encoders.for_codec(encode.codec);
-                for arg in video_encode_args(video, encode, hardware, cut) {
+                for arg in video_encode_args(video, encode, cut, pass) {
                     push(&[&arg]);
                 }
             }
         }
     }
 
-    if let (Some(audio), Some(_)) = (&recipe.audio, recipe.audio_codec()) {
+    if let (Some(audio), Some(_), false) = (&recipe.audio, recipe.audio_codec(), first_pass) {
         match audio.action {
             AudioAction::Copy => push(&["-c:a", "copy"]),
-            AudioAction::Encode { codec, bitrate_kbps } => {
-                for arg in audio_encode_args(codec, bitrate_kbps) {
+            AudioAction::Encode {
+                codec,
+                bitrate_kbps,
+                sample_rate,
+                stereo,
+            } => {
+                for arg in audio_encode_args(codec, bitrate_kbps, sample_rate, stereo) {
                     push(&[&arg]);
                 }
             }
         }
     }
 
+    // ── Output ──
     if let Some(cut) = cut {
         // Shift everything back so the clip starts at zero.
         push(&["-output_ts_offset", &format!("-{}", cut.start)]);
+    }
+    if first_pass {
+        push(&["-f", "null", if cfg!(windows) { "NUL" } else { "/dev/null" }]);
+        return args;
     }
     if matches!(recipe.container, Container::Mp4 | Container::Mov) {
         // Put the index at the front so playback can start before the whole file is read.
@@ -95,7 +122,7 @@ pub fn convert_args(recipe: &Recipe, encoders: &Encoders, input: &Path, output: 
     args
 }
 
-fn video_encode_args(video: &VideoStep, encode: &VideoEncode, hardware: Hardware, cut: Option<Trim>) -> Vec<String> {
+fn video_encode_args(video: &VideoStep, encode: &VideoEncode, cut: Option<Trim>, pass: Pass) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
     let mut push = |values: &[&str]| args.extend(values.iter().map(|value| value.to_string()));
 
@@ -126,18 +153,24 @@ fn video_encode_args(video: &VideoStep, encode: &VideoEncode, hardware: Hardware
     if !filters.is_empty() {
         push(&["-vf", &filters.join(",")]);
     }
+    let fps = output_fps.or(source_fps);
     if encode.constant_frame_rate {
         push(&["-fps_mode", "cfr"]);
-        if let Some(fps) = output_fps.or(source_fps) {
+        if let Some(fps) = fps {
             push(&["-r", &fps.to_string()]);
         }
     }
+    if let (Some(seconds), Some(fps)) = (encode.keyframe_seconds, fps) {
+        // Editors scrub from key frame to key frame; one a second keeps it smooth.
+        push(&["-g", &((fps * seconds).round().max(1.0) as u32).to_string()]);
+    }
 
-    let encoder = hardware.encoder(encode.codec);
-    push(&["-c:v", encoder]);
+    let hardware = encode.hardware;
+    push(&["-c:v", hardware.encoder(encode.codec)]);
 
-    if encode.codec == VideoCodec::Dnxhr {
-        push(&["-profile:v", "dnxhr_hq", "-pix_fmt", "yuv422p"]);
+    if encode.codec == VideoCodec::Prores {
+        // ProRes 422 ("standard"), 10-bit 4:2:2, tagged the way Apple's tools expect.
+        push(&["-profile:v", "2", "-vendor", "apl0", "-pix_fmt", "yuv422p10le"]);
         return args;
     }
 
@@ -153,17 +186,28 @@ fn video_encode_args(video: &VideoStep, encode: &VideoEncode, hardware: Hardware
 
     let hevc = encode.codec == VideoCodec::Hevc;
     match (encode.bitrate_kbps, hardware) {
-        // ── Size-limited: hold an average bitrate ──
+        // ── Size-targeted: hold an average bitrate ──
         (Some(kbps), hardware) => {
-            let rate = format!("{kbps}k");
-            let buffer = format!("{}k", kbps * 2);
             match hardware {
-                Hardware::Nvenc => push(&["-preset", "p5", "-tune", "hq", "-rc", "vbr"]),
+                // NVENC looks at each frame twice within one run.
+                Hardware::Nvenc => push(&["-preset", "p6", "-tune", "hq", "-rc", "vbr", "-multipass", "fullres"]),
                 Hardware::Amf => push(&["-quality", "quality", "-rc", "vbr_peak"]),
                 Hardware::Qsv | Hardware::Software => push(&["-preset", "medium"]),
                 Hardware::VideoToolbox => {}
             }
-            push(&["-b:v", &rate, "-maxrate", &rate, "-bufsize", &buffer]);
+            push(&[
+                "-b:v",
+                &format!("{kbps}k"),
+                "-maxrate",
+                &format!("{}k", kbps * 3 / 2),
+                "-bufsize",
+                &format!("{}k", kbps * 2),
+            ]);
+            match pass {
+                Pass::Only => {}
+                Pass::First { log } => push(&["-pass", "1", "-passlogfile", &log.to_string_lossy()]),
+                Pass::Second { log } => push(&["-pass", "2", "-passlogfile", &log.to_string_lossy()]),
+            }
         }
         // ── Constant quality: visually close to the source ──
         (None, Hardware::Nvenc) => push(&[
@@ -201,9 +245,14 @@ fn video_encode_args(video: &VideoStep, encode: &VideoEncode, hardware: Hardware
     args
 }
 
-fn audio_encode_args(codec: AudioCodec, bitrate_kbps: Option<u32>) -> Vec<String> {
+fn audio_encode_args(
+    codec: AudioCodec,
+    bitrate_kbps: Option<u32>,
+    sample_rate: Option<u32>,
+    stereo: bool,
+) -> Vec<String> {
     let bitrate = |default: u32| format!("{}k", bitrate_kbps.unwrap_or(default));
-    let args: Vec<String> = match codec {
+    let mut args: Vec<String> = match codec {
         AudioCodec::Mp3 => vec!["-c:a".into(), "libmp3lame".into(), "-b:a".into(), bitrate(192)],
         AudioCodec::Opus => vec!["-c:a".into(), "libopus".into(), "-b:a".into(), bitrate(160)],
         AudioCodec::Vorbis => vec!["-c:a".into(), "libvorbis".into(), "-q:a".into(), "6".into()],
@@ -212,6 +261,12 @@ fn audio_encode_args(codec: AudioCodec, bitrate_kbps: Option<u32>) -> Vec<String
         AudioCodec::Ac3 => vec!["-c:a".into(), "ac3".into(), "-b:a".into(), bitrate(448)],
         AudioCodec::Aac | AudioCodec::Other => vec!["-c:a".into(), "aac".into(), "-b:a".into(), bitrate(192)],
     };
+    if let Some(rate) = sample_rate {
+        args.extend(["-ar".into(), rate.to_string()]);
+    }
+    if stereo {
+        args.extend(["-ac".into(), "2".into()]);
+    }
     args
 }
 
