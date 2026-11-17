@@ -140,9 +140,11 @@ Every download joins a queue. A set number run at once (three by default) and th
 - Downloading something again never replaces the first file: the new one is named `Title [id] (2).mp4`, then `(3)`, and so on.
 - Closing the app stops every download and deletes their partial files, so no yt-dlp or ffmpeg process and no half-finished file is left behind. The list itself is not kept between sessions.
 
+**Speed limit.** Settings → Downloads → **Speed limit** caps the total download speed of all downloads together: Unlimited (the default), 2, 5, 10 or 25 MB/s, or a custom value. Running downloads share it evenly, a download that needs less leaves the rest to the others, and a change applies to running downloads within a second. The limit is kept in `settings.json`, so it stays on until it is changed. While it is on, the title bar says so ("Limited to 5 MB/s"; click it to change it), and while anything downloads it shows the total speed. MB here is 1,048,576 bytes, the unit download speeds are shown in. How it works is under [Talking to yt-dlp](#talking-to-yt-dlp).
+
 A playlist link shows its videos with checkboxes. The ones you select are added to the queue with the current preset, and the best format is worked out for each video when its turn comes. The estimated total size fills in as Siphon looks the selected videos up. A YouTube video link that also names a playlist offers a way to the whole playlist.
 
-**Settings** (the gear in the title bar) holds the download folder, the file-name style, the number of simultaneous downloads, the theme and the update choices. They are stored in `settings.json` in the app's config folder (`%APPDATA%\app.siphon.desktop` on Windows), except the theme, which only the interface uses and which is kept with it. The last preset choice and your saved presets are in `choices.json` next to it.
+**Settings** (the gear in the title bar) holds the download folder, the file-name style, the number of simultaneous downloads, the speed limit, the theme and the update choices. They are stored in `settings.json` in the app's config folder (`%APPDATA%\app.siphon.desktop` on Windows), except the theme, which only the interface uses and which is kept with it. The last preset choice and your saved presets are in `choices.json` next to it.
 
 The theme follows Windows' light or dark mode by default (**System**), and changes when Windows does. **Light** or **Dark** keeps Siphon in that theme whatever Windows uses.
 
@@ -180,6 +182,8 @@ All yt-dlp commands are built in Rust and passed as argument arrays, never as sh
 
 Two settings keep downloads fast. Segmented streams (HLS, DASH, which most sites other than YouTube use) are fetched four pieces at a time. A trimmed part is fetched by ffmpeg in the request size the site asks for (10 MB on YouTube), because YouTube sends a single large request at only about twice playback speed. The measurements are in [docs/decisions.md](docs/decisions.md#download-speed).
 
+Every download goes through a small HTTP proxy inside Siphon (`src-tauri/src/throttle`), which is how one speed limit covers all of them, including the parts ffmpeg fetches. Each download gets its own listener on `127.0.0.1`, on a port Windows picks, closed when the download ends. HTTPS passes through it as an untouched tunnel. If Windows or the `HTTP(S)_PROXY` variables name a proxy, Siphon's proxy goes through it. Why it works this way, and what was measured, is in [docs/decisions.md](docs/decisions.md#speed-limit).
+
 Progress comes from `--progress-template` lines that the backend parses and folds into one overall percentage, weighted by stream size. It reaches the UI as `download://event` events.
 
 ## Project layout
@@ -188,9 +192,10 @@ Progress comes from `--progress-template` lines that the backend parses and fold
 src/                     React + TypeScript frontend
   components/            Shared UI (title bar, error card, shadcn/ui primitives)
   features/              One folder per feature: setup, link, video, playlist, presets, options,
-                         trim, download, queue, settings, home
+                         trim, download, queue, settings, speed, home
   lib/                   IPC wrappers, formatting, motion presets
-  stores/                Zustand stores (binaries, choices, downloads, trim, toasts, appUpdate, ui)
+  stores/                Zustand stores (binaries, choices, downloads, trim, toasts, appUpdate, ui, speed),
+                         and the shared settings query
   types.ts               Types mirrored from the Rust backend
 src-tauri/               Rust backend (Tauri 2)
   src/binaries/          Download, verify, install and update the managed tools
@@ -199,6 +204,7 @@ src-tauri/               Rust backend (Tauri 2)
   src/choices.rs         The remembered choice and saved presets (choices.json), and migrating old ones
   src/ffmpeg/            Hardware encoder detection and conversion arguments
   src/downloads/         The download queue, jobs (pause, resume, cancel) and progress tracking
+  src/throttle/          The speed limit: the local proxy, the shared fair limiter, the system proxy
   src/settings.rs        User preferences and where they are stored
   src/app_update.rs      Checking for and installing a newer Siphon
   src/preview.rs         Where the trim preview plays from (embed, stream or cached copy)
