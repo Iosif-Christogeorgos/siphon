@@ -16,6 +16,7 @@ export type ErrorKind =
   | "cancelled"
   | "setup"
   | "busy"
+  | "too_long"
   | "internal";
 
 export interface AppError {
@@ -122,19 +123,16 @@ export interface PlaylistInfo {
 export type Media = ({ type: "video" } & VideoInfo) | ({ type: "playlist" } & PlaylistInfo);
 
 // ── plan ───────────────────────────────────────────────────────────────
+//
+// Groups, targets and tiers are defined once, in `plan/registry.rs`, and read
+// through `get_presets`. Their ids are plain strings here on purpose: the
+// interface never lists them itself.
 
-export type PresetId =
-  | "iphone"
-  | "android"
-  | "windows"
-  | "macos"
-  | "tv"
-  | "editing"
-  | "share"
-  | "audio"
-  | "max";
+export type GroupId = string;
+export type TargetId = string;
+export type TierId = string;
 
-export type VideoCodec = "h264" | "hevc" | "vp9" | "av1" | "vp8" | "dnxhr" | "other";
+export type VideoCodec = "h264" | "hevc" | "vp9" | "av1" | "vp8" | "prores" | "other";
 export type AudioCodec = "aac" | "opus" | "mp3" | "vorbis" | "flac" | "ac3" | "pcm" | "other";
 export type Container =
   | "mp4"
@@ -148,19 +146,47 @@ export type Container =
   | "flac"
   | "wav";
 export type Content = "video_audio" | "video_only" | "audio_only";
+export type MusicFormat = "mp3" | "m4a";
+export type QualityKind = "resolution" | "bitrate" | "none";
+export type Extra = "tier" | "smooth_editing" | "music_format";
 
-export interface PresetOptions {
-  mode: "preset";
-  preset: PresetId;
-  /** A specific resolution (short side); null lets the preset decide. */
-  max_lines: number | null;
-  /** Share preset only. */
-  size_limit_mb: number | null;
+export interface Tier {
+  id: TierId;
+  label: string;
+  /** Megabytes (10⁶ bytes). */
+  limit_mb: number;
+  max_lines: number;
+  /** False when the file is sent as a document rather than played in the chat. */
+  inline: boolean;
+}
+
+export interface Target {
+  id: TargetId;
+  label: string;
+  /** An icon name; see `src/lib/icons.ts`. */
+  icon: string;
+  quality: QualityKind;
+  extras: Extra[];
+  tiers: Tier[];
+}
+
+export interface Group {
+  id: GroupId;
+  label: string;
+  icon: string;
+  description: string;
+  targets: Target[];
+  default_target: TargetId;
+}
+
+/** Every preset Siphon offers (`get_presets`). */
+export interface Registry {
+  groups: Group[];
+  music_bitrates: number[];
 }
 
 /** null means "best available" for streams and "keep the original" for codecs and container. */
 export interface ManualOptions {
-  mode: "manual";
   content: Content;
   video_format: string | null;
   audio_format: string | null;
@@ -169,7 +195,18 @@ export interface ManualOptions {
   audio_codec: AudioCodec | null;
 }
 
-export type DownloadOptions = PresetOptions | ManualOptions;
+/** What to download: a preset from the registry, or custom settings. */
+export type Choice =
+  | {
+      mode: "preset";
+      target: TargetId;
+      /** A resolution, or a bitrate for Music; null is "Best". */
+      quality: number | null;
+      tier: TierId | null;
+      music_format: MusicFormat;
+      smooth_editing: boolean;
+    }
+  | ({ mode: "custom" } & ManualOptions);
 
 /** The part of the video to keep, in seconds. */
 export interface Trim {
@@ -184,24 +221,59 @@ export interface Hint {
   text: string;
 }
 
+export type Badge = "lossless" | "converts" | "size_optimized" | "may_not_play";
+
 export interface QualityOption {
-  /** Short side in pixels, e.g. 1080. */
-  lines: number;
-  /** Picking this resolution means converting the video. */
+  /** A resolution (short side), or a bitrate for Music. */
+  value: number;
+  /** Picking this means converting. */
   converts: boolean;
+  estimated_size: number | null;
 }
 
 export interface PlanSummary {
+  badge: Badge;
   headline: string;
   detail: string;
-  converts: boolean;
   /** Bytes, when predictable. */
   estimated_size: number | null;
+  /** Roughly how long converting takes, in seconds. */
+  convert_seconds: number | null;
   hints: Hint[];
-  qualities: QualityOption[];
-  /** The resolution this plan resolved to. */
-  lines: number | null;
+  quality: QualityKind;
+  options: QualityOption[];
+  /** The quality this plan came to. */
+  resolved: number | null;
   ext: string;
+  /** Why Download isn't offered (Share: too long to look decent). */
+  blocked: string | null;
+}
+
+// ── choices.rs ─────────────────────────────────────────────────────────
+
+export type Active = { kind: "preset" } | { kind: "custom" } | { kind: "saved"; id: string };
+
+export interface SavedPreset {
+  id: string;
+  name: string;
+  options: ManualOptions;
+}
+
+/** What Siphon remembers between downloads (`choices.json`). */
+export interface Choices {
+  active: Active;
+  group: GroupId;
+  /** The target last used in each group. */
+  targets: Record<GroupId, TargetId>;
+  quality: number | null;
+  music_kbps: number | null;
+  /** The tier picked for each Share target. */
+  tiers: Record<TargetId, TierId>;
+  music_format: MusicFormat;
+  smooth_editing: boolean;
+  exact_cut: boolean;
+  custom: ManualOptions;
+  saved: SavedPreset[];
 }
 
 // ── settings.rs ────────────────────────────────────────────────────────
@@ -270,7 +342,7 @@ export interface Progress {
 export interface DownloadRequest {
   id: string;
   url: string;
-  options: DownloadOptions;
+  choice: Choice;
   trim: Trim | null;
 }
 

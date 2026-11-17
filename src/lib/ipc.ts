@@ -2,12 +2,14 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   AppError,
+  Choice,
+  Choices,
   DownloadEvent,
-  DownloadOptions,
   DownloadRequest,
   Media,
   PlanSummary,
   Preview,
+  Registry,
   Settings,
   SettingsView,
   ToolStatus,
@@ -21,8 +23,15 @@ export const ipc = {
   /** `install` forces updates to be installed even in "ask first" mode. */
   binariesSync: (install: boolean) => invoke<ToolStatus[]>("binaries_sync", { install }),
   fetchMedia: (url: string) => invoke<Media>("fetch_media", { url }),
-  planDownload: (url: string, options: DownloadOptions, trim: Trim | null) =>
-    invoke<PlanSummary>("plan_download", { url, options, trim }),
+  getPresets: () => invoke<Registry>("get_presets"),
+  getChoices: () => invoke<Choices>("get_choices"),
+  setChoices: (choices: Choices) => invoke<Choices>("set_choices", { choices }),
+  /** Hands over what an older version kept in the webview's storage; only used once. */
+  importLegacyChoices: (old: unknown) => invoke<Choices>("import_legacy_choices", { old }),
+  planDownload: (url: string, choice: Choice, trim: Trim | null) =>
+    invoke<PlanSummary>("plan_download", { url, choice, trim }),
+  /** Bytes, looking the video up first if needed (for playlist totals). */
+  estimateDownload: (url: string, choice: Choice) => invoke<number | null>("estimate_download", { url, choice }),
   previewSource: (url: string, level: number) => invoke<Preview>("preview_source", { url, level }),
   startDownload: (request: DownloadRequest) => invoke<void>("start_download", { request }),
   cancelDownload: (id: string) => invoke<void>("cancel_download", { id }),

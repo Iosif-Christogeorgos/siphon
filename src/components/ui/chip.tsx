@@ -11,11 +11,12 @@ interface ChipProps {
   /** "solid" for primary choices (presets), "soft" for secondary ones (quality). */
   tone?: "solid" | "soft";
   disabled?: boolean;
+  className?: string;
   children: ReactNode;
 }
 
 /** One option in a single-choice row. The selected highlight glides between chips. */
-export function Chip({ selected, onSelect, group, tone = "solid", disabled, children }: ChipProps) {
+export function Chip({ selected, onSelect, group, tone = "solid", disabled, className, children }: ChipProps) {
   return (
     <button
       type="button"
@@ -31,6 +32,7 @@ export function Chip({ selected, onSelect, group, tone = "solid", disabled, chil
             ? "text-primary-foreground"
             : "text-primary"
           : "text-muted-foreground hover:bg-accent hover:text-foreground",
+        className,
       )}
     >
       {selected && (

@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 import { ipc, toAppError } from "@/lib/ipc";
-import type { AppError, DownloadEvent, DownloadOptions, Progress, Trim } from "@/types";
+import type { AppError, Choice, DownloadEvent, Progress, Trim } from "@/types";
 
 export type DownloadStatus = "queued" | "running" | "paused" | "finished" | "failed";
 
@@ -15,7 +15,7 @@ export interface DownloadSource {
 
 export interface Download extends DownloadSource {
   id: string;
-  options: DownloadOptions;
+  choice: Choice;
   trim: Trim | null;
   status: DownloadStatus;
   progress: Progress;
@@ -31,7 +31,7 @@ interface DownloadsState {
   /** Ids in the order they were added. */
   order: string[];
   /** Adds a download to the queue and returns its id. */
-  start: (source: DownloadSource, options: DownloadOptions, trim: Trim | null) => string;
+  start: (source: DownloadSource, choice: Choice, trim: Trim | null) => string;
   /** Stops a download but keeps what it has fetched. */
   pause: (id: string) => void;
   /** Continues a paused download where it stopped. */
@@ -67,9 +67,9 @@ export const useDownloads = create<DownloadsState>((set, get) => {
    * or failed.
    */
   const submit = (download: Download) => {
-    const { id, url, options, trim } = download;
+    const { id, url, choice, trim } = download;
     ipc
-      .startDownload({ id, url, options, trim })
+      .startDownload({ id, url, choice, trim })
       .catch((error) => patch(id, { status: "failed", error: toAppError(error) }));
   };
 
@@ -77,11 +77,11 @@ export const useDownloads = create<DownloadsState>((set, get) => {
     byId: {},
     order: [],
 
-    start: (source, options, trim) => {
+    start: (source, choice, trim) => {
       const download: Download = {
         ...source,
         id: crypto.randomUUID(),
-        options,
+        choice,
         trim,
         status: "queued",
         progress: WAITING,

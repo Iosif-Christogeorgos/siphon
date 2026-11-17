@@ -5,6 +5,7 @@ import {
   Lock,
   type LucideIcon,
   RefreshCw,
+  Scissors,
   ShieldAlert,
   Unlink,
   VideoOff,
@@ -26,6 +27,7 @@ const PRESENTATION: Record<ErrorKind, { icon: LucideIcon; title: string }> = {
   disk_full: { icon: HardDrive, title: "Not enough disk space" },
   setup: { icon: CircleAlert, title: "Not ready yet" },
   busy: { icon: CircleAlert, title: "Busy right now" },
+  too_long: { icon: Scissors, title: "Too long for this limit" },
   cancelled: { icon: CircleAlert, title: "Cancelled" },
   internal: { icon: CircleAlert, title: "Something went wrong" },
 };
