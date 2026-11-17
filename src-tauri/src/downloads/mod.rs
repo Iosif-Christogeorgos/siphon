@@ -123,8 +123,9 @@ struct Gate {
 }
 
 /// What a paused or failed download left on disk. The next try at the same
-/// download carries on from these files; cancelling it removes them.
-#[derive(Default)]
+/// download carries on from these files, even after Siphon was closed and
+/// opened again (see [`SavedState`]); cancelling it removes them.
+#[derive(Default, Serialize, Deserialize)]
 struct Leftovers {
     /// The files yt-dlp downloaded streams to. Each carries the download's
     /// own marker (see `args::own_marker`), so they, and their `.part`
@@ -162,6 +163,19 @@ pub struct DownloadManager {
     /// The finished names running downloads are writing to, and by which
     /// download, so two downloads of one video never pick the same name.
     claimed: Mutex<HashMap<PathBuf, String>>,
+    /// Where `leftovers` and `finished` are kept between sessions. None in tests.
+    state_file: Option<PathBuf>,
+}
+
+/// What the download list needs from one session to the next: the files of
+/// paused and failed downloads, so they carry on where they stopped, and the
+/// finished files, so they can still be opened from the list.
+#[derive(Default, Serialize, Deserialize)]
+struct SavedState {
+    #[serde(default)]
+    leftovers: HashMap<String, Leftovers>,
+    #[serde(default)]
+    finished: Vec<PathBuf>,
 }
 
 /// Everything one running job needs.
@@ -185,6 +199,68 @@ impl JobContext<'_> {
 }
 
 impl DownloadManager {
+    /// The manager, with what the last session left: paused and failed
+    /// downloads' files (those still on disk), and finished files that still exist.
+    pub fn load(app: &AppHandle) -> Self {
+        match app.path().app_config_dir() {
+            Ok(dir) => Self::from_file(dir.join("downloads.json")),
+            Err(_) => Self::default(),
+        }
+    }
+
+    fn from_file(state_file: PathBuf) -> Self {
+        let saved: SavedState = std::fs::read(&state_file)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default();
+        Self {
+            leftovers: Mutex::new(saved.leftovers),
+            finished: Mutex::new(saved.finished.into_iter().filter(|path| path.exists()).collect()),
+            state_file: Some(state_file),
+            ..Self::default()
+        }
+    }
+
+    /// Writes what the next session needs (see [`SavedState`]). Write-then-rename,
+    /// so a crash can't leave half a file; a failure only costs resuming after a restart.
+    fn save(&self) {
+        let Some(file) = &self.state_file else { return };
+        let bytes = {
+            let leftovers = self.leftovers.lock().unwrap();
+            let finished = self.finished.lock().unwrap();
+            let view = serde_json::json!({ "leftovers": &*leftovers, "finished": &*finished });
+            serde_json::to_vec(&view)
+        };
+        let Ok(bytes) = bytes else { return };
+        let tmp = file.with_extension("json.tmp");
+        if std::fs::write(&tmp, bytes).is_ok() {
+            let _ = std::fs::rename(&tmp, file);
+        }
+    }
+
+    /// Takes what an earlier try at this download left, for this try to carry on from.
+    fn take_leftovers(&self, id: &str) -> Option<Leftovers> {
+        let taken = self.leftovers.lock().unwrap().remove(id);
+        if taken.is_some() {
+            self.save();
+        }
+        taken
+    }
+
+    /// The download ids whose files are kept for a later try.
+    pub fn kept_ids(&self) -> HashSet<String> {
+        self.leftovers.lock().unwrap().keys().cloned().collect()
+    }
+
+    /// Removes the files of paused or failed downloads that the list no longer
+    /// has (it was cleared, or lost): nothing would ever carry on from them.
+    pub async fn forget_all_but(&self, known: &HashSet<String>) {
+        let orphans: Vec<String> = self.kept_ids().into_iter().filter(|id| !known.contains(id)).collect();
+        for id in orphans {
+            self.discard_leftovers(&id).await;
+        }
+    }
+
     /// Queues a download. It starts when a slot is free; progress arrives as events.
     pub fn start(self: &Arc<Self>, app: AppHandle, request: DownloadRequest) -> Result<()> {
         let url = ytdlp::validate_url(&request.url)?.to_string();
@@ -234,6 +310,7 @@ impl DownloadManager {
                 (Some(Stop::Pause), _) => DownloadEvent::Paused { id },
                 (None, Ok(path)) => {
                     manager.finished.lock().unwrap().insert(path.clone());
+                    manager.save();
                     DownloadEvent::Finished {
                         size: std::fs::metadata(&path).ok().map(|meta| meta.len()),
                         path: path.to_string_lossy().into_owned(),
@@ -336,12 +413,14 @@ impl DownloadManager {
     async fn discard_leftovers(&self, id: &str) {
         let leftovers = self.leftovers.lock().unwrap().remove(id);
         if let Some(leftovers) = leftovers {
+            self.save();
             leftovers.remove().await;
         }
     }
 
     fn keep_leftovers(&self, id: &str, leftovers: Leftovers) {
         self.leftovers.lock().unwrap().insert(id.to_string(), leftovers);
+        self.save();
     }
 
     /// Stops a download but keeps what it has fetched, so it can be resumed.
@@ -349,16 +428,15 @@ impl DownloadManager {
         self.stop(id, Stop::Pause).await;
     }
 
-    /// Stops every download and removes what they left on disk. For when the
-    /// app closes: no yt-dlp or ffmpeg process may outlive it, and since the
-    /// list is not kept between sessions and a new download starts afresh,
-    /// nothing would ever pick the partial files up again.
+    /// Pauses every download, for when the app closes: no yt-dlp or ffmpeg
+    /// process may outlive it, but what they fetched is kept, and the next
+    /// session carries on from it (see [`SavedState`]).
     pub async fn shut_down(&self) {
         let ids: Vec<String> = self.jobs.lock().unwrap().keys().cloned().collect();
         for id in ids {
-            self.stop(&id, Stop::Cancel).await;
+            self.stop(&id, Stop::Pause).await;
         }
-        // Each job removes its own files once its process has ended.
+        // Each job records its own files once its process has ended.
         let deadline = Instant::now() + SHUTDOWN_GRACE;
         while !self.is_idle() && Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -368,11 +446,7 @@ impl DownloadManager {
         for job in self.jobs.lock().unwrap().values_mut() {
             job.flow = None;
         }
-        // What is left belongs to downloads that were paused or had failed.
-        let leftovers: Vec<Leftovers> = self.leftovers.lock().unwrap().drain().map(|(_, left)| left).collect();
-        for left in leftovers {
-            left.remove().await;
-        }
+        self.save();
     }
 
     /// Returns false if there is no such job.
@@ -1026,7 +1100,7 @@ impl DownloadManager {
         tracker: &mut Tracker,
     ) -> Result<PathBuf> {
         // What an earlier try at this download left: it was paused, or it failed.
-        let previous = self.leftovers.lock().unwrap().remove(job.id);
+        let previous = self.take_leftovers(job.id);
         let continues = previous.is_some();
         // (Its work folder is the one this try uses again; it is removed with the download.)
         let Leftovers {
@@ -1370,12 +1444,16 @@ fn work_root(app: &AppHandle) -> Result<PathBuf> {
 
 /// Removes work folders a crash left behind. Run at launch; folders from the
 /// last day are kept, because they may belong to another copy of Siphon
-/// (the dev and installed builds share this folder).
-pub fn sweep_work(app: &AppHandle) {
+/// (the dev and installed builds share this folder), and so are those of
+/// paused or failed downloads (`kept`), which a later try carries on from.
+pub fn sweep_work(app: &AppHandle, kept: &HashSet<String>) {
     let Ok(Ok(entries)) = work_root(app).map(std::fs::read_dir) else {
         return;
     };
     for entry in entries.flatten() {
+        if entry.file_name().to_str().is_some_and(|name| kept.contains(name)) {
+            continue;
+        }
         let stale = entry
             .metadata()
             .and_then(|meta| meta.modified())
@@ -1527,6 +1605,48 @@ mod naming_tests {
         assert!(!manager.claim(&file("Other.mp4"), "b"));
         assert!(manager.claim(&file("Other.mp4"), "a"));
         assert_eq!(manager.unique_output(file("Other.mp4"), "b"), file("Other (2).mp4"));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod saved_state_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn paused_downloads_and_finished_files_outlive_a_restart() {
+        let dir = std::env::temp_dir().join(format!("siphon-state-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let state = dir.join("downloads.json");
+        let finished = dir.join("Clip.mp4");
+        let partial = dir.join("Other.siphon-abc.mp4");
+        std::fs::write(&finished, b"done").unwrap();
+        std::fs::write(&partial, b"half").unwrap();
+
+        let session = DownloadManager::from_file(state.clone());
+        session.keep_leftovers(
+            "paused",
+            Leftovers {
+                stream_files: vec![partial.clone()],
+                ..Leftovers::default()
+            },
+        );
+        session.finished.lock().unwrap().insert(finished.clone());
+        session.save();
+
+        // The next session carries on from the paused download's files, and can open the finished one.
+        let next = DownloadManager::from_file(state.clone());
+        assert!(next.kept_ids().contains("paused"));
+        assert!(next.produced(&finished));
+
+        // A download the list no longer has loses its files; a finished file that was deleted is forgotten.
+        next.forget_all_but(&HashSet::new()).await;
+        assert!(!partial.exists());
+        std::fs::remove_file(&finished).unwrap();
+        let after = DownloadManager::from_file(state);
+        assert!(after.kept_ids().is_empty());
+        assert!(!after.produced(&finished));
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

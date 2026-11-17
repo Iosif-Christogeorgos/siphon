@@ -90,8 +90,8 @@ Added 2026-11-17. The code is in `src-tauri/src/throttle`.
 - **Custom file names can't contain folders or `..`** and must contain at least one yt-dlp field. The folder is its own setting, and a name without fields would make every download overwrite the last.
 - **Errors say whether they may pass** (`Retry` on `AppError`, which the frontend never sees). A dropped or refused connection, HTTP 403 and 5xx errors get two more tries, after 2 and 10 seconds; HTTP 429 gets one, after 30 (`run` in `src-tauri/src/downloads/mod.rs`). A bot check is not retried, because asking again straight away makes a site more suspicious. Its message says the check usually passes on its own within hours and that Nightly sometimes gets through sooner; it used to say an update usually fixes it, which wasn't true when YouTube had flagged the connection itself and the newest yt-dlp got the same check (2026-11-17). An "outdated" error still updates yt-dlp first and tries again with it; if yt-dlp is already current, or the update has to wait for other downloads, it falls back to the pauses above. The wait shows as its own stage ("Trying again in a moment") and ends at once if the download is stopped.
 - **The cost of those retries:** being offline takes about 15 s to report instead of 5, and a connection lost in the middle of a download takes about 80 s to give up.
-- **The download list is not saved between sessions.** A finished file may have been moved or deleted since, and a half-finished one is simply started again.
-- **Closing the app removes partial files** (`DownloadManager::shut_down`). Every download is stopped, which also ends its yt-dlp or ffmpeg process, and what it left is deleted, along with the files of paused and failed downloads. Nothing would ever pick them up again: the list is gone, and a new download starts afresh.
+- **The download list is kept between sessions** (2026-11-18). The frontend keeps the list in the webview's storage (`siphon.downloads`, the newest 200 finished ones), and the backend keeps what paused and failed downloads left on disk, and which files were finished, in `downloads.json` next to `settings.json` (`SavedState` in `downloads/mod.rs`). Downloads that were running or waiting when Siphon closed come back paused; **Resume** (or **Resume all**) carries on from their files under the same id. Once the list is restored, `forget_other_downloads` removes the files of downloads it no longer has. Launch-time cleanup of work folders skips those of kept downloads.
+- **Closing the app pauses every download** (`DownloadManager::shut_down`, 2026-11-18; it used to cancel them and delete their files). Each one's yt-dlp or ffmpeg process ends, its files are recorded, and the next session carries on from them. A job that hasn't ended within three seconds still loses its proxy listener.
 
 ### Managed binaries
 
@@ -111,7 +111,7 @@ Added 2026-11-17. The code is in `src-tauri/src/throttle`.
 - **The download list is ordered as a queue:** running, then waiting in start order, then paused, failed and finished (newest first).
 - **The slide-over panels sit inside the error boundary**, so a panel that fails to render shows an error card instead of blanking the window. This came from a real crash: a Zustand selector that returned a new array on every call.
 - **`scrollIntoView()` returns a promise**, so it must not be the return value of a `useEffect` (React would call it as a cleanup).
-- **`open_file` and `reveal_file` only accept files downloaded this session**, so the webview can't use them to launch arbitrary paths.
+- **`open_file` and `reveal_file` only accept files Siphon downloaded** (this session or one it remembers in `downloads.json`, if the file still exists), so the webview can't use them to launch arbitrary paths.
 
 ### Distribution
 

@@ -37,7 +37,7 @@ pub async fn app_update_install(app: AppHandle, downloads: State<'_, Arc<Downloa
     if !downloads.is_idle() {
         return Err(AppError::new(
             ErrorKind::Busy,
-            "Siphon has to restart to update. Let your downloads finish, or pause them, and try again.",
+            "Siphon has to restart to update. Let your downloads finish, or pause them (they carry on after the restart), and try again.",
         ));
     }
     let Some(update) = newer_release(&app).await? else {

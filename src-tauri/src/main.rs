@@ -46,10 +46,12 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             preview::clear_cache(app.handle());
-            downloads::sweep_work(app.handle());
+            // Paused and failed downloads from the last session carry on from their files.
+            let downloads = downloads::DownloadManager::load(app.handle());
+            downloads::sweep_work(app.handle(), &downloads.kept_ids());
             let binaries = binaries::BinaryManager::new(app.handle())?;
             app.manage(Arc::new(binaries));
-            app.manage(Arc::new(downloads::DownloadManager::default()));
+            app.manage(Arc::new(downloads));
             let settings = settings::SettingsStore::load(app.handle())?;
             // Every download goes through the speed limit, set or not.
             let throttle = throttle::Throttle::new(settings.get().speed_limit);
@@ -76,6 +78,7 @@ fn main() {
             commands::start_download,
             commands::cancel_download,
             commands::pause_download,
+            commands::forget_other_downloads,
             commands::get_settings,
             commands::set_settings,
             commands::open_file,
@@ -87,7 +90,7 @@ fn main() {
         .expect("failed to start Siphon")
         .run(|app, event| {
             // Closing the app must not leave yt-dlp or ffmpeg running behind
-            // it, nor half-finished files that nothing will pick up again.
+            // it. Running downloads are paused, and carry on next time.
             if let tauri::RunEvent::Exit = event {
                 let downloads = Arc::clone(&app.state::<Arc<downloads::DownloadManager>>());
                 tauri::async_runtime::block_on(downloads.shut_down());

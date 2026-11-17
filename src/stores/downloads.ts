@@ -42,10 +42,60 @@ interface DownloadsState {
   remove: (id: string) => void;
   /** Takes every finished download off the list (the files stay). */
   clearFinished: () => void;
+  /** Resumes every paused download. */
+  resumeAll: () => void;
   apply: (event: DownloadEvent) => void;
 }
 
 const WAITING: Progress = { stage: "queued", fraction: 0, speed: null, eta: null };
+
+/** Where the list is kept between sessions (the backend keeps the files; see `forget_other_downloads`). */
+const STORAGE_KEY = "siphon.downloads";
+/** The most finished downloads kept in the list; older ones drop off. */
+const MAX_FINISHED = 200;
+
+interface SavedList {
+  byId: Record<string, Download>;
+  order: string[];
+}
+
+/**
+ * The list from the last session. Downloads that were running or waiting
+ * when Siphon closed were paused by it (their files are kept), so they come
+ * back paused, ready to resume.
+ */
+function restore(): SavedList {
+  try {
+    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "null") as SavedList | null;
+    if (!saved || !Array.isArray(saved.order) || typeof saved.byId !== "object") return { byId: {}, order: [] };
+    const order = saved.order.filter((id) => saved.byId[id]?.id === id);
+    const byId: Record<string, Download> = {};
+    for (const id of order) {
+      const download = saved.byId[id] as Download;
+      byId[id] = isActive(download)
+        ? { ...download, status: "paused", progress: { ...download.progress, speed: null, eta: null } }
+        : download;
+    }
+    return { byId, order };
+  } catch {
+    return { byId: {}, order: [] };
+  }
+}
+
+/** Writes the list, keeping only the newest finished downloads. */
+function persist({ byId, order }: SavedList) {
+  const finished = order.filter((id) => byId[id]?.status === "finished");
+  const dropped = new Set(finished.slice(0, Math.max(0, finished.length - MAX_FINISHED)));
+  const kept = order.filter((id) => !dropped.has(id));
+  try {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ order: kept, byId: Object.fromEntries(kept.map((id) => [id, byId[id]])) }),
+    );
+  } catch {
+    // Storage full or unavailable: the list just won't outlive this session.
+  }
+}
 
 export const isActive = (download: Download) => download.status === "queued" || download.status === "running";
 
@@ -74,8 +124,7 @@ export const useDownloads = create<DownloadsState>((set, get) => {
   };
 
   return {
-    byId: {},
-    order: [],
+    ...restore(),
 
     start: (source, choice, trim) => {
       const download: Download = {
@@ -125,6 +174,10 @@ export const useDownloads = create<DownloadsState>((set, get) => {
 
     clearFinished: () => drop(get().order.filter((id) => get().byId[id]?.status === "finished")),
 
+    resumeAll: () => {
+      for (const id of get().order) get().resume(id);
+    },
+
     apply: (event) => {
       switch (event.type) {
         case "progress": {
@@ -159,6 +212,18 @@ export const useDownloads = create<DownloadsState>((set, get) => {
     },
   };
 });
+
+// Saved a moment after each change (progress changes often), and at once when asked.
+let saveTimer: number | undefined;
+export function saveDownloadsNow() {
+  window.clearTimeout(saveTimer);
+  persist(useDownloads.getState());
+}
+useDownloads.subscribe(() => {
+  window.clearTimeout(saveTimer);
+  saveTimer = window.setTimeout(saveDownloadsNow, 1000);
+});
+window.addEventListener("pagehide", saveDownloadsNow);
 
 /** Several downloads started together (one per trimmed part), seen as one. */
 export interface DownloadGroup extends Download {

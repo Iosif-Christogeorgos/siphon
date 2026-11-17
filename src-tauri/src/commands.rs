@@ -183,6 +183,14 @@ pub async fn pause_download(downloads: Downloads<'_>, id: String) -> Result<()> 
 }
 
 /// The settings, plus the facts the settings screen needs to show them.
+/// Called once the frontend has restored its download list: the files of
+/// paused or failed downloads it no longer lists are removed.
+#[tauri::command]
+pub async fn forget_other_downloads(downloads: Downloads<'_>, ids: Vec<String>) -> Result<()> {
+    downloads.forget_all_but(&ids.into_iter().collect()).await;
+    Ok(())
+}
+
 #[derive(Serialize)]
 pub struct SettingsView {
     #[serde(flatten)]

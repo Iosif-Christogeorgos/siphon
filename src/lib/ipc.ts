@@ -37,6 +37,7 @@ export const ipc = {
   startDownload: (request: DownloadRequest) => invoke<void>("start_download", { request }),
   cancelDownload: (id: string) => invoke<void>("cancel_download", { id }),
   pauseDownload: (id: string) => invoke<void>("pause_download", { id }),
+  forgetOtherDownloads: (ids: string[]) => invoke<void>("forget_other_downloads", { ids }),
   getSettings: () => invoke<SettingsView>("get_settings"),
   setSettings: (settings: Settings) => invoke<SettingsView>("set_settings", { settings }),
   openFile: (path: string) => invoke<void>("open_file", { path }),

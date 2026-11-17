@@ -27,6 +27,7 @@ export function QueueSheet() {
   const order = useDownloads((state) => state.order);
   const byId = useDownloads((state) => state.byId);
   const clearFinished = useDownloads((state) => state.clearFinished);
+  const resumeAll = useDownloads((state) => state.resumeAll);
 
   const downloads = order
     .map((id, index) => ({ download: byId[id], index }))
@@ -39,6 +40,7 @@ export function QueueSheet() {
     })
     .map((entry) => entry.download);
   const hasFinished = downloads.some((download) => download.status === "finished");
+  const paused = downloads.filter((download) => download.status === "paused").length;
 
   return (
     <Sheet open={open} onOpenChange={(next) => !next && closePanel()} title="Downloads">
@@ -66,11 +68,18 @@ export function QueueSheet() {
               ))}
             </AnimatePresence>
           </ul>
-          {hasFinished && (
-            <div className="mt-3 flex justify-end">
-              <Button variant="ghost" size="sm" onClick={clearFinished}>
-                Clear finished
-              </Button>
+          {(hasFinished || paused > 1) && (
+            <div className="mt-3 flex justify-end gap-1">
+              {paused > 1 && (
+                <Button variant="ghost" size="sm" onClick={resumeAll}>
+                  <Play /> Resume all
+                </Button>
+              )}
+              {hasFinished && (
+                <Button variant="ghost" size="sm" onClick={clearFinished}>
+                  Clear finished
+                </Button>
+              )}
             </div>
           )}
         </>
