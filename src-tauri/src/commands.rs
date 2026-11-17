@@ -20,6 +20,7 @@ use crate::plan::{self, Choice, Trim};
 use crate::preview::{self, Preview};
 use crate::settings::{Settings, SettingsStore};
 use crate::state::{CapabilityCache, MediaCache};
+use crate::throttle::Throttle;
 use crate::ytdlp::metadata::{self, Media};
 
 type Binaries<'a> = State<'a, Arc<BinaryManager>>;
@@ -210,11 +211,14 @@ pub fn set_settings(
     app: AppHandle,
     store: State<'_, SettingsStore>,
     downloads: Downloads<'_>,
+    throttle: State<'_, Arc<Throttle>>,
     settings: Settings,
 ) -> Result<SettingsView> {
     let saved = store.set(settings)?;
-    // The number of simultaneous downloads may have changed.
+    // The number of simultaneous downloads may have changed …
     downloads.refresh_queue();
+    // … and the speed limit, which running downloads follow at once.
+    throttle.set_limit(saved.speed_limit);
     Ok(settings_view(&app, saved))
 }
 

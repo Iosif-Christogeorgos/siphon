@@ -131,6 +131,10 @@ const RULES: &[(&[&str], ErrorKind, Retry, &str)] = &[
     ),
     (
         &[
+            // Siphon's own proxy (see `throttle`) reports a site it couldn't reach this way.
+            "couldn't reach the site",
+            "tunnel connection failed",
+            "unable to connect to proxy",
             "getaddrinfo failed",
             "name or service not known",
             "name resolution",

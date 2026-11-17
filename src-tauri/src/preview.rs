@@ -18,6 +18,7 @@ use crate::binaries::BinaryManager;
 use crate::error::{AppError, ErrorKind, Result};
 use crate::plan::codecs::VideoCodec;
 use crate::process;
+use crate::throttle::Throttle;
 use crate::ytdlp::metadata::{Format, FormatKind, VideoInfo};
 use crate::ytdlp::{self, errors};
 
@@ -162,9 +163,11 @@ async fn download_proxy(app: &AppHandle, bins: &BinaryManager, video: &VideoInfo
             "mp4",
         ])
         .arg("--paths")
-        .arg(&dir)
-        .args(["--output", &format!("{name}.%(ext)s"), "--"])
-        .arg(&video.url);
+        .arg(&dir);
+    // A download like any other, so it keeps to the speed limit too.
+    let flow = app.state::<std::sync::Arc<Throttle>>().flow().await?;
+    flow.route(&mut cmd);
+    cmd.args(["--output", &format!("{name}.%(ext)s"), "--"]).arg(&video.url);
 
     let _in_use = bins.in_use().await;
     let output = process::output_within(cmd, PROXY_TIMEOUT).await?.ok_or_else(|| {
