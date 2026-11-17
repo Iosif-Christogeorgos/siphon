@@ -570,11 +570,7 @@ fn share_encodes_to_a_budget_that_fits_and_drops_resolution_before_quality() {
 
 #[test]
 fn share_budgets_for_the_trimmed_length() {
-    let trim = Some(Trim {
-        start: 60.0,
-        end: 90.0,
-        exact: true,
-    });
+    let trim = Some(Trim { start: 60.0, end: 90.0 });
     let recipe = share(&youtube_4k(), TargetId::Whatsapp, TierId::WhatsappHd, trim);
     assert_eq!(recipe.duration, Some(30.0));
     // 30 seconds into 100 MB would allow far more, but WhatsApp HD shows 720p.
@@ -655,35 +651,12 @@ fn bits_per_pixel_pick_a_smaller_cleaner_picture() {
 // ── Trims and Custom ────────────────────────────────────────────────────
 
 #[test]
-fn an_exact_cut_re_encodes_in_the_same_codec_and_counts_from_the_start() {
-    let trim = Some(Trim {
-        start: 10.0,
-        end: 20.0,
-        exact: true,
-    });
+fn a_cut_re_encodes_in_the_same_codec_and_counts_from_the_start() {
+    let trim = Some(Trim { start: 10.0, end: 20.0 });
     let recipe = plan(&x_4k(), &Choice::Preset(preset(TargetId::Apple)), trim, &nvidia()).unwrap();
     assert_eq!(encoded_to(&recipe), Some(VideoCodec::H264));
     let yt_dlp = args::recipe_args(&recipe);
     assert!(yt_dlp.iter().any(|arg| arg.contains("-copyts -start_at_zero")));
-}
-
-#[test]
-fn a_fast_cut_copies_and_scales_the_size_estimate() {
-    let trim = Some(Trim {
-        start: 0.0,
-        end: 60.0,
-        exact: false,
-    });
-    let whole = plan_for(&x_4k(), TargetId::Windows).estimated_size().unwrap();
-    let part = plan(
-        &x_4k(),
-        &Choice::Preset(preset(TargetId::Windows)),
-        trim,
-        &Capabilities::BASIC,
-    )
-    .unwrap();
-    assert!(copied(&part));
-    assert_eq!(part.estimated_size().unwrap(), whole / 10);
 }
 
 #[test]
@@ -707,11 +680,7 @@ fn custom_defaults_copy_everything_and_containers_force_codecs() {
 
 #[test]
 fn empty_cuts_and_unknown_streams_are_rejected() {
-    let empty = Some(Trim {
-        start: 5.0,
-        end: 5.0,
-        exact: false,
-    });
+    let empty = Some(Trim { start: 5.0, end: 5.0 });
     assert!(plan(
         &youtube_4k(),
         &Choice::Preset(preset(TargetId::Max)),
@@ -856,11 +825,7 @@ fn prores_estimates_follow_frames_not_the_source() {
 
 #[test]
 fn trimmed_parts_give_up_on_a_stalled_connection() {
-    let trim = Some(Trim {
-        start: 10.0,
-        end: 20.0,
-        exact: false,
-    });
+    let trim = Some(Trim { start: 10.0, end: 20.0 });
     let recipe = plan(
         &x_4k(),
         &Choice::Preset(preset(TargetId::Windows)),

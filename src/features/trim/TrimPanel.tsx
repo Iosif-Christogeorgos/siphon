@@ -2,13 +2,11 @@ import { ChevronLeft, ChevronRight, Pause, Play, Plus, Trash2, X, ZoomIn, ZoomOu
 import { AnimatePresence, motion, useMotionValue, useTransform } from "motion/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Chip } from "@/components/ui/chip";
 import { Hint } from "@/components/ui/tooltip";
 import { bestVideoFormat } from "@/lib/formats";
 import { spring } from "@/lib/motion";
 import { formatLength, formatTimecode } from "@/lib/time";
 import { cn } from "@/lib/utils";
-import { useChoices } from "@/stores/choices";
 import { useTrim } from "@/stores/trim";
 import type { VideoInfo } from "@/types";
 import type { PlayerHandle } from "./player";
@@ -32,8 +30,6 @@ export function TrimPanel({ video, duration, disabled }: { video: VideoInfo; dur
   const addSegment = useTrim((state) => state.addSegment);
   const removeSegment = useTrim((state) => state.removeSegment);
   const close = useTrim((state) => state.close);
-  const exactCut = useChoices((state) => state.choices?.exact_cut ?? true);
-  const setExactCut = useChoices((state) => state.setExactCut);
 
   const panel = useRef<HTMLDivElement>(null);
   const player = useRef<PlayerHandle>(null);
@@ -250,27 +246,9 @@ export function TrimPanel({ video, duration, disabled }: { video: VideoInfo; dur
         </AnimatePresence>
       </ul>
 
-      <div className="flex items-center justify-between gap-3 px-0.5">
-        <Button variant="ghost" size="sm" disabled={disabled} onClick={() => addSegment(time.get(), duration)}>
-          <Plus /> Add another part
-        </Button>
-        <div role="radiogroup" aria-label="Cut" className="flex items-center gap-0.5">
-          <Hint label="Cuts on the exact frames. The clip is re-encoded once, at high quality.">
-            <span>
-              <Chip group="cut" tone="soft" selected={exactCut} onSelect={() => setExactCut(true)} disabled={disabled}>
-                Exact cut
-              </Chip>
-            </span>
-          </Hint>
-          <Hint label="Keeps the original untouched and is quicker, but may start a few seconds early.">
-            <span>
-              <Chip group="cut" tone="soft" selected={!exactCut} onSelect={() => setExactCut(false)} disabled={disabled}>
-                Fast cut
-              </Chip>
-            </span>
-          </Hint>
-        </div>
-      </div>
+      <Button variant="ghost" size="sm" disabled={disabled} onClick={() => addSegment(time.get(), duration)}>
+        <Plus /> Add another part
+      </Button>
     </div>
   );
 }

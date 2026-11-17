@@ -516,7 +516,7 @@ impl DownloadManager {
         } else {
             match (recipe.fallback.as_deref(), recipe.size_limit) {
                 // Share: an original that was expected to fit but came out over
-                // the limit (a fast cut runs a little long) is converted after all.
+                // the limit is converted after all.
                 (Some(fallback), Some(limit)) if file_size(&downloaded) > limit => {
                     let source = work.join(downloaded.file_name().unwrap_or_default());
                     tokio::fs::create_dir_all(&work).await?;

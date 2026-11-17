@@ -60,15 +60,12 @@ pub struct PresetChoice {
     pub smooth_editing: bool,
 }
 
-/// The part of the video to keep, in seconds from its start.
+/// The part of the video to keep, in seconds from its start. Cuts are
+/// always on the exact frames.
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
 pub struct Trim {
     pub start: f64,
     pub end: f64,
-    /// Cut on the exact frames, which means re-encoding the video. Otherwise
-    /// the original stream is kept and the cut lands on the nearest key frame
-    /// before `start` (up to a few seconds early).
-    pub exact: bool,
 }
 
 impl Trim {
@@ -326,10 +323,11 @@ impl Recipe {
         self.video.is_some() && (self.encodes_video() || self.encodes_audio() || self.strip_audio)
     }
 
-    /// The range to cut frame-exactly in the ffmpeg pass, if any. (Audio-only
-    /// downloads are cut by yt-dlp: audio has no key frames to worry about.)
-    pub fn exact_cut(&self) -> Option<Trim> {
-        self.trim.filter(|trim| trim.exact && self.video.is_some())
+    /// The range to cut on the exact frames in the ffmpeg pass, if any.
+    /// (Audio-only downloads are cut by yt-dlp: audio has no key frames to
+    /// worry about.)
+    pub fn cut(&self) -> Option<Trim> {
+        self.trim.filter(|_| self.video.is_some())
     }
 
     /// yt-dlp `--format` value: explicit stream ids, so it downloads exactly
@@ -666,8 +664,8 @@ pub fn plan(video: &VideoInfo, choice: &Choice, trim: Option<Trim>, caps: &Capab
         Choice::Custom(manual) => planner.custom(manual)?,
         Choice::Preset(preset) => planner.preset(preset),
     };
-    if recipe.exact_cut().is_some() && recipe.reason.is_none() {
-        recipe.reason = Some("an exact cut has to rebuild the frames at its edges".into());
+    if recipe.cut().is_some() && recipe.reason.is_none() {
+        recipe.reason = Some("a cut on the exact frames has to rebuild the frames at its edges".into());
     }
     if recipe.trim.is_some() && caps.chunked_requests {
         recipe.section_request_size = request_size(&recipe, video);
@@ -810,10 +808,10 @@ impl<'a> Planner<'a> {
         }
     }
 
-    /// True when the video will be cut on exact frames, so it is re-encoded
+    /// True when a part of the video is cut out, so it is re-encoded
     /// whatever else is decided.
     fn cuts(&self) -> bool {
-        self.trim.is_some_and(|trim| trim.exact)
+        self.trim.is_some()
     }
 
     /// A constant-quality encode to `codec` on the best encoder this machine has.
@@ -821,7 +819,7 @@ impl<'a> Planner<'a> {
         VideoEncode::quality(codec, self.caps.hardware(codec))
     }
 
-    /// The codec an exact cut is encoded with when the stream would otherwise
+    /// The codec a cut is encoded with when the stream would otherwise
     /// have been copied: the same one where it can be, else H.264 or HEVC.
     fn cut_codec(source: VideoCodec, lines: u32) -> VideoCodec {
         match source {

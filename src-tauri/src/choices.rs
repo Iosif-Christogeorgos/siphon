@@ -50,8 +50,6 @@ pub struct Choices {
     pub tiers: HashMap<TargetId, TierId>,
     pub music_format: MusicFormat,
     pub smooth_editing: bool,
-    /// Trim: cut on exact frames (re-encodes) or fast (key frames).
-    pub exact_cut: bool,
     pub custom: ManualOptions,
     pub saved: Vec<SavedPreset>,
 }
@@ -67,7 +65,6 @@ impl Default for Choices {
             tiers: HashMap::new(),
             music_format: MusicFormat::default(),
             smooth_editing: false,
-            exact_cut: true,
             custom: ManualOptions::default(),
             saved: Vec::new(),
         }
@@ -166,9 +163,6 @@ pub fn from_legacy(old: &Value) -> Choices {
     let mut choices = Choices::default();
     let text = |key: &str| old.get(key).and_then(Value::as_str);
 
-    if let Some(exact) = old.get("exactCut").and_then(Value::as_bool) {
-        choices.exact_cut = exact;
-    }
     if let Some(manual) = old.get("manual") {
         choices.custom = ManualOptions {
             content: field(manual, "content").unwrap_or(Content::VideoAudio),
@@ -235,7 +229,6 @@ mod tests {
         let choices = from_legacy(&json!({"mode": "preset", "preset": "iphone", "exactCut": false}));
         assert_eq!(choices.group, Group::Watch);
         assert_eq!(choices.targets.get(&Group::Watch), Some(&TargetId::Apple));
-        assert!(!choices.exact_cut);
         assert_eq!(choices.active, Active::Preset);
         assert_eq!(
             from_legacy(&json!({"preset": "macos"})).targets.get(&Group::Watch),
@@ -308,6 +301,20 @@ mod tests {
     fn choices_files_from_older_versions_fill_in_new_fields() {
         let choices: Choices = serde_json::from_str(r#"{"group": "share"}"#).unwrap();
         assert_eq!(choices.group, Group::Share);
-        assert!(choices.exact_cut);
+    }
+
+    #[test]
+    fn a_saved_cut_mode_is_dropped() {
+        // Up to 0.8, trims could be "fast" (from the nearest key frame).
+        // Every cut is exact now: the old choice is read past and not kept.
+        for old in [
+            r#"{"group": "max", "exact_cut": false}"#,
+            r#"{"group": "max", "exact_cut": true}"#,
+        ] {
+            let choices: Choices = serde_json::from_str(old).unwrap();
+            assert_eq!(choices.group, Group::Max);
+            let saved = serde_json::to_string(&choices).unwrap();
+            assert!(!saved.contains("exact_cut"), "{saved}");
+        }
     }
 }

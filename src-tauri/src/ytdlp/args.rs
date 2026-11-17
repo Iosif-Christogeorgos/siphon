@@ -91,8 +91,8 @@ pub fn recipe_args(recipe: &Recipe) -> Vec<String> {
             format!("-rw_timeout {}", SECTION_READ_TIMEOUT.as_micros()),
             "-loglevel error".into(),
         ];
-        if recipe.exact_cut().is_some() {
-            // Keep the original timestamps so the exact cut can find its
+        if recipe.cut().is_some() {
+            // Keep the original timestamps so the cut can find its
             // frames, counted from the start of the video. Not every stream
             // starts at zero: Twitch's start about a minute in, and without
             // -start_at_zero the cut missed every video frame of the part.

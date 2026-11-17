@@ -208,12 +208,10 @@ export type Choice =
     }
   | ({ mode: "custom" } & ManualOptions);
 
-/** The part of the video to keep, in seconds. */
+/** The part of the video to keep, in seconds. Always cut on the exact frames. */
 export interface Trim {
   start: number;
   end: number;
-  /** Cut on the exact frames (re-encodes) instead of the nearest key frame. */
-  exact: boolean;
 }
 
 export interface Hint {
@@ -275,7 +273,6 @@ export interface Choices {
   tiers: Record<TargetId, TierId>;
   music_format: MusicFormat;
   smooth_editing: boolean;
-  exact_cut: boolean;
   custom: ManualOptions;
   saved: SavedPreset[];
 }

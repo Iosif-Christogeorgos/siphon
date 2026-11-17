@@ -51,7 +51,7 @@ pub fn convert_args(recipe: &Recipe, input: &Path, output: &Path, pass: Pass) ->
 
     push(&["-hide_banner", "-nostdin", "-y", "-loglevel", "error"]);
     // ── Input options ──
-    let cut = recipe.exact_cut();
+    let cut = recipe.cut();
     if cut.is_some() {
         // The section was downloaded with its original timestamps (see
         // `ytdlp::args`), starting at a key frame somewhere before the cut.

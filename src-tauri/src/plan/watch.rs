@@ -110,7 +110,7 @@ impl Planner<'_> {
         let natives = natives(target.id, self.caps);
         let pool = self.pool(MAX_LINES, MAX_FPS);
         let cut = self.cuts();
-        // An exact cut re-encodes anyway: a stream counts as native only if it
+        // A cut re-encodes anyway: a stream counts as native only if it
         // can be re-encoded in its own codec (H.264, HEVC).
         let native_of = |video: &Video| {
             natives
