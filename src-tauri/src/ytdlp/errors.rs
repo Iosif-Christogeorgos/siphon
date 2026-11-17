@@ -23,7 +23,10 @@ const RULES: &[(&[&str], ErrorKind, Retry, &str)] = &[
         &["not a bot", "confirm you’re not", "confirm you're not"],
         ErrorKind::Outdated,
         Retry::No,
-        "The site asked for a bot check. Updating the download engine usually fixes this.",
+        // Not "updating fixes this": the check is usually about the connection,
+        // and the newest yt-dlp gets it too. (A download still tries a newer
+        // yt-dlp first, in case there is one.)
+        "The site wants to check you're not a bot. This usually happens after a lot of downloading in a short time, and passes on its own within a few hours. Switching yt-dlp to Nightly in Settings sometimes gets through sooner.",
     ),
     (
         // The formats were looked up a while ago and the site has since
@@ -204,6 +207,9 @@ mod tests {
     fn bot_check_counts_as_outdated() {
         let err = classify("ERROR: [youtube] abc: Sign in to confirm you’re not a bot.");
         assert_eq!(err.kind, ErrorKind::Outdated);
+        // It says what helps, and doesn't promise that an update does.
+        assert!(err.message.contains("passes on its own"));
+        assert!(!err.message.to_lowercase().contains("updating"));
     }
 
     #[test]
