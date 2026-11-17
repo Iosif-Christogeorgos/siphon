@@ -905,3 +905,19 @@ fn a_download_works_under_its_own_marker_and_drops_it_at_the_end() {
     assert_eq!(args::finished_stem("My .siphon-day out"), "My .siphon-day out");
     assert_eq!(args::finished_stem("Clip"), "Clip");
 }
+
+#[test]
+fn audio_files_get_tags_and_cover_art_and_videos_are_left_alone() {
+    let has = |recipe: &Recipe, flag: &str| args::recipe_args(recipe).iter().any(|arg| arg == flag);
+    let mp3 = plan_for(&youtube_4k(), TargetId::Music);
+    assert!(has(&mp3, "--embed-metadata") && has(&mp3, "--embed-thumbnail"));
+    let original = plan_for(&youtube_4k(), TargetId::Original);
+    assert!(has(&original, "--embed-metadata") && has(&original, "--embed-thumbnail"));
+    // WAV takes tags but no cover: yt-dlp would fail the download.
+    let mut wav = mp3.clone();
+    wav.container = Container::Wav;
+    assert!(has(&wav, "--embed-metadata") && !has(&wav, "--embed-thumbnail"));
+    // A video is not rewritten once more just for tags.
+    let video = plan_for(&youtube_4k(), TargetId::Windows);
+    assert!(!has(&video, "--embed-metadata") && !has(&video, "--embed-thumbnail"));
+}

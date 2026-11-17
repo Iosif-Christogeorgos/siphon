@@ -45,6 +45,7 @@ Every editor needs a constant frame rate and 48 kHz audio, and web video promise
 ## Audio
 
 - **Music:** MP3 (the default, because everything plays it) or M4A. **Best** copies a track that is already in the chosen codec (YouTube's AAC track for M4A) and otherwise converts at a bitrate close to the source's. A chosen bitrate above the source's is allowed, with a note that it only makes the file larger.
+- **Tags and cover art (all audio):** title, artist and date are written into the file, and the video's thumbnail becomes its cover (`--embed-metadata --embed-thumbnail`), so music players show more than a file name. WAV gets the tags but no cover; yt-dlp can't embed one there. Video files get neither: writing tags is one more pass over the whole file, which costs nothing for a song but a full copy of a long video.
 - **Best audio (original):** the best track exactly as provided, in its natural container (Opus, M4A, …).
 
 Siphon never presents a conversion as an improvement: no "lossless" FLAC from a lossy source.

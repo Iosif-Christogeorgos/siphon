@@ -183,8 +183,23 @@ pub fn recipe_args(recipe: &Recipe) -> Vec<String> {
             }
             AudioAction::Copy => {}
         }
+        push(audio_tag_args(recipe.container));
     }
     args
+}
+
+/// Title, artist, date and the video's thumbnail as cover art, so a music
+/// player shows more than a file name. Audio only: writing tags means one
+/// more pass over the whole file, which is nothing for a song but a full
+/// copy of a long video. WAV gets no cover, because yt-dlp can't embed one
+/// there and fails the download if asked.
+fn audio_tag_args(container: Container) -> &'static [&'static str] {
+    match container {
+        Container::Mp3 | Container::M4a | Container::Opus | Container::Ogg | Container::Flac => {
+            &["--embed-metadata", "--embed-thumbnail"]
+        }
+        _ => &["--embed-metadata"],
+    }
 }
 
 /// yt-dlp's `--audio-format` name for a codec.
