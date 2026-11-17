@@ -76,12 +76,14 @@ pub async fn source(app: &AppHandle, bins: &BinaryManager, video: &VideoInfo, le
     ))
 }
 
-/// A direct stream the webview can play: one plain file with picture and,
-/// ideally, sound, as close to 360p as the site offers.
+/// A direct stream the webview can play, with picture and, ideally, sound,
+/// as close to 360p as the site offers. A plain file is preferred, but an HLS
+/// stream will do: WebView2 and Safari play those natively. That matters for
+/// sites like Twitch, which offer nothing else, and whose videos can be hours
+/// long, far too much to download as a preview copy.
 fn stream_url(video: &VideoInfo) -> Option<String> {
     let playable = |format: &&Format| {
         format.stream_url.is_some()
-            && !format.segmented
             && format.kind != FormatKind::Audio
             && matches!(
                 VideoCodec::of(format),
@@ -98,9 +100,11 @@ fn stream_url(video: &VideoInfo) -> Option<String> {
                 (_, Some(h)) => h,
                 _ => 0,
             };
-            // Sound first, then not larger than needed, then closest to the target.
+            // Sound first, then a plain file, then not larger than needed,
+            // then closest to the target.
             (
                 format.kind == FormatKind::Muxed,
+                !format.segmented,
                 lines <= PREVIEW_LINES * 4 / 3,
                 std::cmp::Reverse(lines.abs_diff(PREVIEW_LINES)),
             )
