@@ -59,6 +59,7 @@ Measured on 2026-11-17 with the 4K test video below, on a connection that downlo
 ### Interface
 
 - **The accent colour is aqua/teal.**
+- **Settings are grouped lists.** Each setting is one row in a card: its name, with a small control (a switch or stepper) on the same line, and a plain explanation underneath at full width. Wide controls (the folder, the file-name picker) go below the explanation. Squeezing the explanation into a column beside the control made it wrap into four or five ragged lines.
 - **The download list is ordered as a queue:** running, then waiting in start order, then paused, failed and finished (newest first).
 - **The slide-over panels sit inside the error boundary**, so a panel that fails to render shows an error card instead of blanking the window. This came from a real crash: a Zustand selector that returned a new array on every call.
 - **`scrollIntoView()` returns a promise**, so it must not be the return value of a `useEffect` (React would call it as a cleanup).
