@@ -102,7 +102,8 @@ export function VideoPane({ video }: { video: VideoInfo }) {
         )}
       </AnimatePresence>
 
-      <div className="space-y-2 pt-1">
+      {/* Extra room below: the choices end here and the summary of the result begins. */}
+      <div className="space-y-2 pt-1 pb-2">
         <PresetArea summary={plan.data} disabled={running} />
         <AnimatePresence initial={false}>
           {customizing && (

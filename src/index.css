@@ -29,7 +29,8 @@
   --secondary-foreground: var(--foreground);
   --muted: light-dark(oklch(0.955 0.005 210), oklch(0.235 0.009 232));
   --muted-foreground: light-dark(oklch(0.5 0.014 222), oklch(0.7 0.012 222));
-  --subtle-foreground: light-dark(oklch(0.61 0.012 220), oklch(0.52 0.012 225));
+  /* The faintest text that still reaches about 4.5:1 on the background and on cards. */
+  --subtle-foreground: light-dark(oklch(0.56 0.012 220), oklch(0.6 0.012 225));
   --accent: light-dark(oklch(0.2 0.02 225 / 0.055), oklch(1 0 0 / 0.06));
   --accent-foreground: var(--foreground);
   --destructive: light-dark(oklch(0.58 0.19 25), oklch(0.72 0.17 22));

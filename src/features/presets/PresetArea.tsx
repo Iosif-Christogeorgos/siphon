@@ -41,7 +41,8 @@ export function PresetArea({
   if (!group || !target) return null;
 
   return (
-    <fieldset disabled={disabled} className="m-0 min-w-0 space-y-2 border-0 p-0">
+    // No margin class here: it would cancel the parent's `space-y`, and Tailwind's base styles already zero it.
+    <fieldset disabled={disabled} className="min-w-0 space-y-2 border-0 p-0">
       <Segmented
         label="What it’s for"
         group="preset-group"
@@ -181,9 +182,17 @@ function QualityRow({
   // Worth marking only when some choices convert and others don't.
   const mixed = options.some((option) => option.converts) && options.some((option) => !option.converts);
   const set = (value: number | null) => useChoices.getState().setQuality(value, bitrate);
+  // With sizes under the choices, Best grows to the same height so the row stays even.
+  const twoLines = options.some((option) => option.estimated_size !== null);
   return (
     <Row label="Quality">
-      <Chip group="quality" tone="soft" selected={selected === null} onSelect={() => set(null)}>
+      <Chip
+        group="quality"
+        tone="soft"
+        selected={selected === null}
+        onSelect={() => set(null)}
+        className={twoLines ? "h-auto self-stretch rounded-xl" : undefined}
+      >
         Best
       </Chip>
       {options.map(({ value, converts, estimated_size, size_range }) => (
@@ -242,7 +251,7 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="flex items-center gap-2">
       <span className="w-[4.5rem] shrink-0 text-xs text-subtle-foreground">{label}</span>
-      <div role="radiogroup" aria-label={label} onKeyDown={onRadioKeys} className="flex flex-wrap gap-0.5">
+      <div role="radiogroup" aria-label={label} onKeyDown={onRadioKeys} className="flex flex-wrap gap-1">
         {children}
       </div>
     </div>

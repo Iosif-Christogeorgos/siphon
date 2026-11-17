@@ -49,7 +49,8 @@ export function Home() {
 
   return (
     <motion.div
-      className="scrollbar-thin h-full overflow-y-auto"
+      // A stable gutter: the column doesn't shift sideways when the scrollbar appears.
+      className="scrollbar-thin h-full overflow-y-auto [scrollbar-gutter:stable_both-edges]"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
@@ -90,10 +91,10 @@ export function Home() {
             {clipboard.offer && (
               <motion.div
                 key={clipboard.offer}
-                className="overflow-hidden"
-                initial={{ height: 0, opacity: 0 }}
-                animate={{ height: "auto", opacity: 1 }}
-                exit={{ height: 0, opacity: 0 }}
+                // Clipped only while the height animates; once open, the pill's shadow shows in full.
+                initial={{ height: 0, opacity: 0, overflow: "hidden" }}
+                animate={{ height: "auto", opacity: 1, transitionEnd: { overflow: "visible" } }}
+                exit={{ height: 0, opacity: 0, overflow: "hidden" }}
                 transition={gentleSpring}
               >
                 <ClipboardOffer

@@ -45,7 +45,7 @@ export function QueueSheet() {
       {downloads.length === 0 ? (
         <div className="flex flex-col items-center gap-2 pt-24 text-center text-muted-foreground">
           <Inbox className="size-6 text-subtle-foreground" strokeWidth={1.5} />
-          <p className="text-[13px]">Nothing here yet. Downloads you start show up in this list.</p>
+          <p className="max-w-64 text-[13px] text-balance">Nothing here yet. Downloads you start show up in this list.</p>
         </div>
       ) : (
         <>
