@@ -230,6 +230,11 @@ impl BinaryManager {
         self.ffmpeg_dir().join(exe("ffmpeg"))
     }
 
+    /// ffprobe, which the smart cut reads streams with.
+    pub fn ffprobe(&self) -> PathBuf {
+        self.ffmpeg_dir().join(exe("ffprobe"))
+    }
+
     // ── Status ──────────────────────────────────────────────────────────
 
     pub fn statuses(&self) -> Vec<ToolStatus> {

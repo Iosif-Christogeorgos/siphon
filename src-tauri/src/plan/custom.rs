@@ -83,7 +83,7 @@ impl Planner<'_> {
         recipe.strip_audio = !want_audio && video.has_audio();
 
         let cut = self.cuts();
-        let kept = if cut {
+        let kept = if cut && !Self::smart_cuttable(video.codec) {
             Self::cut_codec(video.codec, video.lines)
         } else {
             video.codec
@@ -129,13 +129,9 @@ impl Planner<'_> {
         }
 
         let video_action = if video_target == video.codec {
-            if cut {
-                VideoAction::Encode(self.encode(video_target))
-            } else {
-                VideoAction::Copy
-            }
+            VideoAction::Copy
         } else if options.video_codec.is_none() && cut {
-            // Not the user's choice: the cut needs an encode and this codec has no fast encoder.
+            // Not the user's choice: this codec can only be cut by converting it.
             VideoAction::Encode(self.encode(video_target))
         } else {
             recipe.hints.push(warning(format!(

@@ -8,6 +8,7 @@ mod commands;
 mod downloads;
 mod error;
 mod ffmpeg;
+mod log;
 mod plan;
 mod preview;
 mod process;

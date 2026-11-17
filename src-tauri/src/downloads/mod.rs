@@ -8,6 +8,7 @@
 mod tracker;
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
@@ -21,8 +22,11 @@ use tokio::sync::Notify;
 
 use crate::binaries::{BinaryManager, Tool};
 use crate::error::{AppError, ErrorKind, Result, Retry};
+use crate::ffmpeg::smart_cut::{self, AudioPiece, Fallback};
 use crate::ffmpeg::{self, encoders::Hardware, Pass};
-use crate::plan::{self, Choice, Recipe, Trim};
+use crate::log;
+use crate::plan::codecs::VideoCodec;
+use crate::plan::{self, AudioAction, Choice, Recipe, Trim};
 use crate::process;
 use crate::settings::{Settings, SettingsStore};
 use crate::state::{CapabilityCache, MediaCache};
@@ -566,6 +570,45 @@ impl DownloadManager {
     ) -> Result<()> {
         let partial = partial_path(output);
         let mut recipe = recipe.clone();
+        let name = output.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        // A copied stream that is cut: re-encode only the frames at the cuts.
+        // Anything the smart cut isn't sure of is re-encoded in full instead.
+        if recipe.smart_cut() {
+            let started = Instant::now();
+            match self.smart_cut(job, &recipe, source, &partial, work, tracker).await? {
+                Ok(note) => {
+                    log::line(
+                        job.app,
+                        &format!(
+                            "cut {name}: smart cut, {note}, {:.1} s",
+                            started.elapsed().as_secs_f64()
+                        ),
+                    );
+                    match (recipe.size_limit, recipe.fallback.as_deref()) {
+                        // Share: a cut original that came out over the limit is converted after all.
+                        (Some(limit), Some(fallback)) if file_size(&partial) > limit => {
+                            let _ = tokio::fs::remove_file(&partial).await;
+                            recipe = fallback.clone();
+                        }
+                        _ => {
+                            tokio::fs::rename(&partial, output).await?;
+                            return Ok(());
+                        }
+                    }
+                }
+                Err(fallback) => {
+                    log::line(
+                        job.app,
+                        &format!("cut {name}: re-encoding the whole part, because {fallback}"),
+                    );
+                    let _ = tokio::fs::remove_file(&partial).await;
+                    recipe = recipe.with_full_cut();
+                }
+            }
+        } else if recipe.cut().is_some() {
+            let why = recipe.reason.as_deref().unwrap_or("the video is converted anyway");
+            log::line(job.app, &format!("cut {name}: during the conversion, because {why}"));
+        }
         let mut shrinks = 0;
         loop {
             let mut result = self.convert(job, &recipe, source, &partial, work, tracker).await;
@@ -606,6 +649,281 @@ impl DownloadManager {
         }
         tokio::fs::rename(&partial, output).await?;
         Ok(())
+    }
+
+    /// Cuts a copied stream on the exact frames, re-encoding only the frames
+    /// at the cuts (see `ffmpeg::smart_cut`), and checks the result. The
+    /// inner error says why it couldn't be used; the outer one is for a
+    /// stopped download.
+    async fn smart_cut(
+        &self,
+        job: &JobContext<'_>,
+        recipe: &Recipe,
+        source: &Path,
+        output: &Path,
+        work: &Path,
+        tracker: &mut Tracker,
+    ) -> Result<std::result::Result<String, Fallback>> {
+        let pieces = work.join("cut");
+        let _ = tokio::fs::remove_dir_all(&pieces).await;
+        tokio::fs::create_dir_all(&pieces).await?;
+        let result = self.smart_cut_in(job, recipe, source, output, &pieces, tracker).await;
+        // The pieces are as large as the part itself: don't keep them.
+        let _ = tokio::fs::remove_dir_all(&pieces).await;
+        result
+    }
+
+    async fn smart_cut_in(
+        &self,
+        job: &JobContext<'_>,
+        recipe: &Recipe,
+        source: &Path,
+        output: &Path,
+        pieces: &Path,
+        tracker: &mut Tracker,
+    ) -> Result<std::result::Result<String, Fallback>> {
+        macro_rules! step {
+            ($result:expr) => {
+                match $result {
+                    Ok(value) => value,
+                    Err(fallback) => return Ok(Err(fallback)),
+                }
+            };
+        }
+        let (Some(trim), Some(encode), Some(video)) = (recipe.cut(), recipe.cut_encode.as_ref(), recipe.video.as_ref())
+        else {
+            return Ok(Err(Fallback::Failed("not a smart cut".into())));
+        };
+        let ffmpeg = job.bins.ffmpeg();
+        let ffprobe = job.bins.ffprobe();
+        const STEPS: f64 = 9.0;
+        let mut done = 0.0;
+        // How long each step took, for the log.
+        let mut laps: Vec<f64> = Vec::new();
+        let mut lap = Instant::now();
+        let mut progress = |tracker: &mut Tracker| {
+            done += 1.0;
+            laps.push(lap.elapsed().as_secs_f64());
+            lap = Instant::now();
+            job.emit(tracker.on_convert(done / STEPS));
+        };
+        job.emit(tracker.on_convert(0.0));
+
+        // Read the source and decide the pieces.
+        let source_video = step!(self.packets(job, source, "v:0", pieces).await?);
+        let params = smart_cut::parse_params(
+            &step!(self.tool(job, &ffprobe, smart_cut::params_args(source), None).await?).join("\n"),
+        );
+        let plan = step!(smart_cut::plan(&source_video, trim));
+        let encoder = step!(smart_cut::matching_args(&params, encode.hardware));
+        progress(tracker);
+
+        let audio = match (&recipe.audio, recipe.strip_audio) {
+            (Some(step), false) => Some(match &step.action {
+                AudioAction::Copy => AudioPiece::Copy,
+                AudioAction::Encode {
+                    codec,
+                    bitrate_kbps,
+                    sample_rate,
+                    stereo,
+                } => AudioPiece::Encode(ffmpeg::audio_encode_args(*codec, *bitrate_kbps, *sample_rate, *stereo)),
+            }),
+            _ => None,
+        };
+
+        // The re-encoded start, the copied middle, the re-encoded end, the audio.
+        let mut names: Vec<&str> = Vec::new();
+        if plan.has_head() {
+            let args = smart_cut::edge_args(
+                source,
+                plan.before(plan.first()),
+                plan.before(plan.copy_from),
+                &encoder,
+                plan.delay,
+                &pieces.join("head.ts"),
+            );
+            step!(self.tool(job, &ffmpeg, args, None).await?);
+            names.push("head.ts");
+        }
+        progress(tracker);
+        let args = smart_cut::copy_args(
+            source,
+            plan.before(plan.copy_from),
+            Some(plan.before(plan.copy_until)),
+            &pieces.join("middle.ts"),
+        );
+        step!(self.tool(job, &ffmpeg, args, None).await?);
+        names.push("middle.ts");
+        progress(tracker);
+        // The end is re-encoded from a copy of just its packets: decoding the
+        // source from the start to reach them would take as long as the part.
+        let rest = pieces.join("rest.ts");
+        let args = smart_cut::copy_args(source, plan.before(plan.copy_until), None, &rest);
+        step!(self.tool(job, &ffmpeg, args, None).await?);
+        let args = smart_cut::edge_args(
+            &rest,
+            plan.before(plan.copy_until),
+            plan.before(plan.end()),
+            &encoder,
+            plan.delay,
+            &pieces.join("tail.ts"),
+        );
+        step!(self.tool(job, &ffmpeg, args, None).await?);
+        names.push("tail.ts");
+        progress(tracker);
+        if let Some(piece) = &audio {
+            let args = smart_cut::audio_args(source, plan.first(), plan.end(), piece, &pieces.join("audio.mka"));
+            step!(self.tool(job, &ffmpeg, args, None).await?);
+        }
+        progress(tracker);
+
+        // Join them, on the video's own timestamps, starting at zero.
+        let codec = if params.codec == "hevc" {
+            VideoCodec::Hevc
+        } else {
+            video.source
+        };
+        // Audio packets are at most a hundred a second (AAC at 48 kHz is 47).
+        let audio_packets = audio
+            .as_ref()
+            .map_or(0, |_| ((plan.end() - plan.first()) * 100.0).ceil() as usize);
+        let mut joined = Err(Fallback::NoFrames);
+        // Room for the index at the front first; if it turns out too small,
+        // write it at the end and move it.
+        for index in [
+            smart_cut::Index::room_for(plan.frames.len(), audio_packets),
+            smart_cut::Index::Rewrite,
+        ] {
+            let args = smart_cut::join_args(
+                &names,
+                audio.as_ref().map(|_| "audio.mka"),
+                plan.first(),
+                codec,
+                recipe.container,
+                index,
+                output,
+            );
+            joined = self.tool(job, &ffmpeg, args, Some(pieces)).await?;
+            if joined.is_ok() {
+                break;
+            }
+        }
+        step!(joined);
+        progress(tracker);
+
+        // Check the result: every frame at its time, the audio in sync, and
+        // the joins decoding cleanly, the first copied frames exactly as in the source.
+        let clip_video = step!(self.packets(job, output, "v:0", pieces).await?);
+        step!(smart_cut::check_video(&plan, &clip_video));
+        if let Some(piece) = &audio {
+            let clip_audio = step!(self.packets(job, output, "a:0", pieces).await?);
+            let source_audio = match piece {
+                AudioPiece::Copy => Some(step!(self.packets(job, source, "a:0", pieces).await?)),
+                AudioPiece::Encode(_) => None,
+            };
+            step!(smart_cut::check_audio(&plan, source_audio.as_deref(), &clip_audio));
+        }
+        progress(tracker);
+        let stats = "head.psnr";
+        step!(
+            self.tool(
+                job,
+                &ffmpeg,
+                smart_cut::head_check_args(output, source, &plan, stats),
+                Some(pieces)
+            )
+            .await?
+        );
+        let compared = tokio::fs::read_to_string(pieces.join(stats)).await.unwrap_or_default();
+        step!(smart_cut::check_head(&plan, &compared));
+        progress(tracker);
+        step!(
+            self.tool(job, &ffmpeg, smart_cut::tail_check_args(output, &plan), None)
+                .await?
+        );
+        progress(tracker);
+
+        let copied = plan.frames.len()
+            - plan.head_frames()
+            - plan
+                .frames
+                .iter()
+                .filter(|pts| **pts >= plan.before(plan.copy_until))
+                .count();
+        let steps = [
+            "read",
+            "start",
+            "middle",
+            "end",
+            "audio",
+            "join",
+            "frames",
+            "first join",
+            "last join",
+        ];
+        let laps = steps
+            .iter()
+            .zip(&laps)
+            .map(|(step, seconds)| format!("{step} {seconds:.1}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        Ok(Ok(format!(
+            "{} frames, {} copied, {} re-encoded, checked (seconds: {laps})",
+            plan.frames.len(),
+            copied,
+            plan.frames.len() - copied
+        )))
+    }
+
+    /// A stream's packets, in decode order, as ffprobe lists them.
+    async fn packets(
+        &self,
+        job: &JobContext<'_>,
+        file: &Path,
+        stream: &str,
+        pieces: &Path,
+    ) -> Result<std::result::Result<Vec<smart_cut::Packet>, Fallback>> {
+        let list = pieces.join("packets.csv");
+        let args = smart_cut::packets_args(file, stream, &list);
+        if let Err(fallback) = self.tool(job, &job.bins.ffprobe(), args, None).await? {
+            return Ok(Err(fallback));
+        }
+        let text = tokio::fs::read_to_string(&list).await.unwrap_or_default();
+        let _ = tokio::fs::remove_file(&list).await;
+        Ok(Ok(text.lines().filter_map(smart_cut::parse_packet).collect()))
+    }
+
+    /// Runs ffmpeg or ffprobe for a job and returns what it printed. A failure
+    /// is a reason to fall back; a stopped job is an error.
+    async fn tool(
+        &self,
+        job: &JobContext<'_>,
+        program: &Path,
+        args: Vec<OsString>,
+        dir: Option<&Path>,
+    ) -> Result<std::result::Result<Vec<String>, Fallback>> {
+        let mut cmd = process::command(program);
+        cmd.args(args);
+        if let Some(dir) = dir {
+            cmd.current_dir(dir);
+        }
+        let mut lines = Vec::new();
+        let result = self
+            .run_child(job.bins, job.id, cmd, |event| {
+                if let ChildEvent::Line(line) = event {
+                    lines.push(line.trim_end().to_string());
+                }
+                Flow::Continue
+            })
+            .await;
+        Ok(match result {
+            Ok(_) => Ok(lines),
+            Err(Failure::Stopped(_) | Failure::Abandoned) => return Err(AppError::cancelled()),
+            Err(Failure::Exited(log)) => Err(Fallback::Failed(
+                log.lines().last().unwrap_or("no message").trim().to_string(),
+            )),
+            Err(Failure::Spawn(error)) => Err(Fallback::Failed(error.message)),
+        })
     }
 
     /// The video's metadata: from this session's cache, or looked up now
@@ -1157,6 +1475,7 @@ mod tests {
             blocked: None,
             section_request_size: None,
             fallback: None,
+            cut_encode: None,
         }
     }
 

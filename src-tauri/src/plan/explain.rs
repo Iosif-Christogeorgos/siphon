@@ -181,15 +181,22 @@ fn detail(recipe: &Recipe) -> String {
         };
     };
 
+    // A smart cut re-encodes the few frames at its cuts and nothing else.
+    let cut = if recipe.smart_cut() {
+        " Cut on the exact frames: only the frames at the cuts are re-encoded."
+    } else {
+        ""
+    };
     match &video.action {
         VideoAction::Copy if recipe.encodes_audio() => {
             let audio = recipe.audio.as_ref().expect("encodes_audio implies audio");
             let target = recipe.audio_codec().map(AudioCodec::label).unwrap_or("AAC");
             format!(
-                "{promise}. The video is untouched; only the audio is converted from {} to {target}{reason}.",
+                "{promise}. The video is untouched; only the audio is converted from {} to {target}{reason}.{cut}",
                 audio.source.label()
             )
         }
+        VideoAction::Copy if recipe.smart_cut() => format!("{promise}. Original streams.{cut}"),
         VideoAction::Copy => format!("{promise}. Original streams, no re-encoding."),
         VideoAction::Encode(encode) => {
             let how = match encode.codec {
@@ -221,6 +228,12 @@ fn encoder_phrase(hardware: Hardware) -> &'static str {
 /// A rough idea of how long the conversion takes, in seconds. Speeds are
 /// typical multiples of real time at 1080p30, scaled by pixels per second.
 fn convert_seconds(recipe: &Recipe) -> Option<f64> {
+    if recipe.smart_cut() {
+        // A few seconds for the frames at the cuts and the checks, then
+        // copying the part about twice over, at disk speed.
+        let bytes = recipe.estimated_source_bytes().unwrap_or(0) as f64;
+        return Some(3.0 + bytes / 250_000_000.0);
+    }
     let duration = recipe.duration?;
     let Some(encode) = recipe.video_encode() else {
         // Audio on its own converts at about sixty times real time.

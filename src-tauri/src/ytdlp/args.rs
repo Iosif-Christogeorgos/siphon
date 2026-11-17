@@ -7,6 +7,11 @@ use crate::plan::{AudioAction, Recipe};
 /// as stalled. Generous: YouTube pauses between requests now and then.
 pub const SECTION_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
+/// How far past the end of a cut part the video is fetched. The last frames
+/// before the end may be decoded from frames after it (B-frames), and the
+/// cut needs them whole.
+const CUT_MARGIN: f64 = 1.0;
+
 /// Output name while a conversion is still to come: `Title [id].source.mkv`.
 /// The marker keeps the intermediate apart from the finished file.
 pub const SOURCE_MARKER: &str = ".source";
@@ -79,7 +84,12 @@ pub fn recipe_args(recipe: &Recipe) -> Vec<String> {
         // at CRF 32 and Opus at 96 kbit/s), on the CPU, with no progress.
         // Exact cuts are made afterwards in `crate::ffmpeg` instead: one
         // hardware-accelerated encode of the video, audio left untouched.
-        push(&["--download-sections", &format!("*{}-{}", trim.start, trim.end)]);
+        let end = if recipe.cut().is_some() {
+            trim.end + CUT_MARGIN
+        } else {
+            trim.end
+        };
+        push(&["--download-sections", &format!("*{}-{end}", trim.start)]);
 
         // yt-dlp hands a section to ffmpeg; this is what ffmpeg is told about its inputs.
         // Left alone, ffmpeg waits forever on a connection that stops sending,

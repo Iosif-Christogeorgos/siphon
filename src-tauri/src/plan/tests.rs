@@ -651,12 +651,66 @@ fn bits_per_pixel_pick_a_smaller_cleaner_picture() {
 // ── Trims and Custom ────────────────────────────────────────────────────
 
 #[test]
-fn a_cut_re_encodes_in_the_same_codec_and_counts_from_the_start() {
+fn a_cut_copied_stream_is_smart_cut_in_its_own_codec() {
+    let trim = Some(Trim { start: 0.0, end: 60.0 });
+    let whole = plan_for(&x_4k(), TargetId::Windows).estimated_size().unwrap();
+    let part = plan(&x_4k(), &Choice::Preset(preset(TargetId::Windows)), trim, &nvidia()).unwrap();
+    // The stream is copied; only the frames at the cuts are re-encoded, in H.264 on the GPU.
+    assert!(copied(&part));
+    assert!(part.smart_cut() && part.needs_ffmpeg_pass());
+    let edges = part.cut_encode.as_ref().unwrap();
+    assert_eq!((edges.codec, edges.hardware), (VideoCodec::H264, Hardware::Nvenc));
+    assert_eq!(part.badge, Badge::Lossless);
+    assert_eq!(part.estimated_size().unwrap(), whole / 10);
+    // Its fallback re-encodes the whole part, the same way.
+    let full = part.with_full_cut();
+    assert_eq!(encoded_to(&full), Some(VideoCodec::H264));
+    assert!(!full.smart_cut());
+    // The summary says so, and that it takes seconds.
+    let summary = explain::summarize(&x_4k(), &Choice::Preset(preset(TargetId::Windows)), trim, &nvidia()).unwrap();
+    assert!(
+        summary.detail.contains("only the frames at the cuts are re-encoded"),
+        "{}",
+        summary.detail
+    );
+    assert!(summary.convert_seconds.is_some_and(|seconds| seconds < 30.0));
+    // Without a trim nothing changes.
+    assert!(!plan_for(&x_4k(), TargetId::Windows).smart_cut());
+}
+
+#[test]
+fn cuts_that_cant_be_smart_are_converted() {
+    let trim = Some(Trim { start: 10.0, end: 20.0 });
+    // YouTube's 4K is VP9 or AV1: Max quality converts it when cut.
+    let max = plan(&youtube_4k(), &Choice::Preset(preset(TargetId::Max)), trim, &nvidia()).unwrap();
+    assert!(max.encodes_video() && !max.smart_cut());
+    assert!(max
+        .reason
+        .as_deref()
+        .unwrap()
+        .contains("can only be cut on the exact frames by converting it"));
+    // Uncut, it is copied.
+    assert!(copied(&plan_for(&youtube_4k(), TargetId::Max)));
+}
+
+#[test]
+fn share_copies_a_cut_original_that_fits() {
+    let trim = Some(Trim { start: 0.0, end: 10.0 });
+    let recipe = share(&x_4k(), TargetId::Discord, TierId::DiscordNitro, trim);
+    assert!(copied(&recipe) && recipe.smart_cut());
+    // Converted after all if it comes out over the limit.
+    assert!(recipe.fallback.is_some());
+}
+
+#[test]
+fn a_cut_for_apple_is_re_encoded_in_full_and_counts_from_the_start() {
     let trim = Some(Trim { start: 10.0, end: 20.0 });
     let recipe = plan(&x_4k(), &Choice::Preset(preset(TargetId::Apple)), trim, &nvidia()).unwrap();
     assert_eq!(encoded_to(&recipe), Some(VideoCodec::H264));
     let yt_dlp = args::recipe_args(&recipe);
     assert!(yt_dlp.iter().any(|arg| arg.contains("-copyts -start_at_zero")));
+    // A second past the end, for the frames the last ones are decoded from.
+    assert!(yt_dlp.windows(2).any(|pair| pair == ["--download-sections", "*10-21"]));
 }
 
 #[test]

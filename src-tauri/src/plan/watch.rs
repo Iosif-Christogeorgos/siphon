@@ -110,13 +110,12 @@ impl Planner<'_> {
         let natives = natives(target.id, self.caps);
         let pool = self.pool(MAX_LINES, MAX_FPS);
         let cut = self.cuts();
-        // A cut re-encodes anyway: a stream counts as native only if it
-        // can be re-encoded in its own codec (H.264, HEVC).
+        // A cut stream counts as native only if it can be cut as it is (H.264, HEVC).
         let native_of = |video: &Video| {
             natives
                 .iter()
                 .position(|native| native.video == video.codec)
-                .filter(|_| !cut || matches!(video.codec, VideoCodec::H264 | VideoCodec::Hevc))
+                .filter(|_| !cut || Self::smart_cuttable(video.codec))
         };
 
         let candidates = Self::at_resolution(&pool, quality.unwrap_or(best_lines(target.id)));
@@ -147,7 +146,14 @@ impl Planner<'_> {
                     let source = recipe.audio.as_ref().map_or("this", |audio| audio.source.label());
                     recipe.reason = Some(format!("{} can’t play {source} audio in this file type", target.name));
                 }
-                let action = if cut {
+                // Apple's players are strict about streams whose encoder
+                // settings change partway, as a smart cut's do at its joins,
+                // and that couldn't be tested on a device: cut clips for them
+                // are re-encoded in full.
+                let action = if cut && target.id == TargetId::Apple {
+                    recipe.reason.get_or_insert_with(|| {
+                        "clips for Apple devices are re-encoded in full, to be sure they play".into()
+                    });
                     VideoAction::Encode(self.encode(video.codec))
                 } else {
                     VideoAction::Copy

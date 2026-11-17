@@ -180,6 +180,10 @@ pub struct Recipe {
     pub section_request_size: Option<u64>,
     /// Share: how to convert a copied file that turns out larger than the limit.
     pub fallback: Option<Box<Recipe>>,
+    /// A copied H.264 or HEVC stream that is cut: how the frames at the cuts
+    /// are re-encoded, and how the whole part is should the smart cut not
+    /// pass its checks (see `ffmpeg::smart_cut`).
+    pub cut_encode: Option<VideoEncode>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -320,7 +324,31 @@ impl Recipe {
     /// True when Siphon runs its own ffmpeg pass after the download.
     /// (Audio-only conversions are left to yt-dlp's extractor instead.)
     pub fn needs_ffmpeg_pass(&self) -> bool {
-        self.video.is_some() && (self.encodes_video() || self.encodes_audio() || self.strip_audio)
+        self.video.is_some() && (self.encodes_video() || self.encodes_audio() || self.strip_audio || self.smart_cut())
+    }
+
+    /// True when the video is copied and cut on the exact frames by
+    /// re-encoding only the frames at the cuts.
+    pub fn smart_cut(&self) -> bool {
+        self.cut().is_some()
+            && self.cut_encode.is_some()
+            && matches!(
+                self.video,
+                Some(VideoStep {
+                    action: VideoAction::Copy,
+                    ..
+                })
+            )
+    }
+
+    /// The same recipe, cutting by re-encoding the whole part: what a smart
+    /// cut falls back to.
+    pub fn with_full_cut(&self) -> Recipe {
+        let mut recipe = self.clone();
+        if let (Some(video), Some(encode)) = (recipe.video.as_mut(), recipe.cut_encode.take()) {
+            video.action = VideoAction::Encode(encode);
+        }
+        recipe
     }
 
     /// The range to cut on the exact frames in the ffmpeg pass, if any.
@@ -664,8 +692,13 @@ pub fn plan(video: &VideoInfo, choice: &Choice, trim: Option<Trim>, caps: &Capab
         Choice::Custom(manual) => planner.custom(manual)?,
         Choice::Preset(preset) => planner.preset(preset),
     };
-    if recipe.cut().is_some() && recipe.reason.is_none() {
-        recipe.reason = Some("a cut on the exact frames has to rebuild the frames at its edges".into());
+    // A copied stream that is cut keeps its codec: only the frames at the
+    // cuts are re-encoded (the planner only copies codecs that can be).
+    if recipe.cut().is_some() {
+        if let Some(video) = recipe.video.as_ref().filter(|video| video.action == VideoAction::Copy) {
+            debug_assert!(Planner::smart_cuttable(video.source));
+            recipe.cut_encode = Some(planner.encode(video.source));
+        }
     }
     if recipe.trim.is_some() && caps.chunked_requests {
         recipe.section_request_size = request_size(&recipe, video);
@@ -808,10 +841,16 @@ impl<'a> Planner<'a> {
         }
     }
 
-    /// True when a part of the video is cut out, so it is re-encoded
-    /// whatever else is decided.
+    /// True when a part of the video is cut out.
     fn cuts(&self) -> bool {
         self.trim.is_some()
+    }
+
+    /// Whether a copied stream of this codec can be cut on the exact frames
+    /// by re-encoding only the frames at the cuts. Other codecs are
+    /// converted when cut.
+    fn smart_cuttable(codec: VideoCodec) -> bool {
+        matches!(codec, VideoCodec::H264 | VideoCodec::Hevc)
     }
 
     /// A constant-quality encode to `codec` on the best encoder this machine has.
@@ -819,8 +858,7 @@ impl<'a> Planner<'a> {
         VideoEncode::quality(codec, self.caps.hardware(codec))
     }
 
-    /// The codec a cut is encoded with when the stream would otherwise
-    /// have been copied: the same one where it can be, else H.264 or HEVC.
+    /// The codec a cut stream is converted to when it can't be cut as it is.
     fn cut_codec(source: VideoCodec, lines: u32) -> VideoCodec {
         match source {
             VideoCodec::H264 | VideoCodec::Hevc => source,
@@ -847,6 +885,7 @@ impl<'a> Planner<'a> {
             blocked: None,
             section_request_size: None,
             fallback: None,
+            cut_encode: None,
         }
     }
 
@@ -985,8 +1024,12 @@ impl<'a> Planner<'a> {
         let mut recipe = self.recipe(Container::Mkv, "The best streams the site offers");
         // Every audio codec is accepted: nothing gets converted here.
         recipe.audio = self.audio_for(&video, ALL_AUDIO, AudioCodec::Aac);
-        let (codec, action) = if self.cuts() {
+        let (codec, action) = if self.cuts() && !Self::smart_cuttable(video.codec) {
             let codec = Self::cut_codec(video.codec, video.lines);
+            recipe.reason = Some(format!(
+                "{} can only be cut on the exact frames by converting it",
+                video.codec.label()
+            ));
             (codec, VideoAction::Encode(self.encode(codec)))
         } else {
             (video.codec, VideoAction::Copy)

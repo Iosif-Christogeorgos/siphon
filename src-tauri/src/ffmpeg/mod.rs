@@ -5,6 +5,7 @@
 //! progress readout.
 
 pub mod encoders;
+pub mod smart_cut;
 
 use std::ffi::OsString;
 use std::path::Path;
@@ -243,7 +244,7 @@ fn video_encode_args(video: &VideoStep, encode: &VideoEncode, cut: Option<Trim>,
     args
 }
 
-fn audio_encode_args(
+pub(crate) fn audio_encode_args(
     codec: AudioCodec,
     bitrate_kbps: Option<u32>,
     sample_rate: Option<u32>,

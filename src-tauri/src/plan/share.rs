@@ -158,7 +158,7 @@ impl Planner<'_> {
         let copyable = pool
             .iter()
             .copied()
-            .filter(|video| video.codec == VideoCodec::H264 && !self.cuts())
+            .filter(|video| video.codec == VideoCodec::H264)
             .filter(|video| rung.is_none_or(|rung| video.lines >= rung.lines))
             .filter(fits);
         let copied = max_by_key(copyable, |video| (video.lines, video.fps as u32, video.bitrate_rank()));
