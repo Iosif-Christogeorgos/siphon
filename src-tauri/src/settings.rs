@@ -238,6 +238,19 @@ mod tests {
     }
 
     #[test]
+    fn limits_from_old_presets_are_kept_as_they_were() {
+        // The one-click limits were 2, 5, 10 and 25 MB/s before 20, 30, 40 and 50.
+        // A limit is stored as bytes per second, so one saved from an old preset
+        // reads back unchanged (the interface shows it as a custom limit).
+        for mb in [2, 5, 10, 25] {
+            let bytes = mb * 1024 * 1024;
+            let file = format!(r#"{{"max_concurrent": 3, "speed_limit": {bytes}}}"#);
+            let settings: Settings = serde_json::from_str(&file).unwrap();
+            assert_eq!(settings.sanitized().unwrap().speed_limit, Some(bytes), "{mb} MB/s");
+        }
+    }
+
+    #[test]
     fn speed_limit_is_saved_and_survives_a_restart() {
         let dir = std::env::temp_dir().join(format!("siphon-settings-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
