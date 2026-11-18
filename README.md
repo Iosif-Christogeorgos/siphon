@@ -6,7 +6,7 @@ Siphon is a personal-use tool. It does not bypass DRM; protected videos get a cl
 
 ## Status
 
-Siphon was built in phases, and all five are done. This is **v0.10.0**.
+Siphon was built in phases, and all five are done. This is **v0.11.0**.
 
 | Phase | Scope | State |
 | --- | --- | --- |
