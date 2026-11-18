@@ -173,7 +173,9 @@ When a video needs an account (age-restricted, members-only, a post only signed-
 - **A browser on this computer**: takes the sign-in over from it. Firefox works; Chrome, Edge and Brave on Windows encrypt their cookies so only they can read them, and Siphon says so.
 - **cookies.txt**: a cookies file exported from your browser with an extension.
 
-Siphon checks the sign-in on the video before saying it worked, then looks the video up again and retries that site's failed downloads. Each site's cookies are kept apart, encrypted for your Windows account, and given to that site's downloads only, in a temporary file deleted when the download ends. Private, paid and password-protected videos don't offer sign-in, because an account doesn't help with those. A sign-in that has run out says so. **Settings → Signed-in sites** lists them, with **Sign out**. Details, including why Google sometimes refuses embedded sign-in windows, are in [docs/sign-in.md](docs/sign-in.md).
+Every video is tried without an account first, even on a site you're signed in to, so you're never asked for one a video doesn't need. When a site refuses, Siphon says how likely an account is to help and lets you choose: a login wall or a members-only video opens the sign-in offer (with **No thanks**), the bot check and unrecognised errors get a quiet link with the risk explained, and DRM, removed or region-blocked videos get none. Once you're signed in to a site, a video that needs it uses your sign-in by itself, and its card says **Signed in**.
+
+Siphon checks the sign-in on the video before saying it worked, then looks the video up again and retries that site's failed downloads. Each site's cookies are kept apart, encrypted for your Windows account, and given to that site's downloads only, in a temporary file deleted when the download ends. A sign-in that has run out says so, and so does an account without access. **Settings → Signed-in sites** lists them, with **Sign out** and when to use each: **When needed** (the default) or **Always**. Details, including why Google sometimes refuses embedded sign-in windows, are in [docs/sign-in.md](docs/sign-in.md).
 
 ### Updates
 
