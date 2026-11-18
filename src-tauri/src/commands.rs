@@ -6,7 +6,8 @@ use serde::Serialize;
 use serde_json::Value;
 use std::sync::Arc;
 
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
+use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
 use tokio::sync::Semaphore;
 
@@ -257,6 +258,21 @@ pub fn files_present(downloads: Downloads<'_>, paths: Vec<String>) -> Vec<bool> 
         .into_iter()
         .map(|path| existing(&downloads, path).is_ok())
         .collect()
+}
+
+/// Shows a Windows notification, but only while Siphon isn't the active
+/// window: in front of it, the app shows the news itself.
+#[tauri::command]
+pub fn notify(app: AppHandle, title: String, body: String) {
+    let in_front = app
+        .get_webview_window("main")
+        .and_then(|window| window.is_focused().ok())
+        .unwrap_or(false);
+    if in_front {
+        return;
+    }
+    let short = |text: String| text.chars().take(300).collect::<String>();
+    let _ = app.notification().builder().title(short(title)).body(short(body)).show();
 }
 
 fn ensure_ready(bins: &BinaryManager) -> Result<()> {

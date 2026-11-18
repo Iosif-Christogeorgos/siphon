@@ -61,6 +61,8 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // Used from Rust only; the webview has no notification permission.
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             preview::clear_cache(app.handle());
             // Paused and failed downloads from the last session carry on from their files.
@@ -101,6 +103,7 @@ fn main() {
             commands::open_file,
             commands::reveal_file,
             commands::files_present,
+            commands::notify,
             app_update::app_update_check,
             app_update::app_update_install,
         ])

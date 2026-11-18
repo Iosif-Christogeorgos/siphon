@@ -29,6 +29,8 @@ thiserror = "2"
 # Reads Windows' proxy settings, so downloads keep using the system proxy.
 winreg = "0.56"
 tauri-plugin-single-instance = "2"
+# "Download finished" when Siphon isn't the active window. Used from Rust only (`commands::notify`).
+tauri-plugin-notification = "2"
 
 [dev-dependencies]
 # Paused time, for testing the speed limit without waiting for it.

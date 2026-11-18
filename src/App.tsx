@@ -9,6 +9,7 @@ import { QueueSheet } from "@/features/queue/QueueSheet";
 import { SettingsSheet } from "@/features/settings/SettingsSheet";
 import { SetupScreen } from "@/features/setup/SetupScreen";
 import { ipc, onDownloadEvent, onSpeed, onToolStatus, onToolUpdated } from "@/lib/ipc";
+import { announce } from "@/lib/notices";
 import { TOOL_NAMES } from "@/lib/tools";
 import { useAppUpdate } from "@/stores/appUpdate";
 import { selectAllUsable, useBinaries } from "@/stores/binaries";
@@ -25,7 +26,10 @@ export function App() {
   useEffect(() => {
     const subscriptions = [
       onToolStatus(useBinaries.getState().apply),
-      onDownloadEvent(useDownloads.getState().apply),
+      onDownloadEvent((event) => {
+        useDownloads.getState().apply(event);
+        announce(event);
+      }),
       onSpeed(useSpeed.getState().apply),
       // A subtle note when a tool was updated in the background.
       onToolUpdated((notice) =>

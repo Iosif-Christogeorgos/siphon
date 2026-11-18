@@ -43,7 +43,9 @@ export const ipc = {
   openFile: (path: string) => invoke<void>("open_file", { path }),
   revealFile: (path: string) => invoke<void>("reveal_file", { path }),
   /** Which of these downloaded files are still there, in the same order. */
-  filesPresent: (paths: string[]) => invoke<boolean[]>("files_present", { paths }),  /** The version of a newer Siphon release, or null. */
+  filesPresent: (paths: string[]) => invoke<boolean[]>("files_present", { paths }),
+  /** A Windows notification, shown only while Siphon isn't the active window. */
+  notify: (title: string, body: string) => invoke<void>("notify", { title, body }),  /** The version of a newer Siphon release, or null. */
   appUpdateCheck: () => invoke<string | null>("app_update_check"),
   /** Installs the newest release and restarts the app. */
   appUpdateInstall: () => invoke<void>("app_update_install"),
