@@ -69,5 +69,5 @@ export function toAppError(error: unknown): AppError {
   if (typeof error === "object" && error !== null && "kind" in error && "message" in error) {
     return error as AppError;
   }
-  return { kind: "internal", message: "Something unexpected went wrong.", details: String(error) };
+  return { kind: "internal", message: "Something unexpected went wrong.", details: String(error), sign_in: null };
 }

@@ -24,6 +24,7 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, { error: E
             kind: "internal",
             message: "Siphon hit a problem drawing this screen. Downloads already running are not affected.",
             details: error.stack ?? error.message,
+            sign_in: null,
           }}
           action={
             <Button variant="secondary" size="sm" onClick={() => this.setState({ error: null })}>

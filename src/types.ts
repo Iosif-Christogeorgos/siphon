@@ -25,6 +25,15 @@ export interface AppError {
   message: string;
   /** Raw log for the "details" toggle. */
   details: string | null;
+  /** Set when signing in to a site can fix this. */
+  sign_in: SignInNeed | null;
+}
+
+export interface SignInNeed {
+  /** "youtube.com" */
+  site: string;
+  /** Siphon had a session for this site and it no longer works. */
+  expired: boolean;
 }
 
 // ── binaries/mod.rs ─────────────────────────────────────────────────────
