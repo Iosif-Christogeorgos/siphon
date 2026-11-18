@@ -1,6 +1,8 @@
 //! `yt-dlp -J`: what a link points to, and which formats it offers.
 
 use std::collections::HashSet;
+use std::ffi::OsString;
+use std::path::Path;
 use std::time::Duration;
 
 use serde::{Deserialize, Deserializer, Serialize};
@@ -245,11 +247,22 @@ fn text<'de, D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Optio
 // ── Fetching ────────────────────────────────────────────────────────────
 
 /// Looks up a link. Returns a single video with its formats, or a playlist
-/// with a lightweight entry list (no per-video requests).
-pub async fn fetch(bins: &BinaryManager, url: &str) -> Result<Media> {
+/// with a lightweight entry list (no per-video requests). `cookies` is the
+/// site's sign-in, if any (see `crate::sessions`).
+pub async fn fetch(bins: &BinaryManager, url: &str, cookies: Option<&Path>) -> Result<Media> {
+    let mut cookie_args: Vec<OsString> = Vec::new();
+    if let Some(cookies) = cookies {
+        cookie_args.extend(["--cookies".into(), cookies.into()]);
+    }
+    fetch_with(bins, url, &cookie_args).await
+}
+
+/// [`fetch`], with yt-dlp told where to find cookies some other way (a browser, for a sign-in).
+pub async fn fetch_with(bins: &BinaryManager, url: &str, cookie_args: &[OsString]) -> Result<Media> {
     let url = validate_url(url)?;
 
     let mut cmd = command(bins);
+    cmd.args(cookie_args);
     cmd.args([
         "--dump-single-json",
         // List playlist items without resolving each one (fast).
@@ -448,16 +461,23 @@ fn collect_entries(
             continue;
         }
         let is_playlist = is_playlist_link(&entry);
-        let Some(url) = entry.url.or(entry.webpage_url) else { continue };
+        let Some(url) = entry.url.or(entry.webpage_url) else {
+            continue;
+        };
         if !seen.insert(url.clone()) {
             continue;
         }
         entries.push(PlaylistEntry {
             url,
             id: entry.id.unwrap_or_default(),
-            title: entry
-                .title
-                .unwrap_or_else(|| (if is_playlist { "Untitled playlist" } else { "Untitled video" }).to_string()),
+            title: entry.title.unwrap_or_else(|| {
+                (if is_playlist {
+                    "Untitled playlist"
+                } else {
+                    "Untitled video"
+                })
+                .to_string()
+            }),
             duration: entry.duration,
             thumbnail: entry.thumbnail.or_else(|| last_thumbnail(entry.thumbnails)),
             channel: entry.channel.or(entry.uploader),
@@ -615,6 +635,9 @@ mod tests {
                 {"_type": "url", "ie_key": "Youtube", "title": "Blender 4.0",
                  "url": "https://www.youtube.com/watch?v=x", "duration": 120}]}"#,
         );
-        assert!(list.entries.iter().all(|entry| entry.section.is_none() && !entry.is_playlist));
+        assert!(list
+            .entries
+            .iter()
+            .all(|entry| entry.section.is_none() && !entry.is_playlist));
     }
 }

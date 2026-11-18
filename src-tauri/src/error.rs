@@ -14,7 +14,8 @@ pub enum ErrorKind {
     Unsupported,
     /// Removed, private, geo-blocked or otherwise not reachable.
     Unavailable,
-    /// The site wants an account (age gate, members-only, private).
+    /// The site's own account can unlock it (age gate, members-only, logged-in viewers).
+    /// Not private or paid videos: signing in doesn't help with those.
     LoginRequired,
     /// Errors that usually go away after updating yt-dlp (bot check, missing formats, throttling).
     Outdated,
@@ -47,9 +48,20 @@ pub struct AppError {
     pub kind: ErrorKind,
     pub message: String,
     pub details: Option<String>,
+    /// Set when signing in to a site can fix this: the frontend offers it.
+    pub sign_in: Option<SignInNeed>,
     /// For the backend's own use; the frontend only sees errors that are final.
     #[serde(skip)]
     pub retry: Retry,
+}
+
+/// The site to sign in to, for an error an account can fix.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SignInNeed {
+    /// "youtube.com": what the user signs in to, and where the cookies go.
+    pub site: String,
+    /// Siphon had cookies for this site and it still refused: the session ran out.
+    pub expired: bool,
 }
 
 pub type Result<T> = std::result::Result<T, AppError>;
@@ -60,6 +72,7 @@ impl AppError {
             kind,
             message: message.into(),
             details: None,
+            sign_in: None,
             // Connections fail for reasons that pass; nothing else does by default.
             retry: if kind == ErrorKind::Network {
                 Retry::Soon

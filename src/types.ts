@@ -25,7 +25,51 @@ export interface AppError {
   message: string;
   /** Raw log for the "details" toggle. */
   details: string | null;
+  /** Set when signing in to a site can fix this. */
+  sign_in: SignInNeed | null;
 }
+
+export interface SignInNeed {
+  /** "youtube.com" */
+  site: string;
+  /** Siphon had a session for this site and it no longer works. */
+  expired: boolean;
+}
+
+// ── sessions/ ───────────────────────────────────────────────────────────
+
+/** How to sign in to a site (`sessions::Method`). */
+export type SignInMethod = { type: "window" } | { type: "browser"; browser: string } | { type: "file" };
+
+/** A browser on this computer a sign-in can be taken from (`sessions::browsers::Browser`). */
+export interface Browser {
+  /** yt-dlp's name: "firefox", "chrome", … */
+  id: string;
+  name: string;
+}
+
+/** How a sign-in ended (`sessions::sign_in::Outcome`). */
+export type SignInOutcome =
+  | { outcome: "signed_in"; site: string; tip: boolean }
+  | { outcome: "refused"; short: string; reason: string }
+  | { outcome: "cancelled" };
+
+/** One signed-in site, for Settings. Holds no cookie. */
+export interface SiteSession {
+  site: string;
+  method: SignInMethod;
+  /** Unix seconds. */
+  signed_in_at: number;
+  last_used: number | null;
+  expired: boolean;
+}
+
+/** The sign-in window's state, for its bar. */
+export type SignInStatus =
+  | { phase: "waiting" }
+  | { phase: "checking" }
+  | { phase: "not_yet" }
+  | { phase: "failed"; message: string };
 
 // ── binaries/mod.rs ─────────────────────────────────────────────────────
 

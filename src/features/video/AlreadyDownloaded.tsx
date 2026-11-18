@@ -3,7 +3,7 @@ import { Check, FolderOpen, List, Play } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useShallow } from "zustand/react/shallow";
 import { Button } from "@/components/ui/button";
-import { formatBytes } from "@/lib/format";
+import { formatBytes, formatDay } from "@/lib/format";
 import { ipc } from "@/lib/ipc";
 import { spring } from "@/lib/motion";
 import { formatShortTimecode } from "@/lib/time";
@@ -47,7 +47,7 @@ export function AlreadyDownloaded({ url, exclude }: { url: string; exclude: stri
     const clip = lead.trim && `${formatShortTimecode(lead.trim.start)}–${formatShortTimecode(lead.trim.end)}`;
     notice = {
       text: whole ? "You already have this" : one ? `You already have a clip of this (${clip})` : `You already have ${clips.length} clips of this`,
-      detail: [lead.finishedAt && when(lead.finishedAt), one && lead.size != null && formatBytes(lead.size)]
+      detail: [lead.finishedAt && formatDay(lead.finishedAt), one && lead.size != null && formatBytes(lead.size)]
         .filter(Boolean)
         .join(" · "),
       path: one ? lead.path : null,
@@ -93,18 +93,4 @@ export function AlreadyDownloaded({ url, exclude }: { url: string; exclude: stri
       )}
     </AnimatePresence>
   );
-}
-
-/** "today", "yesterday", "18 Nov", or "18 Nov 2025" in another year. */
-function when(ms: number): string {
-  const then = new Date(ms);
-  const day = (date: Date) => new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
-  const days = Math.round((day(new Date()) - day(then)) / 86_400_000);
-  if (days === 0) return "today";
-  if (days === 1) return "yesterday";
-  return then.toLocaleDateString(undefined, {
-    day: "numeric",
-    month: "short",
-    year: then.getFullYear() === new Date().getFullYear() ? undefined : "numeric",
-  });
 }

@@ -139,6 +139,8 @@ export function Home() {
               ) : media.isError ? (
                 <ErrorCard
                   error={toAppError(media.error)}
+                  // Signed in: look the video up again, with the new sign-in.
+                  signIn={url ? { url, onSignedIn: () => void media.refetch() } : undefined}
                   action={
                     <Button variant="secondary" size="sm" onClick={() => void media.refetch()}>
                       <RotateCw /> Retry

@@ -51,7 +51,11 @@ const OWN_MARKER: &str = ".siphon-";
 
 /// This download's marker (see [`OWN_MARKER`]).
 pub fn own_marker(download_id: &str) -> String {
-    let own: String = download_id.chars().filter(char::is_ascii_alphanumeric).take(8).collect();
+    let own: String = download_id
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .take(8)
+        .collect();
     format!("{OWN_MARKER}{}", if own.is_empty() { "0" } else { &own })
 }
 
@@ -60,13 +64,7 @@ pub fn own_marker(download_id: &str) -> String {
 pub fn finished_stem(stem: &str) -> &str {
     let stem = stem.strip_suffix(SOURCE_MARKER).unwrap_or(stem);
     match stem.rfind(OWN_MARKER) {
-        Some(at)
-            if stem[at + OWN_MARKER.len()..]
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric()) =>
-        {
-            &stem[..at]
-        }
+        Some(at) if stem[at + OWN_MARKER.len()..].chars().all(|c| c.is_ascii_alphanumeric()) => &stem[..at],
         _ => stem,
     }
 }

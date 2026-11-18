@@ -3236,6 +3236,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "psl"
+version = "2.1.257"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e08d72dd5047173b22310be0c2a8b480e30f611545de2dbbd3a94ace2de4d2b8"
+dependencies = [
+ "psl-types",
+]
+
+[[package]]
+name = "psl-types"
+version = "2.0.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33cb294fe86a74cbcf50d4445b37da762029549ebeea341421c7c70370f86cac"
+
+[[package]]
 name = "pxfm"
 version = "0.1.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3951,6 +3966,7 @@ version = "0.11.0"
 dependencies = [
  "futures-util",
  "hex",
+ "psl",
  "reqwest",
  "serde",
  "serde_json",
@@ -3965,6 +3981,7 @@ dependencies = [
  "tauri-plugin-updater",
  "thiserror 2.0.21",
  "tokio",
+ "windows-sys 0.61.2",
  "winreg",
  "zip",
 ]

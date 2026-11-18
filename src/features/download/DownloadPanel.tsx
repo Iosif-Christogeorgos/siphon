@@ -115,7 +115,8 @@ export function DownloadPanel({
       <AnimatePresence>
         {download?.status === "failed" && download.error && (
           <motion.div variants={riseIn} initial="hidden" animate="visible" exit="exit">
-            <ErrorCard error={download.error} />
+            {/* Signing in retries the download by itself (see `stores/signIn`). */}
+            <ErrorCard error={download.error} signIn={{ url: download.url }} />
           </motion.div>
         )}
       </AnimatePresence>

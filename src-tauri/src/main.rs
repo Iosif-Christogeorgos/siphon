@@ -12,6 +12,7 @@ mod log;
 mod plan;
 mod preview;
 mod process;
+mod sessions;
 mod settings;
 mod state;
 mod throttle;
@@ -70,6 +71,8 @@ fn main() {
             downloads::sweep_work(app.handle(), &downloads.kept_ids());
             let binaries = binaries::BinaryManager::new(app.handle())?;
             app.manage(Arc::new(binaries));
+            app.manage(sessions::Sessions::load(app.handle()));
+            app.manage(sessions::sign_in::SignInWindow::default());
             app.manage(Arc::new(downloads));
             let settings = settings::SettingsStore::load(app.handle())?;
             // Every download goes through the speed limit, set or not.
@@ -82,6 +85,14 @@ fn main() {
             app.manage(state::CapabilityCache::default());
             tauri::async_runtime::spawn(keep_tools_updated(app.handle().clone()));
             Ok(())
+        })
+        // Siphon ends with its main window: a sign-in window left open would keep it running.
+        .on_window_event(|window, event| {
+            if window.label() == "main" && matches!(event, tauri::WindowEvent::Destroyed) {
+                if let Some(sign_in) = window.app_handle().get_window(sessions::sign_in::WINDOW) {
+                    let _ = sign_in.destroy();
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             commands::binaries_status,
@@ -104,6 +115,13 @@ fn main() {
             commands::reveal_file,
             commands::files_present,
             commands::notify,
+            commands::sign_in_browsers,
+            commands::sign_in,
+            commands::sign_in_site,
+            commands::sign_in_done,
+            commands::sign_in_cancel,
+            commands::signed_in_sites,
+            commands::sign_out,
             app_update::app_update_check,
             app_update::app_update_install,
         ])
@@ -115,6 +133,8 @@ fn main() {
             if let tauri::RunEvent::Exit = event {
                 let downloads = Arc::clone(&app.state::<Arc<downloads::DownloadManager>>());
                 tauri::async_runtime::block_on(downloads.shut_down());
+                // Every download has stopped: no cookie file may stay behind.
+                app.state::<Arc<sessions::Sessions>>().sweep_temp();
             }
         });
 }

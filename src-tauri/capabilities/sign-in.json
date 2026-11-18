@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "sign-in",
+  "description": "Siphon's bar at the top of the sign-in window: the site's name, Done and Cancel. The site's own page under it gets no capability, so it can't reach Siphon.",
+  "webviews": ["sign-in-bar"],
+  "permissions": ["core:event:default", "core:window:allow-start-dragging", "core:window:allow-minimize"]
+}

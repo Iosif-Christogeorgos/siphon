@@ -1,6 +1,7 @@
 //! Turns yt-dlp's stderr into a plain-language [`AppError`].
 
 use crate::error::{AppError, ErrorKind, Retry};
+use crate::sessions::cookies::redact;
 
 /// Substring → (kind, whether to try again, friendly message). Checked in
 /// order against the lower-cased log, so more specific phrases come first.
@@ -67,21 +68,65 @@ const RULES: &[(&[&str], ErrorKind, Retry, &str)] = &[
         Retry::No,
         "Siphon doesn't recognise this link. Make sure it points to a page with a video.",
     ),
+    // What an account can't fix comes before what it can: these messages also
+    // say "sign in" or mention cookies, and signing in would only waste the
+    // user's time.
+    (
+        // YouTube: "Private video. Sign in if you've been granted access to this video."
+        &["private video", "this video is private", "video is private"],
+        ErrorKind::Unavailable,
+        Retry::No,
+        "This video is private. Only the people its owner shared it with can watch it.",
+    ),
     (
         &[
-            "sign in",
-            "log in",
+            "requires payment",
+            "rent this video",
+            "buy this video",
+            "purchase this video",
+            "premium members",
+            "music premium",
+            "youtube premium",
+        ],
+        ErrorKind::Unavailable,
+        Retry::No,
+        "This video has to be bought, rented or watched with a paid membership, so it can't be downloaded.",
+    ),
+    (
+        &["video-password", "protected by a password", "password-protected", "password protected"],
+        ErrorKind::Unavailable,
+        Retry::No,
+        "This video is protected by a password, which Siphon can't enter.",
+    ),
+    (
+        // Everything a site's own account unlocks: age gates, members-only and
+        // logged-in-only posts. yt-dlp ends each of these with a hint to pass
+        // cookies or credentials, which is the surest sign.
+        &[
+            "use --cookies",
+            "--cookies-from-browser",
+            "to provide account credentials",
+            "for the authentication",
+            "sign in to confirm your age",
+            "confirm your age",
+            "age-restricted",
+            "age restricted",
+            "inappropriate for some users",
+            "only available for registered users",
             "login required",
+            "log in for access",
+            "requires authentication",
             "members-only",
             "members only",
-            "private video",
-            "age-restricted",
-            "confirm your age",
-            "cookies",
+            "join this channel",
+            "channel's members",
+            "subscriber-only",
+            "subscribers only",
+            "http error 401",
         ],
         ErrorKind::LoginRequired,
         Retry::No,
-        "This video needs an account to watch (private, members-only or age-restricted).",
+        "This video is only available to signed-in viewers of the site.",
     ),
     (
         &[
@@ -178,7 +223,9 @@ pub fn classify(log: &str) -> AppError {
     let haystack = log.to_lowercase();
     for (needles, kind, retry, message) in RULES {
         if needles.iter().any(|needle| haystack.contains(needle)) {
-            return AppError::new(*kind, *message).retrying(*retry).with_details(log);
+            return AppError::new(*kind, *message)
+                .retrying(*retry)
+                .with_details(redact(log));
         }
     }
 
@@ -190,7 +237,7 @@ pub fn classify(log: &str) -> AppError {
         .map(|line| line.trim().to_string())
         .filter(|line| !line.is_empty() && line.len() <= 200)
         .unwrap_or_else(|| "Something went wrong while talking to the site.".to_string());
-    AppError::internal(message).with_details(log)
+    AppError::internal(redact(&message)).with_details(redact(log))
 }
 
 #[cfg(test)]
@@ -251,6 +298,43 @@ mod tests {
             "[hls @ 0001] keepalive request failed for 'https://x/1.ts'"
         ));
         assert!(!section_cut_short("[download] Download completed"));
+    }
+
+    /// Real yt-dlp messages, from several sites: sign-in is offered only where
+    /// an account can actually unlock the video.
+    #[test]
+    fn offers_sign_in_only_where_an_account_helps() {
+        let kind = |log: &str| classify(log).kind;
+        let fixable = [
+            "ERROR: [youtube] abc: Sign in to confirm your age. This video may be inappropriate for some users. Use --cookies-from-browser or --cookies for the authentication. See  https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp  for how to manually pass cookies.",
+            "ERROR: [youtube] abc: Join this channel to get access to members-only content like this video, and other exclusive perks.",
+            "ERROR: [youtube] abc: This video is available to this channel's members on level: Supporter (or any higher level). Join this YouTube channel from your computer or Android app.",
+            "ERROR: [Instagram] C1a2B3: Requested content is not available, rate-limit reached or login required. Use --cookies, --cookies-from-browser, --username and --password, --netrc-cmd, or --netrc (instagram) to provide account credentials. See  https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp  for how to manually pass cookies",
+            "ERROR: [Instagram] C1a2B3: Instagram sent an empty media response. Check if this post is accessible in your browser without being logged-in. If it is not, then use --cookies-from-browser or --cookies for the authentication.",
+            "ERROR: [twitter] 1789: NSFW tweet requires authentication. Use --cookies, --cookies-from-browser, --username and --password, --netrc-cmd, or --netrc (twitter) to provide account credentials.",
+            "ERROR: [TikTok] 7301: This post may not be comfortable for some audiences. Log in for access. Use --cookies, --cookies-from-browser, --username and --password, --netrc-cmd, or --netrc (tiktok) to provide account credentials.",
+            "ERROR: [facebook] 1234: This video is only available for registered users. Use --cookies-from-browser or --cookies for the authentication.",
+            "ERROR: [generic] Unable to download webpage: HTTP Error 401: Unauthorized (caused by <HTTPError 401: Unauthorized>)",
+        ];
+        for log in fixable {
+            assert_eq!(kind(log), ErrorKind::LoginRequired, "{log}");
+        }
+
+        let not_fixable = [
+            // Private: the owner decides, and the message says "sign in" and "cookies" too.
+            ("ERROR: [youtube] abc: Private video. Sign in if you've been granted access to this video. Use --cookies-from-browser or --cookies for the authentication.", ErrorKind::Unavailable),
+            ("ERROR: [youtube] abc: This video requires payment to watch.", ErrorKind::Unavailable),
+            ("ERROR: [youtube] abc: This video is only available for Music Premium members", ErrorKind::Unavailable),
+            ("ERROR: [vimeo] 76979871: This video is protected by a password, use the --video-password option", ErrorKind::Unavailable),
+            ("ERROR: [youtube] abc: Video unavailable. This video has been removed by the uploader", ErrorKind::Unavailable),
+            ("ERROR: [youtube] abc: Video unavailable. The uploader has not made this video available in your country", ErrorKind::Unavailable),
+            ("ERROR: [DRM] The requested site is known to use DRM protection. It will NOT be supported.", ErrorKind::Drm),
+            // An account is what gets flagged here; it stays the bot check.
+            ("ERROR: [youtube] abc: Sign in to confirm you’re not a bot. Use --cookies-from-browser or --cookies for the authentication.", ErrorKind::Outdated),
+        ];
+        for (log, expected) in not_fixable {
+            assert_eq!(kind(log), expected, "{log}");
+        }
     }
 
     #[test]

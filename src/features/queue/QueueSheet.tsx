@@ -1,4 +1,17 @@
-import { Check, CircleAlert, FolderOpen, ImageOff, Inbox, Pause, Play, RotateCw, Scissors, Trash2, X } from "lucide-react";
+import {
+  Check,
+  CircleAlert,
+  FolderOpen,
+  ImageOff,
+  Inbox,
+  LogIn,
+  Pause,
+  Play,
+  RotateCw,
+  Scissors,
+  Trash2,
+  X,
+} from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { type ReactNode, useRef } from "react";
 import { Button } from "@/components/ui/button";
@@ -11,6 +24,7 @@ import { isIndeterminate, STAGE_LABELS } from "@/lib/stages";
 import { formatShortTimecode, formatTimecode } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { type Download, useDownloads } from "@/stores/downloads";
+import { signInSuggested } from "@/stores/signIn";
 import { useUi } from "@/stores/ui";
 import type { Stage } from "@/types";
 
@@ -170,11 +184,20 @@ function QueueItem({ download }: { download: Download }) {
             <Play />
           </Action>
         )}
-        {status === "failed" && (
-          <Action label="Try again" onClick={() => retry(download.id)}>
-            <RotateCw />
-          </Action>
-        )}
+        {status === "failed" &&
+          (download.error?.sign_in ? (
+            // Trying again would only fail again; signing in retries it by itself.
+            <Action
+              label={`Sign in to ${download.error.sign_in.site}`}
+              onClick={() => void signInSuggested(download.url, download.error?.sign_in?.site as string)}
+            >
+              <LogIn />
+            </Action>
+          ) : (
+            <Action label="Try again" onClick={() => retry(download.id)}>
+              <RotateCw />
+            </Action>
+          ))}
         {status === "finished" && download.path && (
           <>
             <Action label="Open" onClick={() => void ipc.openFile(download.path as string)}>

@@ -69,3 +69,17 @@ export function formatCount(value: number | null | undefined): string {
     value,
   );
 }
+
+/** "today", "yesterday", "18 Nov", or "18 Nov 2025" in another year. */
+export function formatDay(ms: number): string {
+  const then = new Date(ms);
+  const day = (date: Date) => new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  const days = Math.round((day(new Date()) - day(then)) / 86_400_000);
+  if (days === 0) return "today";
+  if (days === 1) return "yesterday";
+  return then.toLocaleDateString(undefined, {
+    day: "numeric",
+    month: "short",
+    year: then.getFullYear() === new Date().getFullYear() ? undefined : "numeric",
+  });
+}

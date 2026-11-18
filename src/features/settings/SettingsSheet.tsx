@@ -1,22 +1,24 @@
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { Folder, LoaderCircle, Minus, Plus, RefreshCw, RotateCcw } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Folder, Info, LoaderCircle, LogOut, Minus, Plus, RefreshCw, RotateCcw } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Segmented } from "@/components/ui/segmented";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet } from "@/components/ui/sheet";
 import { Hint } from "@/components/ui/tooltip";
-import { MB_PER_SECOND } from "@/lib/format";
-import { toAppError } from "@/lib/ipc";
+import { formatDay, MB_PER_SECOND } from "@/lib/format";
+import { ipc, toAppError } from "@/lib/ipc";
 import { TOOL_NAMES, TOOL_ORDER, TOOL_ROLES } from "@/lib/tools";
 import { cn } from "@/lib/utils";
 import { useAppUpdate } from "@/stores/appUpdate";
 import { selectAvailable, useBinaries } from "@/stores/binaries";
 import { stripView, useSaveSettings, useSettings } from "@/stores/settings";
+import { useSignIn } from "@/stores/signIn";
 import { useTheme } from "@/stores/theme";
 import { useToasts } from "@/stores/toasts";
 import { useUi } from "@/stores/ui";
-import type { FilenameStyle, Settings, SettingsView } from "@/types";
+import type { FilenameStyle, Settings, SettingsView, SiteSession } from "@/types";
 
 const FILENAME_STYLES: { id: FilenameStyle; label: string; example: string }[] = [
   { id: "title_id", label: "Title [id]", example: "Big Buck Bunny [aqz-KE-bpKQ].mp4" },
@@ -171,6 +173,8 @@ function SettingsForm({
         <SpeedLimitRow limit={settings.speed_limit} onChange={(speed_limit) => onChange({ speed_limit })} />
       </Group>
 
+      <SignedInSites />
+
       <Group title="Appearance">
         <Row
           title="Theme"
@@ -298,6 +302,73 @@ function SpeedLimitRow({ limit, onChange }: { limit: number | null; onChange: (l
         </div>
       )}
     </Row>
+  );
+}
+
+/**
+ * The sites Siphon is signed in to: each with whether its sign-in still works
+ * and when it was last used, how it was made behind the ⓘ, and Sign out.
+ */
+function SignedInSites() {
+  const sites = useQuery({ queryKey: ["signed-in-sites"], queryFn: ipc.signedInSites, staleTime: 0 });
+  const queryClient = useQueryClient();
+  const browsers = useSignIn((state) => state.browsers);
+  useEffect(() => void useSignIn.getState().loadBrowsers(), []);
+  const signOut = async (site: string) => {
+    await ipc.signOut(site);
+    await queryClient.invalidateQueries({ queryKey: ["signed-in-sites"] });
+  };
+  const how = ({ method }: SiteSession) =>
+    method.type === "window"
+      ? "Siphon’s sign-in window"
+      : method.type === "file"
+        ? "a cookies.txt file"
+        : (browsers?.find((browser) => browser.id === method.browser)?.name ?? method.browser);
+
+  return (
+    <Group title="Signed-in sites" hint="Offered when a video needs an account.">
+      {sites.data?.length ? (
+        sites.data.map((session) => (
+          <div key={session.site} className="flex items-center gap-3 px-3.5 py-2.5">
+            <div className="min-w-0 flex-1">
+              <div className="flex min-w-0 items-center gap-1">
+                <p className="truncate text-[13px] font-medium">{session.site}</p>
+                <Hint
+                  label={`Signed in with ${how(session)}, ${formatDay(session.signed_in_at * 1000)}. Siphon keeps only ${session.site}’s cookies, encrypted for your Windows account, and gives them to that site’s downloads alone.`}
+                  className="max-w-72 px-3 py-2 leading-relaxed text-pretty"
+                >
+                  <button
+                    type="button"
+                    aria-label={`About the ${session.site} sign-in`}
+                    className="grid size-5 shrink-0 place-items-center rounded-full text-subtle-foreground transition-colors hover:bg-accent hover:text-foreground"
+                  >
+                    <Info className="size-3" />
+                  </button>
+                </Hint>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {session.expired ? (
+                  <span className="text-destructive">Expired · sign in again when a video asks</span>
+                ) : (
+                  <>
+                    <span className="text-primary">Active</span>
+                    {session.last_used && ` · used ${formatDay(session.last_used * 1000)}`}
+                  </>
+                )}
+              </p>
+            </div>
+            <Button variant="ghost" size="sm" className="-mr-1 h-7 px-2.5" onClick={() => void signOut(session.site)}>
+              <LogOut className="size-3.5" />
+              Sign out
+            </Button>
+          </div>
+        ))
+      ) : (
+        <p className="px-3.5 py-3 text-xs text-pretty text-muted-foreground">
+          {sites.isPending ? "…" : "None yet. When a video needs an account, Siphon offers to sign in."}
+        </p>
+      )}
+    </Group>
   );
 }
 

@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   AppError,
+  Browser,
   Choice,
   Choices,
   DownloadEvent,
@@ -12,6 +13,10 @@ import type {
   Registry,
   Settings,
   SettingsView,
+  SignInMethod,
+  SignInOutcome,
+  SignInStatus,
+  SiteSession,
   Speed,
   ToolStatus,
   Trim,
@@ -45,7 +50,18 @@ export const ipc = {
   /** Which of these downloaded files are still there, in the same order. */
   filesPresent: (paths: string[]) => invoke<boolean[]>("files_present", { paths }),
   /** A Windows notification, shown only while Siphon isn't the active window. */
-  notify: (title: string, body: string) => invoke<void>("notify", { title, body }),  /** The version of a newer Siphon release, or null. */
+  notify: (title: string, body: string) => invoke<void>("notify", { title, body }),
+  /** Browsers on this computer a sign-in can be taken from. */
+  signInBrowsers: () => invoke<Browser[]>("sign_in_browsers"),
+  /** Signs in to the site of `url` (a video that needed it), checked on that video. */
+  signIn: (url: string, method: SignInMethod) => invoke<SignInOutcome>("sign_in", { url, method }),
+  /** The sign-in window's bar: which site it's for. */
+  signInSite: () => invoke<string | null>("sign_in_site"),
+  signInDone: () => invoke<void>("sign_in_done"),
+  signInCancel: () => invoke<void>("sign_in_cancel"),
+  signedInSites: () => invoke<SiteSession[]>("signed_in_sites"),
+  signOut: (site: string) => invoke<void>("sign_out", { site }),
+  /** The version of a newer Siphon release, or null. */
   appUpdateCheck: () => invoke<string | null>("app_update_check"),
   /** Installs the newest release and restarts the app. */
   appUpdateInstall: () => invoke<void>("app_update_install"),
@@ -64,10 +80,14 @@ export const onDownloadEvent = (handler: (event: DownloadEvent) => void): Promis
 export const onSpeed = (handler: (speed: Speed) => void): Promise<UnlistenFn> =>
   listen<Speed>("speed://total", (event) => handler(event.payload));
 
+/** The sign-in window's state, for its bar. */
+export const onSignInStatus = (handler: (status: SignInStatus) => void): Promise<UnlistenFn> =>
+  listen<SignInStatus>("sign-in://status", (event) => handler(event.payload));
+
 /** Commands reject with an `AppError`; anything else is wrapped to look like one. */
 export function toAppError(error: unknown): AppError {
   if (typeof error === "object" && error !== null && "kind" in error && "message" in error) {
     return error as AppError;
   }
-  return { kind: "internal", message: "Something unexpected went wrong.", details: String(error) };
+  return { kind: "internal", message: "Something unexpected went wrong.", details: String(error), sign_in: null };
 }
