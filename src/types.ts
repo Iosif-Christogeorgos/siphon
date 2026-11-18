@@ -359,6 +359,15 @@ export interface DownloadRequest {
   url: string;
   choice: Choice;
   trim: Trim | null;
+  place: Place | null;
+}
+
+/** Where a playlist video goes: a folder inside the download folder, and a number in front of its name. */
+export interface Place {
+  /** Usually the playlist's title; the backend makes it safe for a folder name. */
+  folder: string | null;
+  /** [position from 1, playlist length], for "07 - Title". */
+  number: [number, number] | null;
 }
 
 export type DownloadEvent =

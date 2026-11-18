@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 import { ipc, toAppError } from "@/lib/ipc";
-import type { AppError, Choice, DownloadEvent, Progress, Trim } from "@/types";
+import type { AppError, Choice, DownloadEvent, Place, Progress, Trim } from "@/types";
 
 export type DownloadStatus = "queued" | "running" | "paused" | "finished" | "failed";
 
@@ -17,6 +17,8 @@ export interface Download extends DownloadSource {
   id: string;
   choice: Choice;
   trim: Trim | null;
+  /** A playlist video's folder and number, sent again on every resume. Missing on downloads from before 0.11. */
+  place?: Place | null;
   status: DownloadStatus;
   progress: Progress;
   /** Set once finished. */
@@ -33,7 +35,7 @@ interface DownloadsState {
   /** Ids in the order they were added. */
   order: string[];
   /** Adds a download to the queue and returns its id. */
-  start: (source: DownloadSource, choice: Choice, trim: Trim | null) => string;
+  start: (source: DownloadSource, choice: Choice, trim: Trim | null, place?: Place | null) => string;
   /** Stops a download but keeps what it has fetched. */
   pause: (id: string) => void;
   /** Continues a paused download where it stopped. */
@@ -119,21 +121,22 @@ export const useDownloads = create<DownloadsState>((set, get) => {
    * or failed.
    */
   const submit = (download: Download) => {
-    const { id, url, choice, trim } = download;
+    const { id, url, choice, trim, place = null } = download;
     ipc
-      .startDownload({ id, url, choice, trim })
+      .startDownload({ id, url, choice, trim, place })
       .catch((error) => patch(id, { status: "failed", error: toAppError(error) }));
   };
 
   return {
     ...restore(),
 
-    start: (source, choice, trim) => {
+    start: (source, choice, trim, place = null) => {
       const download: Download = {
         ...source,
         id: crypto.randomUUID(),
         choice,
         trim,
+        place,
         status: "queued",
         progress: WAITING,
         path: null,

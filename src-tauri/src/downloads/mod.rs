@@ -68,6 +68,58 @@ pub struct DownloadRequest {
     /// Download only this part of the video.
     #[serde(default)]
     pub trim: Option<Trim>,
+    /// Where a video from a playlist goes: its own folder, a number in front of its name.
+    #[serde(default)]
+    pub place: Option<Place>,
+}
+
+/// A playlist video's folder and number. Sent again, unchanged, on every
+/// resume and retry, so the download carries on in the same folder.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Place {
+    /// A folder inside the download folder, usually the playlist's title. Cleaned up before use.
+    #[serde(default)]
+    pub folder: Option<String>,
+    /// Its position in the playlist (from 1) and the playlist's length, for "07 - Title".
+    #[serde(default)]
+    pub number: Option<(u32, u32)>,
+}
+
+impl Place {
+    /// "07 - " for the 7th of 95; at least two digits, more for longer playlists.
+    fn prefix(&self) -> String {
+        match self.number {
+            Some((index, count)) => {
+                let width = count.max(index).to_string().len().max(2);
+                format!("{index:0width$} - ")
+            }
+            None => String::new(),
+        }
+    }
+}
+
+/// A playlist's title as a folder name Windows accepts: no characters it
+/// forbids, no dots or spaces at the end, not a reserved device name, and not
+/// too long. None if nothing usable is left.
+fn folder_name(title: &str) -> Option<String> {
+    let cleaned: String = title
+        .chars()
+        .map(|c| if c.is_control() || r#"<>:"/\|?*"#.contains(c) { ' ' } else { c })
+        .collect();
+    let mut name = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+    if name.chars().count() > 100 {
+        name = name.chars().take(100).collect();
+    }
+    let name = name.trim_matches(|c: char| c == '.' || c.is_whitespace()).to_string();
+    if name.is_empty() {
+        return None;
+    }
+    let stem = name.split('.').next().unwrap_or_default().to_ascii_uppercase();
+    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (stem.len() == 4
+            && (stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.as_bytes()[3].is_ascii_digit());
+    Some(if reserved { format!("{name}_") } else { name })
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -184,6 +236,8 @@ struct JobContext<'a> {
     bins: &'a BinaryManager,
     id: &'a str,
     settings: Settings,
+    /// A playlist video's folder and number; empty for anything else.
+    place: Place,
 }
 
 impl JobContext<'_> {
@@ -288,6 +342,7 @@ impl DownloadManager {
                             id: &id,
                             // Read once the job starts, so changes made while it queued apply.
                             settings: app.state::<SettingsStore>().get(),
+                            place: request.place.clone().unwrap_or_default(),
                         };
                         manager.run(&job, &url, &request.choice, request.trim).await
                     }
@@ -477,6 +532,10 @@ impl DownloadManager {
         let output_dir = match &job.settings.output_dir {
             Some(dir) => dir.clone(),
             None => default_output_dir(job.app)?,
+        };
+        let output_dir = match job.place.folder.as_deref().and_then(folder_name) {
+            Some(folder) => output_dir.join(folder),
+            None => output_dir,
         };
         tokio::fs::create_dir_all(&output_dir).await.map_err(|err| {
             AppError::internal("Couldn't create the download folder. Check the folder in Settings.")
@@ -1135,7 +1194,12 @@ impl DownloadManager {
             .arg(output_dir)
             .args([
                 "--output",
-                &args::output_template(recipe, &job.settings.filename_template(), &args::own_marker(job.id)),
+                &args::output_template(
+                    recipe,
+                    // "07 - " in front for a numbered playlist video: digits and a dash, nothing yt-dlp reads as a field.
+                    &format!("{}{}", job.place.prefix(), job.settings.filename_template()),
+                    &args::own_marker(job.id),
+                ),
                 "--",
             ])
             .arg(url);
@@ -1587,6 +1651,29 @@ mod tests {
 #[cfg(test)]
 mod naming_tests {
     use super::*;
+
+    #[test]
+    fn playlist_numbers_have_as_many_digits_as_the_playlist_needs() {
+        let number = |index, count| Place { folder: None, number: Some((index, count)) }.prefix();
+        assert_eq!(number(7, 9), "07 - ");
+        assert_eq!(number(7, 95), "07 - ");
+        assert_eq!(number(7, 182), "007 - ");
+        assert_eq!(number(1218, 1218), "1218 - ");
+        assert_eq!(Place::default().prefix(), "");
+    }
+
+    #[test]
+    fn a_playlist_title_becomes_a_folder_windows_accepts() {
+        assert_eq!(folder_name("Blender Conference 2026").as_deref(), Some("Blender Conference 2026"));
+        assert_eq!(folder_name("AC/DC: Live? <Best>").as_deref(), Some("AC DC Live Best"));
+        assert_eq!(folder_name("  Ends with dots... ").as_deref(), Some("Ends with dots"));
+        assert_eq!(folder_name("..").as_deref(), None);
+        assert_eq!(folder_name(r"..\..\Windows").as_deref(), Some("Windows"));
+        assert_eq!(folder_name("con").as_deref(), Some("con_"));
+        assert_eq!(folder_name("COM1.mix").as_deref(), Some("COM1.mix_"));
+        assert_eq!(folder_name("Comedy").as_deref(), Some("Comedy"));
+        assert_eq!(folder_name(&"x".repeat(300)).map(|name| name.chars().count()), Some(100));
+    }
 
     #[test]
     fn a_taken_name_gets_the_next_free_number() {
