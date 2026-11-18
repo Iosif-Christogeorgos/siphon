@@ -2,3 +2,5 @@
 *.png binary
 *.ico binary
 *.icns binary
+*.webp binary
+*.gif binary

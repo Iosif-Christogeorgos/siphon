@@ -1,250 +1,138 @@
+<div align="center">
+
+<img src="app-icon.svg" width="96" height="96" alt="Siphon">
+
 # Siphon
 
-A minimal desktop video downloader for Windows 11 (Windows only). Siphon is a GUI for [yt-dlp](https://github.com/yt-dlp/yt-dlp) and [FFmpeg](https://ffmpeg.org): paste a link, see what it is, download it.
+**Paste a link. Pick where it's going. Download.**
 
-Siphon is a personal-use tool. It does not bypass DRM; protected videos get a clear message instead of a download. Videos that need an account can be downloaded by signing in with your own, which unlocks only what that account can watch.
+A clean, fast video downloader for Windows, built on [yt-dlp](https://github.com/yt-dlp/yt-dlp) and [FFmpeg](https://ffmpeg.org).
 
-## Status
+[![Latest release](https://img.shields.io/github/v/release/Iosif-Christogeorgos/siphon?style=flat-square&color=0a8f9c&label=release)](https://github.com/Iosif-Christogeorgos/siphon/releases/latest)
+[![Checks](https://img.shields.io/github/actions/workflow/status/Iosif-Christogeorgos/siphon/ci.yml?branch=main&style=flat-square&label=checks)](https://github.com/Iosif-Christogeorgos/siphon/actions/workflows/ci.yml)
+[![Windows 11](https://img.shields.io/badge/Windows-11-0a8f9c?style=flat-square)](#install)
+[![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-0a8f9c?style=flat-square)](LICENSE)
 
-Siphon was built in phases, and all five are done. This is **v0.11.0**.
+[**Download for Windows**](https://github.com/Iosif-Christogeorgos/siphon/releases/latest) · [Features](#features) · [How it works](docs/how-it-works.md)
 
-| Phase | Scope | State |
-| --- | --- | --- |
-| 1 | App shell, managed binaries, link → metadata → best-quality download with progress | Done |
-| 2 | Device presets and manual format selection | Done |
-| 3 | Trim with live preview | Done |
-| 4 | Download queue, playlists, settings | Done |
-| 5 | Background tool updates, app self-update, design polish | Done |
+<br>
 
-## Requirements
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/media/hero-dark.webp">
+  <img src="docs/media/hero-light.webp" alt="Siphon with Big Buck Bunny loaded: the Watch preset for Windows picks 2160p60 VP9 with no quality loss, about 1.3 GB">
+</picture>
 
-- [Node.js](https://nodejs.org) 20 or newer
-- [Rust](https://rustup.rs) (stable)
-- Microsoft C++ Build Tools ("Desktop development with C++") and WebView2, which ships with Windows 11
+</div>
 
-Siphon is Windows only. You do not need to install yt-dlp, FFmpeg or Deno yourself: Siphon downloads them on first launch.
+## Why Siphon
 
-## Run it
+yt-dlp can download from well over a thousand sites, but it's a command-line tool, and the hard part is rarely the download: it's knowing which of a video's dozens of formats will actually play on your phone, fit under Discord's limit, or import cleanly into your editor. Siphon makes that choice for you, from the formats the video really has and what your PC can do, and tells you plainly what it's going to make before it makes it.
+
+No account, no ads, no tracking. Siphon talks only to the sites you download from and to GitHub for its own updates.
+
+## Features
+
+### Made for where the video is going
+
+Pick what the video is for and Siphon works out the rest:
+
+| Preset | What you get |
+| --- | --- |
+| **Max quality** | The best streams exactly as the site has them |
+| **Watch** | The best version that plays on Windows, iPhone / iPad / Mac, Android or a TV |
+| **Share** | The best quality that fits Discord, WhatsApp, TikTok, Reels or Shorts |
+| **Audio** | MP3 or M4A with title, artist and cover art, or the original track untouched |
+| **Edit** | Constant frame rate files for Premiere Pro, DaVinci Resolve, CapCut and Vegas |
+
+Original streams are copied whenever the device can play them, because converting is slower and never improves quality. When a conversion is needed, it runs on your graphics card (NVIDIA, Intel or AMD) if it can. Every plan says what it will do before you press Download: **No quality loss**, **Converts**, **Size-optimized** or **May not play everywhere**, with an estimated size.
+
+### Cut exactly the part you want
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/media/share-trim-dark.webp">
+  <img src="docs/media/share-trim-light.webp" alt="The trim panel with two parts selected on the timeline, and the Share preset fitting each clip under Discord's 20 MB limit at 540p">
+</picture>
+
+Select one or more parts on a timeline, with a live preview and frame-by-frame keys. Only those parts are downloaded, and every clip starts and ends on the exact frame you chose. Where it can, Siphon re-encodes just the second or two around each cut and copies everything in between untouched, so an hour of 1080p is cut in about 20 seconds. Every cut is checked before it's kept.
+
+Combined with **Share**, each clip is made as sharp as it can be while still fitting the upload limit.
+
+### A queue that keeps going
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/media/queue-dark.webp">
+  <img src="docs/media/queue-light.webp" alt="The download list: downloads in progress with their time left and speed, and finished downloads below, under a 20 MB/s speed limit">
+</picture>
+
+- **Pause and resume**, even after closing Siphon or restarting the PC. Downloads carry on from where they stopped.
+- **Retries on its own** when a connection drops or a site briefly refuses.
+- **One speed limit** for all downloads together, so the rest of the house can still stream.
+- **Never overwrites** a file you already have, and tells you when you've downloaded a video before.
+- **Notifies you** when downloads finish while Siphon is in the background.
+
+### Whole playlists and channels
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/media/playlist-dark.webp">
+  <img src="docs/media/playlist-light.webp" alt="A 20-video Blender playlist with 18 videos selected, an estimated total of 2.4 GB, and options to save them in a folder and number them">
+</picture>
+
+Paste a playlist or channel link to pick the videos you want, with an estimated total size. Videos you already have are marked and skipped, so pasting the same playlist again fetches only what's new. Save them in a folder named after the playlist, numbered in order.
+
+### Sign in only when a video needs it
+
+Age-restricted, members-only or account-only videos can be downloaded with your own account. That unlocks only what your account can already watch. Siphon tries every video without an account first, tells you how likely signing in is to help, and keeps each site's sign-in encrypted for your Windows account. It doesn't bypass DRM: protected videos get a clear message instead.
+
+### Always up to date
+
+Video sites change often, and yt-dlp follows within days. Siphon keeps yt-dlp, FFmpeg and Deno updated in the background, checks every download against its published checksum, and rolls back if a new version misbehaves. Siphon updates itself too, from signed releases, and always asks first.
+
+## Install
+
+1. Download `Siphon_x.y.z_x64-setup.exe` from the [latest release](https://github.com/Iosif-Christogeorgos/siphon/releases/latest) and run it.
+2. Windows may show **"Windows protected your PC"**, because the installer isn't signed with a paid code-signing certificate. Choose **More info**, then **Run anyway**.
+3. On first launch, Siphon downloads its engines (yt-dlp, FFmpeg and Deno, about 150 MB). After that it keeps them current by itself.
+
+Siphon runs on Windows 11 (64-bit). You don't need to install anything else.
+
+## Using Siphon
+
+<p align="center">
+  <img src="docs/media/demo.gif" width="760" alt="Pasting a link to Sintel, choosing Watch, and downloading it: the plan says 872p VP9 with no quality loss, about 228 MB, and the download finishes in a few seconds">
+</p>
+
+1. **Copy a video link** and press <kbd>Ctrl</kbd> + <kbd>V</kbd> anywhere in Siphon's window.
+2. **Pick what it's for**, and optionally a quality. Siphon remembers your choice for next time.
+3. **Press Download.** Files go to your Downloads folder unless you choose another in Settings.
+
+Press **Trim** on the video card to download only part of it. In the trim panel, <kbd>Space</kbd> plays, <kbd>,</kbd> and <kbd>.</kbd> step one frame, and <kbd>I</kbd> and <kbd>O</kbd> set the start and end. The **Downloads** button in the title bar opens the queue.
+
+## Documentation
+
+| Document | What's in it |
+| --- | --- |
+| [How it works](docs/how-it-works.md) | The tools, the planner, trimming, the queue, settings and updates in detail |
+| [Presets](docs/presets.md) | What each preset makes, what it assumes, and the sources behind it |
+| [Signing in](docs/sign-in.md) | How sign-in works, what is kept where, and what it can't do |
+| [Decisions](docs/decisions.md) | Why things work the way they do, what was measured, and known issues |
+| [Development](docs/development.md) | Running from source, checks, building an installer and releasing |
+
+## Build from source
+
+You need Windows 11, [Node.js](https://nodejs.org) 20 or newer, [Rust](https://rustup.rs) and the Microsoft C++ Build Tools. Then:
 
 ```sh
 npm install
 npm run tauri dev
 ```
 
-The first launch shows a setup screen while Siphon downloads its engines (about 150 MB). After that, paste a video link, pick where you will watch it, and press **Download**. Files are saved to your Downloads folder unless you choose another in Settings.
+The dev build keeps its own settings and downloads, apart from an installed Siphon. Checks, installers and releases are in [docs/development.md](docs/development.md).
 
-The dev build keeps its own settings, sign-ins, downloads and tools, in folders ending in `.dev` (`%APPDATA%\app.siphon.desktop.dev`), so it never touches an installed Siphon's and can run beside it.
+Built with [Tauri 2](https://tauri.app), React, TypeScript and Rust.
 
-## Build an installer
+## Responsible use
 
-```sh
-npm run tauri build
-```
-
-The installer is written to `src-tauri/target/release/bundle/nsis/`.
-
-The build also signs the installer for the self-update, so it needs the signing key. Without it the build stops at the end with an error about a missing private key. In PowerShell:
-
-```powershell
-$env:TAURI_SIGNING_PRIVATE_KEY = "$env:USERPROFILE\.tauri\siphon.key"   # the key file, or its contents
-$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""                             # the key has no password
-npm run tauri build
-```
-
-Released versions are not built by hand: see [Releases](#releases).
-
-## Checks
-
-```sh
-npm run typecheck                                  # TypeScript
-npm run lint                                       # oxlint: correctness, React hooks, unused code
-npm run knip                                       # unused files, exports and dependencies
-cargo test --manifest-path src-tauri/Cargo.toml    # Rust unit tests
-cargo fmt --manifest-path src-tauri/Cargo.toml --check
-cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
-```
-
-GitHub runs all of them (`.github/workflows/ci.yml`) on every push to `main` and every pull request, and the release workflow runs them first, so a release is never built from a commit that fails them.
-
-## How it works
-
-### Managed binaries
-
-yt-dlp, FFmpeg/ffprobe and Deno (the JavaScript runtime yt-dlp needs for YouTube) are not bundled in the app. They live in the app-data folder so each can update independently:
-
-```
-%LOCALAPPDATA%\app.siphon.desktop\bin\
-  manifest.json       installed versions
-  yt-dlp\             current version
-  yt-dlp.previous\    last known-good version, kept for rollback
-  ffmpeg\
-  deno\
-```
-
-At launch, and once a day while it is open, Siphon asks the GitHub API for the latest release of each tool:
-
-| Tool | Source | Checksum file |
-| --- | --- | --- |
-| yt-dlp | `yt-dlp/yt-dlp` | `SHA2-256SUMS` |
-| FFmpeg | `yt-dlp/FFmpeg-Builds` | `checksums.sha256` |
-| Deno | `denoland/deno` | `<asset>.sha256sum` |
-
-A new version is downloaded to a staging folder, checked against its published SHA-256, swapped in with a rename, and then started once as a self-test. If the self-test fails, the previous version is put back. FFmpeg's rolling builds are refreshed at most once every 30 days, because they change daily but rarely matter.
-
-### Presets and the planner
-
-Presets start from where the video is going. Pick a **group**, then a **target** in it, and optionally a **quality**:
-
-| Group | Targets | What you get |
-| --- | --- | --- |
-| Max quality | | The best streams exactly as the site has them; may not play everywhere |
-| Watch | Windows · iPhone / iPad / Mac · Android · TV | The best version that plays natively on the device |
-| Share | Discord · WhatsApp · TikTok / Reels / Shorts | The best quality that fits the upload limit of your tier |
-| Audio | Music · Best audio (original) | MP3 or M4A at a chosen bitrate, or the original track untouched |
-| Edit | Premiere Pro · DaVinci Resolve · CapCut · Vegas | Constant frame rate H.264 with 48 kHz sound; or ProRes with **Smoothest editing (large files)** |
-
-The **Quality** choice offers **Best** and the resolutions the video actually has. It shows only the current pick until you point at it; it then unfolds across the row, and each resolution shows its estimated size as you point at it (a range when converting, since the size then depends on the picture); a lower one downloads the matching stream, and nothing is upscaled. Music offers bitrates instead; Max quality and Share have no quality row. **Customize** (under the summary) opens the old manual mode, where you choose the streams, file type and codecs yourself, and can save them as a named preset that appears under **My presets**. Siphon remembers the last group, target, quality and Share tier.
-
-The presets are defined once, in `src-tauri/src/plan/registry.rs`, and the interface reads them from the backend. The planner in `src-tauri/src/plan` turns a choice into a recipe from the formats the video really offers: the same Apple preset copies X's 4K H.264 file but converts YouTube's 4K VP9 to HEVC. It copies original streams whenever the target can play them, because converting is slower and never improves quality. The summary above the Download button is generated from the same recipe that builds the commands, so the app cannot describe one thing and do another. It marks each plan **No quality loss**, **Converts** (with a rough time), **Size-optimized** or **May not play everywhere**.
-
-When a conversion is needed, Siphon runs its own ffmpeg pass with a hardware encoder (NVENC, Quick Sync or AMF) if a short test encode shows it works on your machine, and falls back to software otherwise. The downloaded source waits in a work folder until the finished file is written and checked, so a failed conversion can be tried again without downloading again.
-
-**Share** works out the bitrate from the limit and the length (the trimmed length, if you trimmed), picks the size and frame rate that look best for it (a clean 720p30 rather than a blocky 1080p60), and checks the finished file, encoding again a little smaller if it came out over. An original that already fits is copied as it is. A video too long to look decent under the limit isn't made at all: Siphon suggests trimming it instead.
-
-What each target plays or needs, the upload limits, and the sources for them are in [docs/presets.md](docs/presets.md).
-
-### Trimming
-
-**Trim** on the video card opens a preview player with a timeline. Drag the two handles, type the times, or use the keyboard, and add more parts if you want several clips. Each part is downloaded as its own file.
-
-| Key | Action |
-| --- | --- |
-| Space | Play or pause (playback stops at the end of the part) |
-| ← / → | Move one second (with Shift: five) |
-| , / . | Step one frame back or forward |
-| I / O | Set the start or end of the part at the playhead |
-
-The preview comes from YouTube's embedded player for YouTube links, from a low-resolution stream for other sites (a plain file if the site has one, otherwise HLS, which is all Twitch offers), and from a small low-resolution copy if neither plays.
-
-Only the selected part is downloaded (`--download-sections`), and every clip starts and ends on the exact frames chosen. There is no choice to make:
-
-- **When the stream is kept as it is** (H.264 or HEVC), Siphon makes a **smart cut**: it re-encodes only the frames from the start of the clip to the next key frame and from the last key frame to the end, about two seconds each, and copies everything in between untouched. The re-encoded frames match the original's settings and are visually lossless. An hour of 1080p60 from Twitch is cut in about 20 seconds.
-- **When the video is converted anyway** (Edit, Share at a lower size, VP9 or AV1 kept as they are, or a clip for iPhone / iPad / Mac), the cut is made during that conversion.
-
-Every smart cut is checked before it is kept: every frame at its time, the sound in sync from start to end, and the joins decoding exactly like the original. If anything is off, the whole clip is re-encoded instead, so a clip never comes out broken. `siphon.log` (in `%LOCALAPPDATA%\app.siphon.desktop\logs`) records which way each cut was made. How it works, and what was measured, is in [docs/decisions.md](docs/decisions.md#trimming).
-
-### Queue, playlists and settings
-
-Every download joins a queue. A set number run at once (three by default) and the rest wait their turn, in order. The **Downloads** button in the title bar opens the list, where each download can be paused, resumed, cancelled, retried, opened or shown in its folder.
-
-- **Pause** stops the download but keeps what it has fetched; **Resume** carries on from there.
-- **Cancel** stops it and deletes the partial files.
-- A download that fails because the connection dropped or the site refused it is tried again on its own: twice, after 2 and 10 seconds. A site that is limiting requests (HTTP 429) gets one more try, after 30 seconds. The download shows "Trying again in a moment" while it waits.
-- Every new try, automatic or with **Try again**, carries on from what the last one fetched instead of starting over.
-- A trimmed part whose connection stops sending gives up after 20 seconds and is tried again, instead of waiting forever.
-- Downloading something again never replaces or touches a file already in the folder: the new one is named `Title [id] (2).mp4`, then `(3)`, and so on. While a download runs, its files carry a `.siphon-…` marker in their name, which comes off when it is finished.
-- Opening a video you have downloaded before says so under its card ("You already have this · today · 860 MB", or "a clip of this"), with **Open** and **Show in folder**, as long as the file is still where Siphon put it. A video that is downloading or waiting from elsewhere (a playlist, say) shows "Already in your downloads".
-- When downloads finish or fail while Siphon isn't the active window, Windows shows a notification. Downloads that end within two seconds of each other share one ("3 downloads finished").
-- Closing the app pauses every download, so no yt-dlp or ffmpeg process is left behind; while any are running or waiting, Siphon asks first. The list is kept between sessions: paused downloads come back paused and carry on from where they stopped (**Resume all** resumes them together), and finished ones can still be opened.
-
-**Speed limit.** Settings → Downloads → **Speed limit** caps the total download speed of all downloads together: Unlimited (the default), 20, 30, 40 or 50 MB/s, or a custom value. Running downloads share it evenly, a download that needs less leaves the rest to the others, and a change applies to running downloads within a second. The limit is kept in `settings.json`, so it stays on until it is changed. While it is on, the title bar says so ("Limited to 20 MB/s"; click it to change it), and while anything downloads it shows the total speed. MB here is 1,048,576 bytes, the unit download speeds are shown in. How it works is under [Talking to yt-dlp](#talking-to-yt-dlp).
-
-A playlist link shows its videos with checkboxes. The ones you select are added to the queue with the current preset, and the best format is worked out for each video when its turn comes. The estimated total size comes from looking up the first 15 selected videos and scaling them by length to the rest. A YouTube video link that also names a playlist offers a way to the whole playlist.
-
-Videos you have already downloaded (and whose file is still there) are marked **Downloaded** and start unselected, and videos already in the queue are marked **In queue** and can't be added twice, so pasting a playlist again fetches only what's new. Below the list, **Save in a folder named …** puts the videos in a folder named after the playlist, and **Number the files in playlist order** names them `01 - Title.mp4`, `02 - …` (three digits for a playlist of a hundred or more); both choices are remembered. Shift-click selects or unselects everything between two videos, and a list of ten or more has **Find by title**.
-
-A channel link (`youtube.com/@name`) lists the channel's videos grouped as Videos, Live and Shorts, with Videos selected. A channel's Playlists tab lists its playlists; clicking one opens it. Streams that are live or haven't started yet are left out until they can be downloaded.
-
-**Settings** (the gear in the title bar) holds the download folder, the file-name style, the number of simultaneous downloads, the speed limit, the theme and the update choices. They are stored in `settings.json` in the app's config folder (`%APPDATA%\app.siphon.desktop` on Windows), except the theme, which only the interface uses and which is kept with it. The last preset choice and your saved presets are in `choices.json` next to it.
-
-The theme follows Windows' light or dark mode by default (**System**), and changes when Windows does. **Light** or **Dark** keeps Siphon in that theme whatever Windows uses.
-
-| File-name style | Example |
-| --- | --- |
-| Title [id] (default) | `Big Buck Bunny [aqz-KE-bpKQ].mp4` |
-| Title | `Big Buck Bunny.mp4` |
-| Channel - Title | `Blender - Big Buck Bunny.mp4` |
-| Date Title | `2014-11-10 Big Buck Bunny.mp4` |
-| Custom | Your own yt-dlp template, for example `%(channel)s - %(title)s` |
-
-### Signing in
-
-When a video needs an account (age-restricted, members-only, a post only signed-in viewers see), the error says which site ("**youtube.com** needs you to sign in") and offers **Sign in**, with the way to sign in beside it:
-
-- **Sign-in window**: the site's own sign-in page in a Siphon window, with its own browser profile. Sign in as usual and press **Done**; on YouTube, Instagram, X and a few others it finishes by itself.
-- **A browser on this computer**: takes the sign-in over from it. Firefox works; Chrome, Edge and Brave on Windows encrypt their cookies so only they can read them, and Siphon says so.
-- **cookies.txt**: a cookies file exported from your browser with an extension.
-
-Every video is tried without an account first, even on a site you're signed in to, so you're never asked for one a video doesn't need. When a site refuses, Siphon says how likely an account is to help and lets you choose: a login wall or a members-only video opens the sign-in offer (with **No thanks**), the bot check and unrecognised errors get a quiet link with the risk explained, and DRM, removed or region-blocked videos get none. Once you're signed in to a site, a video that needs it uses your sign-in by itself, and its card says **Signed in**.
-
-Siphon checks the sign-in on the video before saying it worked, then looks the video up again and retries that site's failed downloads. Each site's cookies are kept apart, encrypted for your Windows account, and given to that site's downloads only, in a temporary file deleted when the download ends. A sign-in that has run out says so, and so does an account without access. **Settings → Signed-in sites** lists them, with **Sign out** and when to use each: **When needed** (the default) or **Always**. Details, including why Google sometimes refuses embedded sign-in windows, are in [docs/sign-in.md](docs/sign-in.md).
-
-### Updates
-
-Video sites change often and yt-dlp follows within days, so an old yt-dlp is the usual reason a download stops working. Siphon keeps its tools current on its own.
-
-- **When.** The tools are checked at launch and once a day. **Check now** in Settings → Updates does it on demand.
-- **Channel.** yt-dlp comes from its stable releases by default. **Nightly** switches to `yt-dlp/yt-dlp-nightly-builds`, which gets site fixes sooner.
-- **Install automatically or ask first.** By default a new version is installed in the background and a toast says what changed. With **Ask first**, the toast offers the update and nothing is replaced until you accept. A tool that is missing is always installed, because Siphon can't work without it.
-- **Never mid-download.** A tool is not replaced while a download is using it. The update waits and is tried again within the hour.
-- **Update and retry.** If a download fails in a way that points to an outdated yt-dlp (a bot check, an unreadable page, HTTP 403 or 429), Siphon looks for a newer yt-dlp and, if there is one, installs it and tries the download once more before reporting the error. If there is none, a refused or limited request is still tried again after a pause (see [Queue](#queue-playlists-and-settings)), and the video is looked up afresh in case the site changed what it offers.
-
-Siphon also updates itself. At launch it looks for a newer published release on GitHub. If there is one, a toast and Settings → Updates offer **Restart to update**. Siphon always asks first, because it has to restart, and it refuses while downloads are running or waiting. The update is only installed if its signature matches the public key built into the app.
-
-### Releases
-
-Pushing a version tag (`v0.5.0`) runs `.github/workflows/release.yml`. It builds and signs the app, and attaches the installer, its signature and `latest.json` (the file installed copies read to find updates) to a **draft** GitHub release. Nothing reaches installed copies until the draft is published on GitHub.
-
-To make a release: set the same version in `package.json`, `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json`, commit, then tag and push.
-
-The signing key is in the repository secret `TAURI_SIGNING_PRIVATE_KEY`; its public half is in `src-tauri/tauri.conf.json`. Keep a backup of the private key. Without it, installed copies can no longer be updated in place.
-
-### Talking to yt-dlp
-
-All yt-dlp commands are built in Rust and passed as argument arrays, never as shell strings. Links are validated as plain `http(s)` URLs and placed after a `--` separator, so user input can't be read as an option.
-
-Two settings keep downloads fast. Segmented streams (HLS, DASH, which most sites other than YouTube use) are fetched four pieces at a time. A trimmed part is fetched by ffmpeg in the request size the site asks for (10 MB on YouTube), because YouTube sends a single large request at only about twice playback speed. The measurements are in [docs/decisions.md](docs/decisions.md#download-speed).
-
-Every download goes through a small HTTP proxy inside Siphon (`src-tauri/src/throttle`), which is how one speed limit covers all of them, including the parts ffmpeg fetches. Each download gets its own listener on `127.0.0.1`, on a port Windows picks, closed when the download ends. HTTPS passes through it as an untouched tunnel. If Windows or the `HTTP(S)_PROXY` variables name a proxy, Siphon's proxy goes through it. Why it works this way, and what was measured, is in [docs/decisions.md](docs/decisions.md#speed-limit).
-
-Progress comes from `--progress-template` lines that the backend parses and folds into one overall percentage, weighted by stream size. Speed and time left are measured by Siphon from the bytes received over the last three seconds, rather than taken from yt-dlp, whose readings jump. It reaches the UI as `download://event` events.
-
-## Project layout
-
-```
-src/                     React + TypeScript frontend
-  components/            Shared UI (title bar, error card, shadcn/ui primitives)
-  features/              One folder per feature: setup, link, video, playlist, presets, options,
-                         trim, download, queue, settings, speed, sign-in, home
-  lib/                   IPC wrappers, formatting, motion presets
-  stores/                Zustand stores (binaries, choices, downloads, trim, toasts, appUpdate, ui, speed, signIn),
-                         and the shared settings query
-  types.ts               Types mirrored from the Rust backend
-src-tauri/               Rust backend (Tauri 2)
-  src/binaries/          Download, verify, install and update the managed tools
-  src/ytdlp/             Command building, metadata, progress parsing, error classification
-  src/plan/              The preset registry, codec rules and the planner (choice → recipe → summary)
-  src/choices.rs         The remembered choice and saved presets (choices.json), and migrating old ones
-  src/ffmpeg/            Hardware encoder detection and conversion arguments
-  src/downloads/         The download queue, jobs (pause, resume, cancel) and progress tracking
-  src/throttle/          The speed limit: the local proxy, the shared fair limiter, the system proxy
-  src/sessions/          Signed-in sites: cookie jars (DPAPI), which site a link is, the sign-in window,
-                         taking a sign-in over from a browser or a cookies.txt file
-  src/settings.rs        User preferences and where they are stored
-  src/app_update.rs      Checking for and installing a newer Siphon
-  src/preview.rs         Where the trim preview plays from (embed, stream or cached copy)
-  src/commands.rs        The IPC surface
-.github/workflows/ci.yml        Runs the checks on every push and pull request
-.github/workflows/release.yml   Runs the checks, then builds and signs a draft release when a version tag is pushed
-docs/presets.md          What each preset does and assumes, with sources
-docs/sign-in.md          How signing in to sites works, what is kept where, and how to test it
-docs/decisions.md        Why things work the way they do, and known issues
-app-icon.svg             Icon source; regenerate with `npx tauri icon app-icon.svg`
-```
-
-## Stack
-
-Tauri 2, React 19, TypeScript, Vite, Tailwind CSS 4, shadcn/ui, Motion, Zustand, TanStack Query and Lucide icons. There is no telemetry or tracking. The only network requests are the ones needed to fetch a video, to sign in to a site when you ask, and to update Siphon and its managed binaries.
+Siphon is for personal use. Download only what you have the right to, and respect each site's terms. It doesn't circumvent DRM or any other copy protection.
 
 ## License
 
@@ -254,4 +142,4 @@ Siphon is free software: you can redistribute it and/or modify it under the term
 
 In short: anyone may use, change and share Siphon, but a copy they share, changed or not, must come with its full source under the same license.
 
-yt-dlp, FFmpeg and Deno are not part of Siphon. Siphon downloads them from their own projects when it first starts, and each keeps its own license.
+yt-dlp, FFmpeg and Deno are not part of Siphon. Siphon downloads them from their own projects when it first starts, and each keeps its own license. The screenshots show Blender Foundation open movies (*Big Buck Bunny*, *Sintel*, *Spring*, *Tears of Steel*, *Cosmos Laundromat*), licensed [CC BY](https://creativecommons.org/licenses/by/3.0/).
