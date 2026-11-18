@@ -181,6 +181,9 @@ export function Facet<T extends string | number>({
               <motion.div
                 key="options"
                 className="flex h-full min-w-0 flex-1 items-center"
+                // An `animate` target, so unfolding again mid-fade brings the options back:
+                // AnimatePresence reuses the exiting element, which would otherwise stay faded out.
+                animate={{ opacity: 1, transition: { duration: 0.08 } }}
                 exit={{ opacity: 0, transition: { duration: 0.08 } }}
               >
                 <span aria-hidden className="mx-2 h-4 w-px bg-border-strong" />
