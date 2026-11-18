@@ -281,7 +281,12 @@ pub fn notify(app: AppHandle, title: String, body: String) {
         return;
     }
     let short = |text: String| text.chars().take(300).collect::<String>();
-    let _ = app.notification().builder().title(short(title)).body(short(body)).show();
+    let _ = app
+        .notification()
+        .builder()
+        .title(short(title))
+        .body(short(body))
+        .show();
 }
 
 /// The browsers on this computer a sign-in can be taken over from.

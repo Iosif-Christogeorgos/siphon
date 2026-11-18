@@ -223,7 +223,9 @@ pub fn classify(log: &str) -> AppError {
     let haystack = log.to_lowercase();
     for (needles, kind, retry, message) in RULES {
         if needles.iter().any(|needle| haystack.contains(needle)) {
-            return AppError::new(*kind, *message).retrying(*retry).with_details(redact(log));
+            return AppError::new(*kind, *message)
+                .retrying(*retry)
+                .with_details(redact(log));
         }
     }
 

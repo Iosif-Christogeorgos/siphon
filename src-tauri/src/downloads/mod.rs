@@ -105,7 +105,13 @@ impl Place {
 fn folder_name(title: &str) -> Option<String> {
     let cleaned: String = title
         .chars()
-        .map(|c| if c.is_control() || r#"<>:"/\|?*"#.contains(c) { ' ' } else { c })
+        .map(|c| {
+            if c.is_control() || r#"<>:"/\|?*"#.contains(c) {
+                ' '
+            } else {
+                c
+            }
+        })
         .collect();
     let mut name = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
     if name.chars().count() > 100 {
@@ -1368,8 +1374,11 @@ impl DownloadManager {
         let wanted = downloaded.with_file_name(format!("{}.{ext}", args::finished_stem(stem)));
         let output = self.unique_output(wanted, id);
         tokio::fs::rename(downloaded, &output).await.map_err(|err| {
-            AppError::internal("The download finished, but the file couldn't be given its name.")
-                .with_details(format!("{} → {}: {err}", downloaded.display(), output.display()))
+            AppError::internal("The download finished, but the file couldn't be given its name.").with_details(format!(
+                "{} → {}: {err}",
+                downloaded.display(),
+                output.display()
+            ))
         })?;
         Ok(output)
     }
@@ -1683,7 +1692,13 @@ mod naming_tests {
 
     #[test]
     fn playlist_numbers_have_as_many_digits_as_the_playlist_needs() {
-        let number = |index, count| Place { folder: None, number: Some((index, count)) }.prefix();
+        let number = |index, count| {
+            Place {
+                folder: None,
+                number: Some((index, count)),
+            }
+            .prefix()
+        };
         assert_eq!(number(7, 9), "07 - ");
         assert_eq!(number(7, 95), "07 - ");
         assert_eq!(number(7, 182), "007 - ");
@@ -1693,7 +1708,10 @@ mod naming_tests {
 
     #[test]
     fn a_playlist_title_becomes_a_folder_windows_accepts() {
-        assert_eq!(folder_name("Blender Conference 2026").as_deref(), Some("Blender Conference 2026"));
+        assert_eq!(
+            folder_name("Blender Conference 2026").as_deref(),
+            Some("Blender Conference 2026")
+        );
         assert_eq!(folder_name("AC/DC: Live? <Best>").as_deref(), Some("AC DC Live Best"));
         assert_eq!(folder_name("  Ends with dots... ").as_deref(), Some("Ends with dots"));
         assert_eq!(folder_name("..").as_deref(), None);
@@ -1701,7 +1719,10 @@ mod naming_tests {
         assert_eq!(folder_name("con").as_deref(), Some("con_"));
         assert_eq!(folder_name("COM1.mix").as_deref(), Some("COM1.mix_"));
         assert_eq!(folder_name("Comedy").as_deref(), Some("Comedy"));
-        assert_eq!(folder_name(&"x".repeat(300)).map(|name| name.chars().count()), Some(100));
+        assert_eq!(
+            folder_name(&"x".repeat(300)).map(|name| name.chars().count()),
+            Some(100)
+        );
     }
 
     #[test]
@@ -1895,7 +1916,10 @@ mod cookie_tests {
         let first = running_job(&manager, &sessions, "a");
         let second = running_job(&manager, &sessions, "b");
         manager.shut_down().await;
-        assert!(!first.exists() && !second.exists(), "quit: a cookie file is still there");
+        assert!(
+            !first.exists() && !second.exists(),
+            "quit: a cookie file is still there"
+        );
 
         // A site Siphon isn't signed in to runs without one.
         manager.register("other");

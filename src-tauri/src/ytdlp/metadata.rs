@@ -461,16 +461,23 @@ fn collect_entries(
             continue;
         }
         let is_playlist = is_playlist_link(&entry);
-        let Some(url) = entry.url.or(entry.webpage_url) else { continue };
+        let Some(url) = entry.url.or(entry.webpage_url) else {
+            continue;
+        };
         if !seen.insert(url.clone()) {
             continue;
         }
         entries.push(PlaylistEntry {
             url,
             id: entry.id.unwrap_or_default(),
-            title: entry
-                .title
-                .unwrap_or_else(|| (if is_playlist { "Untitled playlist" } else { "Untitled video" }).to_string()),
+            title: entry.title.unwrap_or_else(|| {
+                (if is_playlist {
+                    "Untitled playlist"
+                } else {
+                    "Untitled video"
+                })
+                .to_string()
+            }),
             duration: entry.duration,
             thumbnail: entry.thumbnail.or_else(|| last_thumbnail(entry.thumbnails)),
             channel: entry.channel.or(entry.uploader),
@@ -628,6 +635,9 @@ mod tests {
                 {"_type": "url", "ie_key": "Youtube", "title": "Blender 4.0",
                  "url": "https://www.youtube.com/watch?v=x", "duration": 120}]}"#,
         );
-        assert!(list.entries.iter().all(|entry| entry.section.is_none() && !entry.is_playlist));
+        assert!(list
+            .entries
+            .iter()
+            .all(|entry| entry.section.is_none() && !entry.is_playlist));
     }
 }
