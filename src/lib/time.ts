@@ -9,6 +9,12 @@ export function formatTimecode(totalSeconds: number): string {
   return h > 0 ? `${h}:${pad(m)}:${pad(s)}.${pad(f)}` : `${m}:${pad(s)}.${pad(f)}`;
 }
 
+/** Like `formatTimecode`, but a whole second has no hundredths: "1:02", "1:02.35". */
+export function formatShortTimecode(totalSeconds: number): string {
+  const full = formatTimecode(totalSeconds);
+  return full.endsWith(".00") ? full.slice(0, -3) : full;
+}
+
 /** Reads "1:02.35", "1:02:05", "62.35" or "62". Returns null for anything else. */
 export function parseTimecode(text: string): number | null {
   const parts = text.trim().replace(",", ".").split(":");

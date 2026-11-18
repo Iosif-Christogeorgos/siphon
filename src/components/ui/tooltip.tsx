@@ -1,5 +1,5 @@
 import { Tooltip as TooltipPrimitive } from "radix-ui";
-import type * as React from "react";
+import * as React from "react";
 import { cn } from "@/lib/utils";
 
 function TooltipProvider({
@@ -35,14 +35,21 @@ function Hint({
   children,
   side,
   className,
+  when,
 }: {
   label: React.ReactNode;
   children: React.ReactNode;
   side?: React.ComponentProps<typeof TooltipPrimitive.Content>["side"];
   className?: string;
+  /** Asked each time the hint would open; it opens only if this says so (text that may or may not be cut off). */
+  when?: () => boolean;
 }) {
+  const [open, setOpen] = React.useState(false);
   return (
-    <TooltipPrimitive.Root>
+    <TooltipPrimitive.Root
+      open={when ? open : undefined}
+      onOpenChange={when ? (next) => setOpen(next && when()) : undefined}
+    >
       <TooltipPrimitive.Trigger asChild>{children}</TooltipPrimitive.Trigger>
       <TooltipContent side={side} className={className}>
         {label}
