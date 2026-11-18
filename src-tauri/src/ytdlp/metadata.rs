@@ -286,14 +286,28 @@ pub async fn fetch_with(bins: &BinaryManager, url: &str, cookie_args: &[OsString
         return Err(errors::classify(&stderr));
     }
 
-    let raw: RawInfo =
-        serde_json::from_slice(&output.stdout).map_err(|err| AppError::from(err).with_details(stderr.to_string()))?;
+    let raw = parse(&output.stdout).map_err(|err| AppError::from(err).with_details(stderr.to_string()))?;
 
     if raw.kind.as_deref() == Some("playlist") {
         Ok(Media::Playlist(playlist(raw, url)))
     } else {
         video(raw, url).map(|info| Media::Video(Box::new(info)))
     }
+}
+
+/// Reads what `yt-dlp -J` printed. A page that offers a single file (an audio
+/// host, many generic pages) gets no format list: yt-dlp puts that one format's
+/// fields (`url`, `format_id`, `ext`, `audio_ext`, …) on the result itself.
+/// That result is then read as its own only format, or Siphon would find
+/// nothing to download in a page that plays.
+fn parse(json: &[u8]) -> serde_json::Result<RawInfo> {
+    let value: Value = serde_json::from_slice(json)?;
+    let mut raw = RawInfo::deserialize(&value)?;
+    let single = raw.formats.is_none() && raw.kind.as_deref() != Some("playlist") && raw.url.is_some();
+    if single {
+        raw.formats = Some(vec![RawFormat::deserialize(&value)?]);
+    }
+    Ok(raw)
 }
 
 fn video(raw: RawInfo, requested_url: &str) -> Result<VideoInfo> {
@@ -514,6 +528,29 @@ fn last_thumbnail(thumbnails: Option<Vec<RawThumbnail>>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The shape `yt-dlp -J` prints for a page with one audio file (seen
+    /// 2026-11-18; the values here are made up): no format list.
+    #[test]
+    fn a_page_with_a_single_file_is_its_own_format() {
+        let json = br#"{"id": "3f9a1c", "title": "A recording",
+            "url": "https://media.example.com/sounds/3f9a1c.m4a",
+            "ext": "m4a", "format_id": "0", "format": "0 - audio only", "protocol": "https",
+            "vcodec": "none", "acodec": null, "audio_ext": "m4a", "video_ext": "none", "vbr": 0,
+            "uploader": "someone", "extractor_key": "Generic",
+            "webpage_url": "https://example.com/u/someone/a-recording"}"#;
+        let info = video(parse(json).unwrap(), "https://example.com/u/someone/a-recording").unwrap();
+        assert_eq!(info.formats.len(), 1);
+        assert_eq!(info.formats[0].id, "0");
+        assert_eq!(info.formats[0].kind, FormatKind::Audio);
+        assert_eq!(info.formats[0].ext, "m4a");
+
+        // A list, when there is one, is used as it is; a playlist's link is never read as a format.
+        let listed = br#"{"id": "a", "url": "https://x/a.mp4", "formats": [{"format_id": "1", "ext": "mp4", "vcodec": "avc1", "acodec": "mp4a"}]}"#;
+        assert_eq!(video(parse(listed).unwrap(), "https://x/a").unwrap().formats[0].id, "1");
+        let playlist = br#"{"_type": "playlist", "id": "p", "url": "https://x/p", "entries": []}"#;
+        assert!(parse(playlist).unwrap().formats.is_none());
+    }
 
     fn kind_of(json: &str) -> Option<FormatKind> {
         format(serde_json::from_str(json).unwrap()).map(|format| format.kind)
