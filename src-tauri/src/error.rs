@@ -48,20 +48,48 @@ pub struct AppError {
     pub kind: ErrorKind,
     pub message: String,
     pub details: Option<String>,
-    /// Set when signing in to a site can fix this: the frontend offers it.
+    /// Set when signing in to a site could fix this: the frontend offers it.
     pub sign_in: Option<SignInNeed>,
     /// For the backend's own use; the frontend only sees errors that are final.
     #[serde(skip)]
     pub retry: Retry,
+    /// Whether an account could help, as the error's wording tells (see
+    /// `ytdlp::errors`). `sign_in` is made from it once the site is known.
+    #[serde(skip)]
+    pub chance: Chance,
 }
 
-/// The site to sign in to, for an error an account can fix.
+/// How likely signing in to the site is to fix an error. Siphon always tries
+/// without an account first, and only offers one after the site refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Chance {
+    /// An account can't help: DRM, removed, region-blocked, a connection problem.
+    #[default]
+    Never,
+    /// A login wall: an age gate, posts for signed-in viewers only.
+    Needed,
+    /// Only if the account has access: members-only, Premium-only, a private
+    /// video shared with it, a supporter tier.
+    Maybe,
+    /// The bot check. Signing in often gets past it, but it's also what gets
+    /// accounts flagged, so it's offered with that warning, never suggested.
+    Risky,
+    /// An error Siphon doesn't recognise. An account rarely helps; offered quietly.
+    Unknown,
+}
+
+/// The site to sign in to, for an error an account could fix.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SignInNeed {
     /// "youtube.com": what the user signs in to, and where the cookies go.
     pub site: String,
-    /// Siphon had cookies for this site and it still refused: the session ran out.
-    pub expired: bool,
+    pub chance: Chance,
+    /// Siphon is signed in to the site already.
+    pub signed_in: bool,
+    /// The site refused even with the sign-in: for `Needed` the session ran
+    /// out, for `Maybe` the account has no access.
+    pub refused: bool,
 }
 
 pub type Result<T> = std::result::Result<T, AppError>;
@@ -73,6 +101,7 @@ impl AppError {
             message: message.into(),
             details: None,
             sign_in: None,
+            chance: Chance::Never,
             // Connections fail for reasons that pass; nothing else does by default.
             retry: if kind == ErrorKind::Network {
                 Retry::Soon

@@ -104,7 +104,7 @@ export function QueueSheet() {
 }
 
 function QueueItem({ download }: { download: Download }) {
-  const { pause, resume, retry, remove } = useDownloads.getState();
+  const { pause, resume, remove } = useDownloads.getState();
   const { status, progress } = download;
   const active = status === "queued" || status === "running";
   const text = useRef<HTMLDivElement>(null);
@@ -184,20 +184,7 @@ function QueueItem({ download }: { download: Download }) {
             <Play />
           </Action>
         )}
-        {status === "failed" &&
-          (download.error?.sign_in ? (
-            // Trying again would only fail again; signing in retries it by itself.
-            <Action
-              label={`Sign in to ${download.error.sign_in.site}`}
-              onClick={() => void signInSuggested(download.url, download.error?.sign_in?.site as string)}
-            >
-              <LogIn />
-            </Action>
-          ) : (
-            <Action label="Try again" onClick={() => retry(download.id)}>
-              <RotateCw />
-            </Action>
-          ))}
+        {status === "failed" && <FailedAction download={download} />}
         {status === "finished" && download.path && (
           <>
             <Action label="Open" onClick={() => void ipc.openFile(download.path as string)}>
@@ -216,6 +203,36 @@ function QueueItem({ download }: { download: Download }) {
         </Action>
       </div>
     </div>
+  );
+}
+
+/**
+ * What a failed row offers: signing in where an account is the likely fix and
+ * Siphon has none (signing in retries it by itself), the sign-in Siphon has
+ * where the site's answer leaves it to the user, otherwise Try again.
+ */
+function FailedAction({ download }: { download: Download }) {
+  const { retry } = useDownloads.getState();
+  const need = download.error?.sign_in;
+  const likely = need && (need.chance === "needed" || need.chance === "maybe");
+  if (need && likely && (!need.signed_in || (need.refused && need.chance === "needed"))) {
+    return (
+      <Action label={`Sign in to ${need.site}`} onClick={() => void signInSuggested(download.url, need.site)}>
+        <LogIn />
+      </Action>
+    );
+  }
+  if (need?.signed_in && !need.refused) {
+    return (
+      <Action label={`Try with your ${need.site} sign-in`} onClick={() => retry(download.id, true)}>
+        <LogIn />
+      </Action>
+    );
+  }
+  return (
+    <Action label="Try again" onClick={() => retry(download.id)}>
+      <RotateCw />
+    </Action>
   );
 }
 

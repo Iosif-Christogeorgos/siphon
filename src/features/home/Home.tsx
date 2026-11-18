@@ -26,10 +26,12 @@ function Kbd({ children }: { children: string }) {
 export function Home() {
   const [url, setUrl] = useState<string | null>(null);
   const clipboard = useClipboardLink(url);
+  // The user asked to look this link up with the site's sign-in ("Try with your sign-in").
+  const [withAccount, setWithAccount] = useState<string | null>(null);
 
   const media = useQuery({
-    queryKey: ["media", url],
-    queryFn: () => ipc.fetchMedia(url as string),
+    queryKey: ["media", url, withAccount === url],
+    queryFn: () => ipc.fetchMedia(url as string, withAccount === url),
     enabled: url !== null,
   });
 
@@ -140,7 +142,11 @@ export function Home() {
                 <ErrorCard
                   error={toAppError(media.error)}
                   // Signed in: look the video up again, with the new sign-in.
-                  signIn={url ? { url, onSignedIn: () => void media.refetch() } : undefined}
+                  signIn={
+                    url
+                      ? { url, onSignedIn: () => void media.refetch(), onUseAccount: () => setWithAccount(url) }
+                      : undefined
+                  }
                   action={
                     <Button variant="secondary" size="sm" onClick={() => void media.refetch()}>
                       <RotateCw /> Retry

@@ -1,6 +1,6 @@
 import { Info, LoaderCircle, LogIn, TriangleAlert } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Facet } from "@/components/ui/facet";
 import { Hint } from "@/components/ui/tooltip";
@@ -14,28 +14,77 @@ interface Refusal {
   reason: string;
 }
 
+/** The ways to sign in, explained once, behind every prompt's ⓘ. */
+const METHODS =
+  "Sign-in window: the site’s own page, inside Siphon. A browser: takes over your sign-in from it (Firefox works best). cookies.txt: a file of cookies exported from your browser with an extension.";
+
+/** The prompt's line, what's behind its ⓘ, and its button, for each situation. */
+function wording(need: SignInNeed, message: string): { title: ReactNode; why: string; action: string } {
+  const site = <span className="text-primary">{need.site}</span>;
+  if (need.chance === "needed" && need.refused) {
+    return {
+      title: <>Your {site} sign-in has run out</>,
+      why: `${need.site} no longer accepts the sign-in Siphon kept. Sign in again to carry on.`,
+      action: "Sign in again",
+    };
+  }
+  switch (need.chance) {
+    case "needed":
+      return {
+        title: <>{site} needs you to sign in</>,
+        why: "This video is only for signed-in viewers. Signing in with your own account unlocks what that account can watch, nothing more.",
+        action: "Sign in",
+      };
+    case "maybe":
+      return {
+        title: <>This might work with your {site} account</>,
+        why: `${message} Signing in unlocks it only if your account has access: a membership, a paid tier, or a video shared with you.`,
+        action: "Sign in",
+      };
+    case "risky":
+      return {
+        title: <>{site} wants to check you’re not a bot</>,
+        why: "Signing in usually gets past this check, but downloading a lot with an account can get that account flagged. The check also passes on its own within a few hours.",
+        action: "Sign in anyway",
+      };
+    case "unknown":
+      return {
+        title: <>Signing in to {site} might help</>,
+        why: `${need.site} didn’t say why this failed (${message}). An account sometimes gets past that, but often won’t.`,
+        action: "Sign in",
+      };
+  }
+}
+
 /**
- * Where an error says a site needs an account: the site, how to sign in
- * (Siphon's window, a browser here, or a cookies.txt file: one facet, the
- * suggested way chosen), and Sign in. A way that doesn't work says why in
- * a line, and the choice moves on to the next.
+ * Where an error says signing in could help: the site and how likely it is
+ * to help, how to sign in (Siphon's window, a browser here, or a cookies.txt
+ * file: one facet, the suggested way chosen), Sign in, and No thanks. A way
+ * that doesn't work says why in a line, and the choice moves on to the next.
  */
 export function SignInPrompt({
   need,
+  message,
   url,
   onSignedIn,
+  onDecline,
 }: {
   need: SignInNeed;
+  /** The error's own explanation, for the ⓘ. */
+  message: string;
   /** The video that needed it: the sign-in is checked on it. */
   url: string;
   onSignedIn?: () => void;
+  /** No thanks: back to the plain error. */
+  onDecline?: () => void;
 }) {
-  const { site, expired } = need;
+  const { site } = need;
   const browsers = useSignIn((state) => state.browsers);
   const failed = useSignIn((state) => state.failed[site]);
   const busy = useSignIn((state) => state.busy);
   const [choice, setChoice] = useState<MethodId | null>(null);
   const [refusal, setRefusal] = useState<Refusal | null>(null);
+  const { title, why, action } = wording(need, message);
 
   useEffect(() => void useSignIn.getState().loadBrowsers(), []);
   // The suggestion, until the user picks.
@@ -59,35 +108,25 @@ export function SignInPrompt({
 
   const options = methodIds(browsers ?? []).map((id) => ({
     id,
-    label: id === "window" ? "Sign-in window" : id === "file" ? "cookies.txt" : (browsers?.find((b) => `browser:${b.id}` === id)?.name ?? id),
+    label:
+      id === "window"
+        ? "Sign-in window"
+        : id === "file"
+          ? "cookies.txt"
+          : (browsers?.find((b) => `browser:${b.id}` === id)?.name ?? id),
   }));
+  // Buttons fade under the facet as it unfolds, like neighbouring facets.
+  const underFacet = "transition-opacity duration-150 in-data-facet-open:opacity-0";
 
   return (
     <div className="min-w-0 flex-1">
       <div className="flex min-w-0 items-center gap-1">
-        <h2 className="truncate font-semibold tracking-tight">
-          {expired ? (
-            <>
-              Your <span className="text-primary">{site}</span> sign-in has run out
-            </>
-          ) : (
-            <>
-              <span className="text-primary">{site}</span> needs you to sign in
-            </>
-          )}
-        </h2>
+        <h2 className="truncate font-semibold tracking-tight">{title}</h2>
         <Hint
           label={
             <span className="block space-y-1.5">
-              <span className="block">
-                {expired
-                  ? `${site} no longer accepts the sign-in Siphon kept. Sign in again to carry on.`
-                  : `This video is only for signed-in viewers. Signing in with your own account unlocks what that account can watch, nothing more.`}
-              </span>
-              <span className="block text-muted-foreground">
-                Sign-in window: {site}’s own page, inside Siphon. A browser: takes over your sign-in from it (Firefox
-                works best). cookies.txt: a file of cookies exported from your browser with an extension.
-              </span>
+              <span className="block">{why}</span>
+              <span className="block text-muted-foreground">{METHODS}</span>
             </span>
           }
           className="max-w-80 px-3 py-2 leading-relaxed text-pretty"
@@ -102,7 +141,6 @@ export function SignInPrompt({
         </Hint>
       </div>
 
-      {/* The facet unfolds across this whole row; the button fades under it like a neighbouring facet. */}
       <div data-facet-row className="relative mt-2.5 flex items-center gap-2">
         <Facet
           label="Sign in with"
@@ -112,14 +150,26 @@ export function SignInPrompt({
           onChange={setChoice}
           disabled={working || !browsers}
         />
+        {onDecline && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className={`ml-auto ${underFacet}`}
+            disabled={working}
+            onClick={onDecline}
+          >
+            No thanks
+          </Button>
+        )}
         <Button
           size="sm"
-          className="ml-auto transition-opacity duration-150 in-data-facet-open:opacity-0"
+          variant={need.chance === "risky" ? "secondary" : "default"}
+          className={onDecline ? underFacet : `ml-auto ${underFacet}`}
           disabled={working || !choice}
           onClick={() => void run()}
         >
           {working ? <LoaderCircle className="animate-spin" /> : <LogIn />}
-          {working ? "Signing in…" : expired ? "Sign in again" : "Sign in"}
+          {working ? "Signing in…" : action}
         </Button>
       </div>
 

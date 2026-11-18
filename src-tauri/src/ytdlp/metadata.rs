@@ -40,6 +40,10 @@ pub struct VideoInfo {
     #[serde(skip)]
     pub extractor: Option<String>,
     pub formats: Vec<Format>,
+    /// Looked up with the site's sign-in, because it was needed (or the user
+    /// asked). The download then uses it too: some sites tie their stream
+    /// links to the session that asked for them.
+    pub with_account: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -345,6 +349,7 @@ fn video(raw: RawInfo, requested_url: &str) -> Result<VideoInfo> {
         view_count: raw.view_count.map(|n| n as u64),
         extractor: raw.extractor_key,
         formats,
+        with_account: false,
     })
 }
 

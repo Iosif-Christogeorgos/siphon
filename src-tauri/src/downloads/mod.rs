@@ -21,14 +21,14 @@ use tokio::process::Command;
 use tokio::sync::Notify;
 
 use crate::binaries::{BinaryManager, Tool};
-use crate::error::{AppError, ErrorKind, Result, Retry};
+use crate::error::{AppError, Chance, ErrorKind, Result, Retry};
 use crate::ffmpeg::smart_cut::{self, AudioPiece, Fallback};
 use crate::ffmpeg::{self, encoders::Hardware, Pass};
 use crate::log;
 use crate::plan::codecs::VideoCodec;
 use crate::plan::{self, AudioAction, Choice, Recipe, Trim};
 use crate::process;
-use crate::sessions::{CookieFile, Sessions};
+use crate::sessions::{Account, CookieFile, Sessions};
 use crate::settings::{Settings, SettingsStore};
 use crate::state::{CapabilityCache, MediaCache};
 use crate::throttle::{self, Throttle};
@@ -72,6 +72,11 @@ pub struct DownloadRequest {
     /// Where a video from a playlist goes: its own folder, a number in front of its name.
     #[serde(default)]
     pub place: Option<Place>,
+    /// Use the site's sign-in from the start: the user asked for it ("Try with
+    /// your sign-in"). Otherwise the download goes without an account unless
+    /// its video needed one (see `sessions::Sessions::lookup`).
+    #[serde(default)]
+    pub account: bool,
 }
 
 /// A playlist video's folder and number. Sent again, unchanged, on every
@@ -154,6 +159,15 @@ pub enum DownloadEvent {
     Cancelled {
         id: String,
     },
+}
+
+/// How one try at a job looks its video up.
+#[derive(Debug, Clone, Copy)]
+struct Lookup {
+    /// Again, instead of trusting what this session remembers.
+    refresh: bool,
+    /// With the site's sign-in, or as the site's setting says.
+    account: Account,
 }
 
 /// Why the user stopped a job.
@@ -355,7 +369,8 @@ impl DownloadManager {
                             settings: app.state::<SettingsStore>().get(),
                             place: request.place.clone().unwrap_or_default(),
                         };
-                        manager.run(&job, &url, &request.choice, request.trim).await
+                        let account = if request.account { Account::Use } else { Account::Auto };
+                        manager.run(&job, &url, &request.choice, request.trim, account).await
                     }
                     Err(error) => Err(error),
                 };
@@ -556,7 +571,14 @@ impl DownloadManager {
     }
 
     /// Runs the whole job and returns the path of the finished file.
-    async fn run(&self, job: &JobContext<'_>, url: &str, choice: &Choice, trim: Option<Trim>) -> Result<PathBuf> {
+    async fn run(
+        &self,
+        job: &JobContext<'_>,
+        url: &str,
+        choice: &Choice,
+        trim: Option<Trim>,
+        account: Account,
+    ) -> Result<PathBuf> {
         job.emit(Tracker::new(false).current());
 
         let output_dir = match &job.settings.output_dir {
@@ -574,10 +596,12 @@ impl DownloadManager {
 
         let mut updated = false;
         let mut retries = 0;
-        // Look the video up again instead of trusting what this session remembers.
-        let mut refresh = false;
+        let mut lookup = Lookup {
+            refresh: false,
+            account,
+        };
         loop {
-            let error = match self.attempt(job, url, choice, trim, &output_dir, refresh).await {
+            let error = match self.attempt(job, url, choice, trim, &output_dir, lookup).await {
                 Ok(path) => return Ok(path),
                 Err(error) => error,
             };
@@ -585,12 +609,27 @@ impl DownloadManager {
                 return Err(error);
             }
 
+            // The site refused without an account, in a way the sign-in Siphon
+            // has could fix: look the video up again and download it with that,
+            // once. (The bot check and unrecognised errors are the user's call.)
+            let account_helps = error.sign_in.as_ref().is_some_and(|need| {
+                need.signed_in && !need.refused && matches!(need.chance, Chance::Needed | Chance::Maybe)
+            });
+            if lookup.account == Account::Auto && account_helps {
+                lookup = Lookup {
+                    refresh: true,
+                    account: Account::Use,
+                };
+                job.emit(Tracker::new(false).current());
+                continue;
+            }
+
             // Sites change, and yt-dlp follows within days. If the failure
             // looks like that, get the newest yt-dlp and try again with it.
             if error.kind == ErrorKind::Outdated {
                 // The formats looked up earlier may be the problem, whether
                 // the site has changed since or an older yt-dlp read them.
-                refresh = true;
+                lookup.refresh = true;
             }
             if error.kind == ErrorKind::Outdated && !updated {
                 updated = true;
@@ -649,9 +688,9 @@ impl DownloadManager {
         choice: &Choice,
         trim: Option<Trim>,
         output_dir: &Path,
-        refresh: bool,
+        lookup: Lookup,
     ) -> Result<PathBuf> {
-        let video = self.video_info(job, url, refresh).await?;
+        let video = self.video_info(job, url, lookup).await?;
         let caps = job.app.state::<CapabilityCache>().get(job.bins).await;
         let recipe = plan::plan(&video, choice, trim, &caps)?;
         if let Some(reason) = &recipe.blocked {
@@ -665,7 +704,7 @@ impl DownloadManager {
         let fetch_dir = if recipe.needs_ffmpeg_pass() { &work } else { output_dir };
         tokio::fs::create_dir_all(fetch_dir).await?;
         let downloaded = self
-            .fetch_streams(job, &video.url, &recipe, fetch_dir, &mut tracker)
+            .fetch_streams(job, &video.url, video.with_account, &recipe, fetch_dir, &mut tracker)
             .await?;
 
         let (recipe, source) = if recipe.needs_ffmpeg_pass() {
@@ -1159,15 +1198,18 @@ impl DownloadManager {
 
     /// The video's metadata: from this session's cache, or looked up now
     /// (playlist items are queued without having been looked up first).
-    /// `refresh` looks it up even if it is cached; the cached copy stays in
-    /// place if that fails, so the open video keeps working.
-    async fn video_info(&self, job: &JobContext<'_>, url: &str, refresh: bool) -> Result<Arc<VideoInfo>> {
+    /// A refreshing lookup looks it up even if it is cached; the cached copy
+    /// stays in place if that fails, so the open video keeps working. One that
+    /// is to use the sign-in doesn't take a copy looked up without it.
+    async fn video_info(&self, job: &JobContext<'_>, url: &str, lookup: Lookup) -> Result<Arc<VideoInfo>> {
         let cache = job.app.state::<MediaCache>();
-        if let Some(video) = cache.get(url).filter(|_| !refresh) {
+        let usable =
+            |video: &Arc<VideoInfo>| !lookup.refresh && (lookup.account == Account::Auto || video.with_account);
+        if let Some(video) = cache.get(url).filter(usable) {
             return Ok(video);
         }
         let sessions = Arc::clone(&job.app.state::<Arc<Sessions>>());
-        match sessions.fetch_media(job.bins, url).await? {
+        match sessions.fetch_media(job.bins, url, lookup.account).await? {
             Media::Video(video) => {
                 let video = Arc::new(*video);
                 cache.insert(url, Arc::clone(&video));
@@ -1185,6 +1227,7 @@ impl DownloadManager {
         &self,
         job: &JobContext<'_>,
         url: &str,
+        with_account: bool,
         recipe: &Recipe,
         output_dir: &Path,
         tracker: &mut Tracker,
@@ -1214,9 +1257,11 @@ impl DownloadManager {
                 "--no-mtime",
             ]);
         self.route(job.id, &mut cmd)?;
-        // Signed in to this site? Its cookies, and only its own.
+        // The way the video was looked up: with the site's sign-in (its cookies,
+        // and only its own) if it needed one, otherwise without.
         let sessions = Arc::clone(&job.app.state::<Arc<Sessions>>());
-        let signed_in = self.attach_cookies(job.id, sessions.cookie_file(url));
+        let cookies = if with_account { sessions.cookie_file(url) } else { None };
+        let signed_in = self.attach_cookies(job.id, cookies);
         self.add_cookies(job.id, &mut cmd);
         if !continues {
             // A new download ignores partial files of the same name; a

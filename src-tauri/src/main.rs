@@ -121,6 +121,7 @@ fn main() {
             commands::sign_in_done,
             commands::sign_in_cancel,
             commands::signed_in_sites,
+            commands::set_sign_in_mode,
             commands::sign_out,
             app_update::app_update_check,
             app_update::app_update_install,

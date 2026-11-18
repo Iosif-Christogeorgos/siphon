@@ -18,7 +18,7 @@ import { useSignIn } from "@/stores/signIn";
 import { useTheme } from "@/stores/theme";
 import { useToasts } from "@/stores/toasts";
 import { useUi } from "@/stores/ui";
-import type { FilenameStyle, Settings, SettingsView, SiteSession } from "@/types";
+import type { FilenameStyle, Settings, SettingsView, SignInMode, SiteSession } from "@/types";
 
 const FILENAME_STYLES: { id: FilenameStyle; label: string; example: string }[] = [
   { id: "title_id", label: "Title [id]", example: "Big Buck Bunny [aqz-KE-bpKQ].mp4" },
@@ -318,6 +318,10 @@ function SignedInSites() {
     await ipc.signOut(site);
     await queryClient.invalidateQueries({ queryKey: ["signed-in-sites"] });
   };
+  const setMode = async (site: string, mode: SignInMode) => {
+    await ipc.setSignInMode(site, mode);
+    await queryClient.invalidateQueries({ queryKey: ["signed-in-sites"] });
+  };
   const how = ({ method }: SiteSession) =>
     method.type === "window"
       ? "Siphon’s sign-in window"
@@ -326,41 +330,64 @@ function SignedInSites() {
         : (browsers?.find((browser) => browser.id === method.browser)?.name ?? method.browser);
 
   return (
-    <Group title="Signed-in sites" hint="Offered when a video needs an account.">
+    <Group title="Signed-in sites" hint="Videos download without your account unless they need it.">
       {sites.data?.length ? (
         sites.data.map((session) => (
-          <div key={session.site} className="flex items-center gap-3 px-3.5 py-2.5">
-            <div className="min-w-0 flex-1">
-              <div className="flex min-w-0 items-center gap-1">
-                <p className="truncate text-[13px] font-medium">{session.site}</p>
-                <Hint
-                  label={`Signed in with ${how(session)}, ${formatDay(session.signed_in_at * 1000)}. Siphon keeps only ${session.site}’s cookies, encrypted for your Windows account, and gives them to that site’s downloads alone.`}
-                  className="max-w-72 px-3 py-2 leading-relaxed text-pretty"
-                >
-                  <button
-                    type="button"
-                    aria-label={`About the ${session.site} sign-in`}
-                    className="grid size-5 shrink-0 place-items-center rounded-full text-subtle-foreground transition-colors hover:bg-accent hover:text-foreground"
+          <div key={session.site} className="px-3.5 py-2.5">
+            <div className="flex items-center gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="flex min-w-0 items-center gap-1">
+                  <p className="truncate text-[13px] font-medium">{session.site}</p>
+                  <Hint
+                    label={`Signed in with ${how(session)}, ${formatDay(session.signed_in_at * 1000)}. Siphon keeps only ${session.site}’s cookies, encrypted for your Windows account, and gives them to that site’s downloads alone.`}
+                    className="max-w-72 px-3 py-2 leading-relaxed text-pretty"
                   >
-                    <Info className="size-3" />
-                  </button>
-                </Hint>
+                    <button
+                      type="button"
+                      aria-label={`About the ${session.site} sign-in`}
+                      className="grid size-5 shrink-0 place-items-center rounded-full text-subtle-foreground transition-colors hover:bg-accent hover:text-foreground"
+                    >
+                      <Info className="size-3" />
+                    </button>
+                  </Hint>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {session.expired ? (
+                    <span className="text-destructive">Expired · sign in again when a video asks</span>
+                  ) : (
+                    <>
+                      <span className="text-primary">Active</span>
+                      {session.last_used && ` · used ${formatDay(session.last_used * 1000)}`}
+                    </>
+                  )}
+                </p>
               </div>
-              <p className="text-xs text-muted-foreground">
-                {session.expired ? (
-                  <span className="text-destructive">Expired · sign in again when a video asks</span>
-                ) : (
-                  <>
-                    <span className="text-primary">Active</span>
-                    {session.last_used && ` · used ${formatDay(session.last_used * 1000)}`}
-                  </>
-                )}
-              </p>
+              <Button variant="ghost" size="sm" className="-mr-1 h-7 px-2.5" onClick={() => void signOut(session.site)}>
+                <LogOut className="size-3.5" />
+                Sign out
+              </Button>
             </div>
-            <Button variant="ghost" size="sm" className="-mr-1 h-7 px-2.5" onClick={() => void signOut(session.site)}>
-              <LogOut className="size-3.5" />
-              Sign out
-            </Button>
+            <div className="mt-2 flex items-center justify-between gap-3">
+              <span className="text-xs text-subtle-foreground">Use the sign-in</span>
+              <Segmented
+                label={`When to use the ${session.site} sign-in`}
+                group={`sign-in-mode-${session.site}`}
+                value={session.mode}
+                options={[
+                  {
+                    id: "when_needed",
+                    label: "When needed",
+                    hint: "Only for videos that need it. Everything else downloads without your account.",
+                  },
+                  {
+                    id: "always",
+                    label: "Always",
+                    hint: "For every video from this site. On some sites an account gets better quality.",
+                  },
+                ]}
+                onChange={(mode) => void setMode(session.site, mode)}
+              />
+            </div>
           </div>
         ))
       ) : (

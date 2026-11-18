@@ -67,7 +67,7 @@ export function DownloadPanel({
             <Face key="idle">
               <button
                 type="button"
-                onClick={download ? () => download.ids.forEach(store.retry) : onStart}
+                onClick={download ? () => download.ids.forEach((id) => store.retry(id)) : onStart}
                 disabled={disabled}
                 className="group relative flex size-full items-center justify-center gap-2.5 overflow-hidden text-[15px] font-semibold text-primary-foreground transition-[background-color,transform] duration-150 hover:bg-primary-hover active:scale-[0.985] disabled:pointer-events-none disabled:opacity-60"
               >
@@ -116,7 +116,10 @@ export function DownloadPanel({
         {download?.status === "failed" && download.error && (
           <motion.div variants={riseIn} initial="hidden" animate="visible" exit="exit">
             {/* Signing in retries the download by itself (see `stores/signIn`). */}
-            <ErrorCard error={download.error} signIn={{ url: download.url }} />
+            <ErrorCard
+              error={download.error}
+              signIn={{ url: download.url, onUseAccount: () => download.ids.forEach((id) => store.retry(id, true)) }}
+            />
           </motion.div>
         )}
       </AnimatePresence>

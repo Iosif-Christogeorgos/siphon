@@ -14,6 +14,7 @@ import type {
   Settings,
   SettingsView,
   SignInMethod,
+  SignInMode,
   SignInOutcome,
   SignInStatus,
   SiteSession,
@@ -28,7 +29,8 @@ export const ipc = {
   binariesStatus: () => invoke<ToolStatus[]>("binaries_status"),
   /** `install` forces updates to be installed even in "ask first" mode. */
   binariesSync: (install: boolean) => invoke<ToolStatus[]>("binaries_sync", { install }),
-  fetchMedia: (url: string) => invoke<Media>("fetch_media", { url }),
+  /** Without an account unless the video needs one; `account` uses the site's sign-in for this lookup. */
+  fetchMedia: (url: string, account = false) => invoke<Media>("fetch_media", { url, account }),
   getPresets: () => invoke<Registry>("get_presets"),
   getChoices: () => invoke<Choices>("get_choices"),
   setChoices: (choices: Choices) => invoke<Choices>("set_choices", { choices }),
@@ -61,6 +63,7 @@ export const ipc = {
   signInCancel: () => invoke<void>("sign_in_cancel"),
   signedInSites: () => invoke<SiteSession[]>("signed_in_sites"),
   signOut: (site: string) => invoke<void>("sign_out", { site }),
+  setSignInMode: (site: string, mode: SignInMode) => invoke<void>("set_sign_in_mode", { site, mode }),
   /** The version of a newer Siphon release, or null. */
   appUpdateCheck: () => invoke<string | null>("app_update_check"),
   /** Installs the newest release and restarts the app. */

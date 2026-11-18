@@ -11,6 +11,8 @@ export interface DownloadSource {
   url: string;
   title: string;
   thumbnail: string | null;
+  /** The video was found with the site's sign-in: the download uses it too. */
+  with_account?: boolean;
 }
 
 export interface Download extends DownloadSource {
@@ -28,6 +30,8 @@ export interface Download extends DownloadSource {
   finishedAt?: number;
   /** Set once failed. */
   error: AppError | null;
+  /** Download with the site's sign-in (its video needed it, or the user asked). */
+  account?: boolean;
 }
 
 interface DownloadsState {
@@ -40,8 +44,8 @@ interface DownloadsState {
   pause: (id: string) => void;
   /** Continues a paused download where it stopped. */
   resume: (id: string) => void;
-  /** Starts a failed download again; it carries on from what it had fetched. */
-  retry: (id: string) => void;
+  /** Starts a failed download again; it carries on from what it had fetched. `account` uses the site's sign-in from now on. */
+  retry: (id: string, account?: boolean) => void;
   /** Takes a download off the list, stopping it and deleting partial files if needed. */
   remove: (id: string) => void;
   /** Takes every finished download off the list (the files stay). */
@@ -121,9 +125,9 @@ export const useDownloads = create<DownloadsState>((set, get) => {
    * or failed.
    */
   const submit = (download: Download) => {
-    const { id, url, choice, trim, place = null } = download;
+    const { id, url, choice, trim, place = null, account = false } = download;
     ipc
-      .startDownload({ id, url, choice, trim, place })
+      .startDownload({ id, url, choice, trim, place, account })
       .catch((error) => patch(id, { status: "failed", error: toAppError(error) }));
   };
 
@@ -142,6 +146,7 @@ export const useDownloads = create<DownloadsState>((set, get) => {
         path: null,
         size: null,
         error: null,
+        account: source.with_account ?? false,
       };
       set({ byId: { ...get().byId, [download.id]: download }, order: [...get().order, download.id] });
       submit(download);
@@ -158,15 +163,17 @@ export const useDownloads = create<DownloadsState>((set, get) => {
       submit(download);
     },
 
-    retry: (id) => {
+    retry: (id, account) => {
       const download = get().byId[id];
       if (download?.status !== "failed") return;
+      const next = { ...download, account: download.account || account === true };
       patch(id, {
         status: "queued",
         progress: { ...download.progress, stage: "queued", speed: null, eta: null },
         error: null,
+        account: next.account,
       });
-      submit(download);
+      submit(next);
     },
 
     remove: (id) => {

@@ -1,6 +1,7 @@
-import { ImageOff } from "lucide-react";
+import { ImageOff, LogIn } from "lucide-react";
 import { motion } from "motion/react";
 import { type ReactNode, useState } from "react";
+import { Hint } from "@/components/ui/tooltip";
 import { formatCount, formatDuration } from "@/lib/format";
 import { bestVideoFormat, resolutionLabel } from "@/lib/formats";
 import { displayHost } from "@/lib/url";
@@ -27,6 +28,19 @@ export function VideoCard({ video, action }: { video: VideoInfo; action?: ReactN
           {quality && <Badge accent>Up to {quality}</Badge>}
           {best?.dynamic_range && best.dynamic_range !== "SDR" && <Badge>{best.dynamic_range}</Badge>}
           {video.view_count != null && <Badge>{formatCount(video.view_count)} views</Badge>}
+          {video.with_account && (
+            <Hint
+              label={`Found with your ${displayHost(video.url)} sign-in, because this video needs one. It downloads with it too.`}
+              className="max-w-64 text-pretty"
+            >
+              <span tabIndex={0} className="rounded-md outline-none focus-visible:ring-[3px] focus-visible:ring-ring/40">
+                <Badge>
+                  <LogIn className="mr-1 inline size-3 align-[-2px]" />
+                  Signed in
+                </Badge>
+              </span>
+            </Hint>
+          )}
           {action && <div className="ml-auto">{action}</div>}
         </div>
       </div>

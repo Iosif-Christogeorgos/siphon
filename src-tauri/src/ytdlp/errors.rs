@@ -1,108 +1,138 @@
 //! Turns yt-dlp's stderr into a plain-language [`AppError`].
 
-use crate::error::{AppError, ErrorKind, Retry};
+use crate::error::{AppError, Chance, ErrorKind, Retry};
 use crate::sessions::cookies::redact;
 
-/// Substring → (kind, whether to try again, friendly message). Checked in
-/// order against the lower-cased log, so more specific phrases come first.
-const RULES: &[(&[&str], ErrorKind, Retry, &str)] = &[
-    (
-        &[
-            "drm protected",
-            "drm-protected",
-            "known to use drm",
-            "[drm]",
-            "widevine",
-            "fairplay",
-        ],
-        ErrorKind::Drm,
-        Retry::No,
-        "This video is protected by DRM, so it can't be downloaded. Siphon doesn't bypass copy protection.",
-    ),
-    (
+/// One way a lookup or download says it failed.
+struct Rule {
+    /// Any of these, in the lower-cased log.
+    needles: &'static [&'static str],
+    kind: ErrorKind,
+    retry: Retry,
+    /// Whether signing in to the site could help. Siphon always tries without
+    /// an account first; this only decides what it offers once that failed.
+    chance: Chance,
+    message: &'static str,
+}
+
+/// Checked in order, so more specific phrases come first. In particular,
+/// what an account can't fix (or only might) comes before the login wall:
+/// those messages often mention signing in or cookies too.
+const RULES: &[Rule] = &[
+    Rule {
+        needles: &["drm protected", "drm-protected", "known to use drm", "[drm]", "widevine", "fairplay"],
+        kind: ErrorKind::Drm,
+        retry: Retry::No,
+        chance: Chance::Never,
+        message: "This video is protected by DRM, so it can't be downloaded. Siphon doesn't bypass copy protection.",
+    },
+    Rule {
         // Asking again straight away only makes a site more suspicious.
-        &["not a bot", "confirm you’re not", "confirm you're not"],
-        ErrorKind::Outdated,
-        Retry::No,
+        needles: &["not a bot", "confirm you’re not", "confirm you're not"],
+        kind: ErrorKind::Outdated,
+        retry: Retry::No,
+        // Signing in often gets past it, and is also what gets accounts flagged.
+        chance: Chance::Risky,
         // Not "updating fixes this": the check is usually about the connection,
         // and the newest yt-dlp gets it too. (A download still tries a newer
         // yt-dlp first, in case there is one.)
-        "The site wants to check you're not a bot. This usually happens after a lot of downloading in a short time, and passes on its own within a few hours. Switching yt-dlp to Nightly in Settings sometimes gets through sooner.",
-    ),
-    (
+        message: "The site wants to check you're not a bot. This usually happens after a lot of downloading in a short time, and passes on its own within a few hours. Switching yt-dlp to Nightly in Settings sometimes gets through sooner.",
+    },
+    Rule {
         // The formats were looked up a while ago and the site has since
         // changed what it offers: a fresh lookup usually settles it.
-        &["requested format is not available"],
-        ErrorKind::Outdated,
-        Retry::Soon,
-        "The site changed something and the download engine couldn't read it. An update usually fixes this.",
-    ),
-    (
-        &[
+        needles: &["requested format is not available"],
+        kind: ErrorKind::Outdated,
+        retry: Retry::Soon,
+        chance: Chance::Never,
+        message: "The site changed something and the download engine couldn't read it. An update usually fixes this.",
+    },
+    Rule {
+        needles: &[
             "no video formats found",
             "nsig extraction failed",
             "signature extraction failed",
             "unable to extract",
         ],
-        ErrorKind::Outdated,
-        Retry::No,
-        "The site changed something and the download engine couldn't read it. An update usually fixes this.",
-    ),
-    (
-        &["http error 429", "too many requests", "rate-limited", "rate limited"],
-        ErrorKind::Outdated,
-        Retry::Later,
-        "The site is limiting requests right now. Wait a little and try again.",
-    ),
-    (
+        kind: ErrorKind::Outdated,
+        retry: Retry::No,
+        chance: Chance::Never,
+        message: "The site changed something and the download engine couldn't read it. An update usually fixes this.",
+    },
+    Rule {
+        needles: &["http error 429", "too many requests", "rate-limited", "rate limited"],
+        kind: ErrorKind::Outdated,
+        retry: Retry::Later,
+        chance: Chance::Never,
+        message: "The site is limiting requests right now. Wait a little and try again.",
+    },
+    Rule {
         // Often an outdated yt-dlp, but sites also refuse a request now and
         // then for no lasting reason, so this one is tried again as well.
-        &["http error 403"],
-        ErrorKind::Outdated,
-        Retry::Soon,
-        "The site refused the download. Updating the download engine usually fixes this.",
-    ),
-    (
-        &["unsupported url", "no suitable extractor", "is not a valid url"],
-        ErrorKind::Unsupported,
-        Retry::No,
-        "Siphon doesn't recognise this link. Make sure it points to a page with a video.",
-    ),
-    // What an account can't fix comes before what it can: these messages also
-    // say "sign in" or mention cookies, and signing in would only waste the
-    // user's time.
-    (
+        needles: &["http error 403"],
+        kind: ErrorKind::Outdated,
+        retry: Retry::Soon,
+        chance: Chance::Never,
+        message: "The site refused the download. Updating the download engine usually fixes this.",
+    },
+    Rule {
+        needles: &["unsupported url", "no suitable extractor", "is not a valid url"],
+        kind: ErrorKind::Unsupported,
+        retry: Retry::No,
+        chance: Chance::Never,
+        message: "Siphon doesn't recognise this link. Make sure it points to a page with a video.",
+    },
+    Rule {
         // YouTube: "Private video. Sign in if you've been granted access to this video."
-        &["private video", "this video is private", "video is private"],
-        ErrorKind::Unavailable,
-        Retry::No,
-        "This video is private. Only the people its owner shared it with can watch it.",
-    ),
-    (
-        &[
-            "requires payment",
-            "rent this video",
-            "buy this video",
-            "purchase this video",
-            "premium members",
-            "music premium",
-            "youtube premium",
+        needles: &["private video", "this video is private", "video is private"],
+        kind: ErrorKind::Unavailable,
+        retry: Retry::No,
+        chance: Chance::Maybe,
+        message: "This video is private. Only the people its owner shared it with can watch it.",
+    },
+    Rule {
+        // Bought or rented videos are protected by DRM even for their buyer.
+        needles: &["requires payment", "rent this video", "buy this video", "purchase this video"],
+        kind: ErrorKind::Unavailable,
+        retry: Retry::No,
+        chance: Chance::Never,
+        message: "This video has to be bought or rented, so it can't be downloaded.",
+    },
+    Rule {
+        needles: &["premium members", "music premium", "youtube premium"],
+        kind: ErrorKind::Unavailable,
+        retry: Retry::No,
+        chance: Chance::Maybe,
+        message: "This video is only for paid members of the site.",
+    },
+    Rule {
+        needles: &["video-password", "protected by a password", "password-protected", "password protected"],
+        kind: ErrorKind::Unavailable,
+        retry: Retry::No,
+        chance: Chance::Never,
+        message: "This video is protected by a password, which Siphon can't enter.",
+    },
+    Rule {
+        // Only for the accounts that have joined or paid. Patreon says just
+        // "You do not have access to this post", whether signed in or not.
+        needles: &[
+            "members-only",
+            "members only",
+            "join this channel",
+            "channel's members",
+            "subscriber-only",
+            "subscribers only",
+            "you do not have access to this post",
         ],
-        ErrorKind::Unavailable,
-        Retry::No,
-        "This video has to be bought, rented or watched with a paid membership, so it can't be downloaded.",
-    ),
-    (
-        &["video-password", "protected by a password", "password-protected", "password protected"],
-        ErrorKind::Unavailable,
-        Retry::No,
-        "This video is protected by a password, which Siphon can't enter.",
-    ),
-    (
-        // Everything a site's own account unlocks: age gates, members-only and
-        // logged-in-only posts. yt-dlp ends each of these with a hint to pass
-        // cookies or credentials, which is the surest sign.
-        &[
+        kind: ErrorKind::LoginRequired,
+        retry: Retry::No,
+        chance: Chance::Maybe,
+        message: "This video is only for the channel's or creator's members.",
+    },
+    Rule {
+        // A login wall: age gates, posts for signed-in viewers. yt-dlp ends
+        // these with a hint to pass cookies or credentials, the surest sign.
+        needles: &[
             "use --cookies",
             "--cookies-from-browser",
             "to provide account credentials",
@@ -116,33 +146,31 @@ const RULES: &[(&[&str], ErrorKind, Retry, &str)] = &[
             "login required",
             "log in for access",
             "requires authentication",
-            "members-only",
-            "members only",
-            "join this channel",
-            "channel's members",
-            "subscriber-only",
-            "subscribers only",
             "http error 401",
         ],
-        ErrorKind::LoginRequired,
-        Retry::No,
-        "This video is only available to signed-in viewers of the site.",
-    ),
-    (
-        &[
+        kind: ErrorKind::LoginRequired,
+        retry: Retry::No,
+        chance: Chance::Needed,
+        message: "This video is only available to signed-in viewers of the site.",
+    },
+    Rule {
+        needles: &[
             "not available in your country",
             "geo-restricted",
             "geo restricted",
             "blocked it in your country",
             "not available from your location",
         ],
-        ErrorKind::Unavailable,
-        Retry::No,
-        "This video isn't available in your region.",
-    ),
-    (
-        &[
+        kind: ErrorKind::Unavailable,
+        retry: Retry::No,
+        chance: Chance::Never,
+        message: "This video isn't available in your region.",
+    },
+    Rule {
+        needles: &[
             "video unavailable",
+            "this video is unavailable",
+            "this video is not available",
             "has been removed",
             "no longer available",
             "does not exist",
@@ -153,32 +181,46 @@ const RULES: &[(&[&str], ErrorKind, Retry, &str)] = &[
             "premieres in",
             "this live event will begin",
         ],
-        ErrorKind::Unavailable,
-        Retry::No,
-        "This video isn't available. It may have been removed, made private or not started yet.",
-    ),
-    (
-        &["no space left", "not enough space", "errno 28"],
-        ErrorKind::DiskFull,
-        Retry::No,
-        "There isn't enough free disk space to finish this download.",
-    ),
-    (
+        kind: ErrorKind::Unavailable,
+        retry: Retry::No,
+        chance: Chance::Never,
+        message: "This video isn't available. It may have been removed, made private or not started yet.",
+    },
+    Rule {
+        // The site answered, with a refusal no rule above knows (400, 418, …).
+        // yt-dlp says "Unable to download webpage" for these too, which the
+        // connection rule below would otherwise take for a lost connection.
+        needles: &["http error 4"],
+        kind: ErrorKind::Unavailable,
+        retry: Retry::No,
+        chance: Chance::Unknown,
+        message: "The site turned the request down without saying why. Details has its exact answer.",
+    },
+    Rule {
+        needles: &["no space left", "not enough space", "errno 28"],
+        kind: ErrorKind::DiskFull,
+        retry: Retry::No,
+        chance: Chance::Never,
+        message: "There isn't enough free disk space to finish this download.",
+    },
+    Rule {
         // yt-dlp hands section downloads to ffmpeg, which reports a refused
         // or dropped connection only as an exit code.
-        &["ffmpeg exited with code"],
-        ErrorKind::Network,
-        Retry::Soon,
-        "The site dropped the connection while sending the video. Try again; it usually works the second time.",
-    ),
-    (
-        &["http error 500", "http error 502", "http error 503", "http error 504"],
-        ErrorKind::Network,
-        Retry::Soon,
-        "The site is having trouble right now. Try again in a moment.",
-    ),
-    (
-        &[
+        needles: &["ffmpeg exited with code"],
+        kind: ErrorKind::Network,
+        retry: Retry::Soon,
+        chance: Chance::Never,
+        message: "The site dropped the connection while sending the video. Try again; it usually works the second time.",
+    },
+    Rule {
+        needles: &["http error 500", "http error 502", "http error 503", "http error 504"],
+        kind: ErrorKind::Network,
+        retry: Retry::Soon,
+        chance: Chance::Never,
+        message: "The site is having trouble right now. Try again in a moment.",
+    },
+    Rule {
+        needles: &[
             // Siphon's own proxy (see `throttle`) reports a site it couldn't reach this way.
             "couldn't reach the site",
             "tunnel connection failed",
@@ -205,10 +247,11 @@ const RULES: &[(&[&str], ErrorKind, Retry, &str)] = &[
             "winerror 10061",
             "winerror 11001",
         ],
-        ErrorKind::Network,
-        Retry::Soon,
-        "Couldn't reach the site. Check your internet connection and try again.",
-    ),
+        kind: ErrorKind::Network,
+        retry: Retry::Soon,
+        chance: Chance::Never,
+        message: "Couldn't reach the site. Check your internet connection and try again.",
+    },
 ];
 
 /// True when ffmpeg, fetching a trimmed part, lost its input before the end
@@ -221,11 +264,13 @@ pub fn section_cut_short(log: &str) -> bool {
 /// Classifies a failed run. `log` is everything yt-dlp wrote to stderr.
 pub fn classify(log: &str) -> AppError {
     let haystack = log.to_lowercase();
-    for (needles, kind, retry, message) in RULES {
-        if needles.iter().any(|needle| haystack.contains(needle)) {
-            return AppError::new(*kind, *message)
-                .retrying(*retry)
+    for rule in RULES {
+        if rule.needles.iter().any(|needle| haystack.contains(needle)) {
+            let mut error = AppError::new(rule.kind, rule.message)
+                .retrying(rule.retry)
                 .with_details(redact(log));
+            error.chance = rule.chance;
+            return error;
         }
     }
 
@@ -237,7 +282,10 @@ pub fn classify(log: &str) -> AppError {
         .map(|line| line.trim().to_string())
         .filter(|line| !line.is_empty() && line.len() <= 200)
         .unwrap_or_else(|| "Something went wrong while talking to the site.".to_string());
-    AppError::internal(redact(&message)).with_details(redact(log))
+    let mut error = AppError::internal(redact(&message)).with_details(redact(log));
+    // An answer Siphon doesn't recognise: an account rarely helps, but might.
+    error.chance = Chance::Unknown;
+    error
 }
 
 #[cfg(test)]
@@ -300,15 +348,14 @@ mod tests {
         assert!(!section_cut_short("[download] Download completed"));
     }
 
-    /// Real yt-dlp messages, from several sites: sign-in is offered only where
-    /// an account can actually unlock the video.
+    /// Real yt-dlp messages, from several sites: how likely an account is to
+    /// help each. Only a login wall is `Needed`; nothing that works without an
+    /// account is ever asked to sign in, because Siphon tries without one first.
     #[test]
-    fn offers_sign_in_only_where_an_account_helps() {
-        let kind = |log: &str| classify(log).kind;
-        let fixable = [
+    fn says_how_likely_an_account_is_to_help() {
+        let chance = |log: &str| classify(log).chance;
+        let needed = [
             "ERROR: [youtube] abc: Sign in to confirm your age. This video may be inappropriate for some users. Use --cookies-from-browser or --cookies for the authentication. See  https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp  for how to manually pass cookies.",
-            "ERROR: [youtube] abc: Join this channel to get access to members-only content like this video, and other exclusive perks.",
-            "ERROR: [youtube] abc: This video is available to this channel's members on level: Supporter (or any higher level). Join this YouTube channel from your computer or Android app.",
             "ERROR: [Instagram] C1a2B3: Requested content is not available, rate-limit reached or login required. Use --cookies, --cookies-from-browser, --username and --password, --netrc-cmd, or --netrc (instagram) to provide account credentials. See  https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp  for how to manually pass cookies",
             "ERROR: [Instagram] C1a2B3: Instagram sent an empty media response. Check if this post is accessible in your browser without being logged-in. If it is not, then use --cookies-from-browser or --cookies for the authentication.",
             "ERROR: [twitter] 1789: NSFW tweet requires authentication. Use --cookies, --cookies-from-browser, --username and --password, --netrc-cmd, or --netrc (twitter) to provide account credentials.",
@@ -316,24 +363,53 @@ mod tests {
             "ERROR: [facebook] 1234: This video is only available for registered users. Use --cookies-from-browser or --cookies for the authentication.",
             "ERROR: [generic] Unable to download webpage: HTTP Error 401: Unauthorized (caused by <HTTPError 401: Unauthorized>)",
         ];
-        for log in fixable {
-            assert_eq!(kind(log), ErrorKind::LoginRequired, "{log}");
+        for log in needed {
+            assert_eq!(chance(log), Chance::Needed, "{log}");
+            assert_eq!(classify(log).kind, ErrorKind::LoginRequired, "{log}");
         }
 
-        let not_fixable = [
-            // Private: the owner decides, and the message says "sign in" and "cookies" too.
-            ("ERROR: [youtube] abc: Private video. Sign in if you've been granted access to this video. Use --cookies-from-browser or --cookies for the authentication.", ErrorKind::Unavailable),
+        // Only if the account has access: offered as "might work", and never
+        // called a run-out sign-in when the account is simply refused.
+        let maybe = [
+            "ERROR: [youtube] abc: Join this channel to get access to members-only content like this video, and other exclusive perks.",
+            "ERROR: [youtube] abc: This video is available to this channel's members on level: Supporter (or any higher level). Join this YouTube channel from your computer or Android app.",
+            "ERROR: [youtube] abc: Private video. Sign in if you've been granted access to this video. Use --cookies-from-browser or --cookies for the authentication.",
+            "ERROR: [youtube] abc: This video is only available for Music Premium members",
+            "ERROR: [patreon] 123456: You do not have access to this post",
+        ];
+        for log in maybe {
+            assert_eq!(chance(log), Chance::Maybe, "{log}");
+        }
+
+        assert_eq!(
+            chance("ERROR: [youtube] abc: Sign in to confirm you’re not a bot. Use --cookies-from-browser or --cookies for the authentication."),
+            Chance::Risky
+        );
+        assert_eq!(chance("ERROR: Something odd happened"), Chance::Unknown);
+        // A refusal no rule knows is the site's answer, not a lost connection (found 2026-11-18).
+        let teapot =
+            "ERROR: [generic] Unable to download webpage: HTTP Error 418: I'm a Teapot (caused by <HTTPError 418>)";
+        assert_eq!(chance(teapot), Chance::Unknown);
+        assert_eq!(classify(teapot).kind, ErrorKind::Unavailable);
+        assert_eq!(
+            chance("ERROR: [Instagram] CWqAgUZgCku: Video info extraction failed: HTTP Error 400: Bad Request"),
+            Chance::Unknown
+        );
+
+        let never = [
             ("ERROR: [youtube] abc: This video requires payment to watch.", ErrorKind::Unavailable),
-            ("ERROR: [youtube] abc: This video is only available for Music Premium members", ErrorKind::Unavailable),
             ("ERROR: [vimeo] 76979871: This video is protected by a password, use the --video-password option", ErrorKind::Unavailable),
             ("ERROR: [youtube] abc: Video unavailable. This video has been removed by the uploader", ErrorKind::Unavailable),
+            ("ERROR: [youtube] 1ARh2RJwd2w: This video is unavailable", ErrorKind::Unavailable),
             ("ERROR: [youtube] abc: Video unavailable. The uploader has not made this video available in your country", ErrorKind::Unavailable),
             ("ERROR: [DRM] The requested site is known to use DRM protection. It will NOT be supported.", ErrorKind::Drm),
-            // An account is what gets flagged here; it stays the bot check.
-            ("ERROR: [youtube] abc: Sign in to confirm you’re not a bot. Use --cookies-from-browser or --cookies for the authentication.", ErrorKind::Outdated),
+            ("ERROR: unable to download video data: HTTP Error 403: Forbidden", ErrorKind::Outdated),
+            ("ERROR: HTTP Error 429: Too Many Requests", ErrorKind::Outdated),
+            ("ERROR: Unable to download webpage: timed out", ErrorKind::Network),
         ];
-        for (log, expected) in not_fixable {
-            assert_eq!(kind(log), expected, "{log}");
+        for (log, kind) in never {
+            assert_eq!(chance(log), Chance::Never, "{log}");
+            assert_eq!(classify(log).kind, kind, "{log}");
         }
     }
 

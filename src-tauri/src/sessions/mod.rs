@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
 use crate::binaries::BinaryManager;
-use crate::error::{AppError, ErrorKind, Result, SignInNeed};
+use crate::error::{AppError, Chance, Result, SignInNeed};
 use crate::ytdlp::metadata::{self, Media};
 use cookies::Cookie;
 
@@ -58,6 +58,32 @@ pub struct SiteSession {
     pub last_used: Option<u64>,
     /// The site refused its cookies: signing in again is the only fix.
     pub expired: bool,
+    /// When the sign-in is used; sites saved before this setting existed get the default.
+    #[serde(default)]
+    pub mode: Mode,
+}
+
+/// When a signed-in site's cookies go with a request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Mode {
+    /// Only after the site refused without them (the default). Less of the
+    /// account's activity is on record, and a video that plays for anyone
+    /// keeps working when the signed-in way is broken (Instagram, 2026-11).
+    #[default]
+    WhenNeeded,
+    /// Every time: on some sites an account gets better quality than anyone
+    /// else (YouTube Premium's higher-bitrate 1080p).
+    Always,
+}
+
+/// How one lookup treats the site's sign-in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Account {
+    /// As the site's [`Mode`] says.
+    Auto,
+    /// With it: the user asked for this one ("Try with your sign-in").
+    Use,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -126,6 +152,25 @@ impl Sessions {
         self.index.lock().unwrap().sites.contains_key(site)
     }
 
+    fn mode(&self, site: &str) -> Mode {
+        self.index
+            .lock()
+            .unwrap()
+            .sites
+            .get(site)
+            .map(|entry| entry.mode)
+            .unwrap_or_default()
+    }
+
+    /// Settings' "When needed" or "Always" for a signed-in site.
+    pub fn set_mode(&self, site: &str, mode: Mode) {
+        let mut index = self.index.lock().unwrap();
+        if let Some(entry) = index.sites.get_mut(site) {
+            entry.mode = mode;
+            self.save_index(&index);
+        }
+    }
+
     /// Keeps a site's cookies (only its own), replacing any it had. Returns
     /// whether this is the first time for a site whose sign-in needs a word
     /// of caution (see [`site::is_google`]).
@@ -139,6 +184,8 @@ impl Sessions {
             self.write_jar(site, &cookies)?;
         }
         let mut index = self.index.lock().unwrap();
+        // Signing in again keeps the site's When needed / Always setting.
+        let mode = index.sites.get(site).map(|old| old.mode).unwrap_or_default();
         index.sites.insert(
             site.to_string(),
             SiteSession {
@@ -147,6 +194,7 @@ impl Sessions {
                 signed_in_at: now(),
                 last_used: Some(now()),
                 expired: false,
+                mode,
             },
         );
         let tip = site::is_google(site) && index.tipped.insert(site.to_string());
@@ -232,35 +280,82 @@ impl Sessions {
         let _ = std::fs::remove_dir_all(self.dir.join("temp"));
     }
 
-    /// Adds what signing in can do to an error from a yt-dlp run on `url`:
-    /// which site to sign in to, and, when the run already had that site's
-    /// cookies, that the session ran out (which is also remembered, so Settings shows it).
+    /// Adds what signing in could do to an error from a yt-dlp run on `url`:
+    /// which site, how likely it is to help (`AppError::chance`), whether
+    /// Siphon is signed in there, and whether the run already had the site's
+    /// cookies. A login wall that refuses them means the session ran out,
+    /// which is also remembered, so Settings shows it; anything else that
+    /// refuses them only means this account has no access.
     pub fn explain(&self, mut error: AppError, url: &str, had_cookies: bool) -> AppError {
-        if error.kind != ErrorKind::LoginRequired {
+        if error.chance == Chance::Never {
             return error;
         }
         let Some(site) = site::site_of(url) else { return error };
-        let expired = had_cookies && self.mark_expired(&site);
-        error.sign_in = Some(SignInNeed { site, expired });
+        if had_cookies && error.chance == Chance::Needed {
+            self.mark_expired(&site);
+        }
+        error.sign_in = Some(SignInNeed {
+            signed_in: self.has(&site),
+            site,
+            chance: error.chance,
+            refused: had_cookies,
+        });
         error
     }
 
-    fn mark_expired(&self, site: &str) -> bool {
+    fn mark_expired(&self, site: &str) {
         let mut index = self.index.lock().unwrap();
-        let Some(entry) = index.sites.get_mut(site) else {
-            return false;
-        };
-        entry.expired = true;
-        self.save_index(&index);
-        true
+        if let Some(entry) = index.sites.get_mut(site) {
+            entry.expired = true;
+            self.save_index(&index);
+        }
     }
 
-    /// Looks a link up with its site's cookies, if Siphon is signed in there.
-    pub async fn fetch_media(self: &Arc<Self>, bins: &BinaryManager, url: &str) -> Result<Media> {
+    /// Looks a link up, without an account first (see [`Sessions::lookup`]),
+    /// and notes on the video whether its sign-in was used.
+    pub async fn fetch_media(self: &Arc<Self>, bins: &BinaryManager, url: &str, account: Account) -> Result<Media> {
+        let (mut media, with_account) = self
+            .lookup(url, account, |cookies| async move {
+                metadata::fetch(bins, url, cookies.as_deref()).await
+            })
+            .await?;
+        if let Media::Video(video) = &mut media {
+            video.with_account = with_account;
+        }
+        Ok(media)
+    }
+
+    /// Runs a lookup (`fetch`, given the cookie file to use, if any) the way
+    /// the site's sign-in calls for, and says whether the sign-in was used.
+    ///
+    /// Without an account first, always, unless the site is set to Always or
+    /// the user asked for this one: most videos need none, and an account
+    /// should only be used, and only be asked for, where it is needed. Then,
+    /// on a site Siphon is signed in to, a refusal an account could fix (a
+    /// login wall, or members-only and the like) is tried once more with the
+    /// sign-in, by itself. The bot check and unrecognised errors are not:
+    /// those are the user's call (`Account::Use`).
+    async fn lookup<F, Fut>(self: &Arc<Self>, url: &str, account: Account, mut fetch: F) -> Result<(Media, bool)>
+    where
+        F: FnMut(Option<PathBuf>) -> Fut,
+        Fut: std::future::Future<Output = Result<Media>>,
+    {
+        let site = site::site_of(url);
+        let signed_in = site.as_deref().is_some_and(|site| self.has(site));
+        let always = site.as_deref().is_some_and(|site| self.mode(site) == Mode::Always);
+        if !(signed_in && (account == Account::Use || always)) {
+            match fetch(None).await {
+                Ok(media) => return Ok((media, false)),
+                Err(error) if signed_in && matches!(error.chance, Chance::Needed | Chance::Maybe) => {}
+                Err(error) => return Err(self.explain(error, url, false)),
+            }
+        }
         let cookies = self.cookie_file(url);
-        metadata::fetch(bins, url, cookies.as_ref().map(CookieFile::path))
-            .await
-            .map_err(|error| self.explain(error, url, cookies.is_some()))
+        let with = cookies.is_some();
+        match fetch(cookies.as_ref().map(|file| file.path().to_path_buf())).await {
+            Ok(media) => Ok((media, with)),
+            Err(error) => Err(self.explain(error, url, with)),
+        }
     }
 
     /// Writes back what a yt-dlp run changed in `site`'s cookies: sites renew
@@ -370,6 +465,7 @@ impl Drop for CookieFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::ErrorKind;
 
     fn cookie(domain: &str, name: &str, value: &str) -> Cookie {
         Cookie {
@@ -463,27 +559,42 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    fn refusal(chance: Chance) -> AppError {
+        let mut error = AppError::new(ErrorKind::LoginRequired, "refused").with_details("ERROR: refused");
+        error.chance = chance;
+        error
+    }
+
     #[test]
-    fn a_refusal_with_cookies_means_the_session_ran_out() {
+    fn a_login_wall_that_refuses_the_sign_in_means_it_ran_out_and_nothing_else_does() {
         let dir = scratch("expiry");
         let sessions = Sessions::at(dir.clone());
-        let refused = || AppError::new(ErrorKind::LoginRequired, "needs an account");
+        let need = |error: AppError| error.sign_in.unwrap();
 
-        // Not signed in yet: offer to sign in.
-        let error = sessions.explain(refused(), "https://youtu.be/abc", false);
+        // Not signed in yet: which site, and how likely an account is to help.
+        let first = need(sessions.explain(refusal(Chance::Needed), "https://youtu.be/abc", false));
         assert_eq!(
-            error.sign_in,
-            Some(SignInNeed {
+            first,
+            SignInNeed {
                 site: "youtube.com".into(),
-                expired: false
-            })
+                chance: Chance::Needed,
+                signed_in: false,
+                refused: false
+            }
         );
 
         sessions
             .save("youtube.com", vec![cookie("youtube.com", "SID", "1")], Method::Window)
             .unwrap();
-        let error = sessions.explain(refused(), "https://youtu.be/abc", true);
-        assert!(error.sign_in.unwrap().expired);
+        // Members-only and the like, refused with the sign-in: this account has
+        // no access. The sign-in itself is fine, so it doesn't run out.
+        let no_access = need(sessions.explain(refusal(Chance::Maybe), "https://youtu.be/abc", true));
+        assert!(no_access.signed_in && no_access.refused);
+        assert!(!sessions.list()[0].expired);
+
+        // A login wall that refuses the sign-in: it ran out.
+        let ran_out = need(sessions.explain(refusal(Chance::Needed), "https://youtu.be/abc", true));
+        assert!(ran_out.refused);
         assert!(sessions.list()[0].expired);
         // Kept for the next launch, and cleared by signing in again.
         assert!(Sessions::at(dir.clone()).list()[0].expired);
@@ -492,13 +603,115 @@ mod tests {
             .unwrap();
         assert!(!sessions.list()[0].expired);
 
-        // Other errors are left alone.
-        let error = sessions.explain(
-            AppError::new(ErrorKind::Unavailable, "gone"),
-            "https://youtu.be/abc",
-            true,
-        );
-        assert!(error.sign_in.is_none());
+        // What an account can't fix gets no offer at all.
+        let mut gone = AppError::new(ErrorKind::Unavailable, "gone");
+        gone.chance = Chance::Never;
+        assert!(sessions.explain(gone, "https://youtu.be/abc", true).sign_in.is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn found() -> Media {
+        Media::Video(Box::new(crate::ytdlp::metadata::VideoInfo {
+            id: "abc".into(),
+            title: "Test".into(),
+            url: "https://www.youtube.com/watch?v=abc".into(),
+            thumbnail: None,
+            duration: None,
+            channel: None,
+            view_count: None,
+            extractor: None,
+            formats: Vec::new(),
+            with_account: false,
+        }))
+    }
+
+    /// Runs a lookup whose site answers `answers` in turn (Ok, or a refusal of
+    /// that chance). Returns, for each request, whether it carried the
+    /// sign-in, and how the lookup ended.
+    async fn lookup(
+        sessions: &Arc<Sessions>,
+        account: Account,
+        answers: Vec<std::result::Result<(), Chance>>,
+    ) -> (Vec<bool>, Result<(Media, bool)>) {
+        let mut sent = Vec::new();
+        let mut answers = answers.into_iter();
+        let result = sessions
+            .lookup("https://www.youtube.com/watch?v=abc", account, |cookies| {
+                sent.push(cookies.is_some());
+                std::future::ready(match answers.next().expect("asked the site more often than expected") {
+                    Ok(()) => Ok(found()),
+                    Err(chance) => Err(refusal(chance)),
+                })
+            })
+            .await;
+        (sent, result)
+    }
+
+    #[tokio::test]
+    async fn an_account_is_only_used_where_the_site_wanted_one() {
+        let dir = scratch("anonymous");
+        let sessions = Arc::new(Sessions::at(dir.clone()));
+
+        // Not signed in: one request, without an account; a refusal offers the sign-in.
+        let (sent, result) = lookup(&sessions, Account::Auto, vec![Ok(())]).await;
+        assert_eq!(sent, [false]);
+        assert!(!result.unwrap().1);
+        let (sent, result) = lookup(&sessions, Account::Auto, vec![Err(Chance::Needed)]).await;
+        assert_eq!(sent, [false]);
+        let need = result.err().unwrap().sign_in.unwrap();
+        assert!(!need.signed_in && !need.refused);
+
+        sessions
+            .save(
+                "youtube.com",
+                vec![cookie("youtube.com", "SAPISID", "1")],
+                Method::Window,
+            )
+            .unwrap();
+
+        // Signed in, and the video plays for anyone: still without the account.
+        let (sent, result) = lookup(&sessions, Account::Auto, vec![Ok(())]).await;
+        assert_eq!(sent, [false], "a video that needs no account went with one");
+        assert!(!result.unwrap().1);
+
+        // A login wall, or members-only: tried again with the sign-in, by itself.
+        for chance in [Chance::Needed, Chance::Maybe] {
+            let (sent, result) = lookup(&sessions, Account::Auto, vec![Err(chance), Ok(())]).await;
+            assert_eq!(sent, [false, true], "{chance:?}");
+            assert!(
+                result.unwrap().1,
+                "{chance:?}: the video should say it used the sign-in"
+            );
+        }
+
+        // The bot check and unrecognised errors are the user's call: not retried,
+        // and the error says Siphon could try with the sign-in.
+        for chance in [Chance::Risky, Chance::Unknown] {
+            let (sent, result) = lookup(&sessions, Account::Auto, vec![Err(chance)]).await;
+            assert_eq!(sent, [false], "{chance:?}");
+            let need = result.err().unwrap().sign_in.unwrap();
+            assert!(need.signed_in && !need.refused, "{chance:?}");
+        }
+        // Nothing an account can't fix is tried with it.
+        let (sent, result) = lookup(&sessions, Account::Auto, vec![Err(Chance::Never)]).await;
+        assert_eq!(sent, [false]);
+        assert!(result.err().unwrap().sign_in.is_none());
+
+        // The user asked for this one, or set the site to Always: with the sign-in from the start.
+        let (sent, _) = lookup(&sessions, Account::Use, vec![Ok(())]).await;
+        assert_eq!(sent, [true]);
+        sessions.set_mode("youtube.com", Mode::Always);
+        let (sent, _) = lookup(&sessions, Account::Auto, vec![Ok(())]).await;
+        assert_eq!(sent, [true]);
+        // And the setting survives signing in again.
+        sessions
+            .save(
+                "youtube.com",
+                vec![cookie("youtube.com", "SAPISID", "2")],
+                Method::Window,
+            )
+            .unwrap();
+        assert_eq!(sessions.list()[0].mode, Mode::Always);
         let _ = std::fs::remove_dir_all(dir);
     }
 

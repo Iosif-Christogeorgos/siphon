@@ -168,8 +168,12 @@ async fn download_proxy(app: &AppHandle, bins: &BinaryManager, video: &VideoInfo
     // A download like any other, so it keeps to the speed limit too.
     let flow = app.state::<std::sync::Arc<Throttle>>().flow().await?;
     flow.route(&mut cmd);
-    // A video that needed signing in needs it for the preview too.
-    let cookies = app.state::<std::sync::Arc<Sessions>>().cookie_file(&video.url);
+    // A video that needed signing in needs it for the preview too; one that didn't goes without.
+    let cookies = if video.with_account {
+        app.state::<std::sync::Arc<Sessions>>().cookie_file(&video.url)
+    } else {
+        None
+    };
     if let Some(cookies) = &cookies {
         cmd.arg("--cookies").arg(cookies.path());
     }

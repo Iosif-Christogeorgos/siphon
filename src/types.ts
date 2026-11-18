@@ -29,11 +29,21 @@ export interface AppError {
   sign_in: SignInNeed | null;
 }
 
+/**
+ * How likely signing in is to help (`error::Chance`): a login wall, only if
+ * the account has access, the bot check (risky for the account), or an
+ * error Siphon doesn't recognise.
+ */
+export type SignInChance = "needed" | "maybe" | "risky" | "unknown";
+
 export interface SignInNeed {
   /** "youtube.com" */
   site: string;
-  /** Siphon had a session for this site and it no longer works. */
-  expired: boolean;
+  chance: SignInChance;
+  /** Siphon is signed in to the site already. */
+  signed_in: boolean;
+  /** Refused even with the sign-in: for "needed" it ran out, for "maybe" the account has no access. */
+  refused: boolean;
 }
 
 // ── sessions/ ───────────────────────────────────────────────────────────
@@ -62,7 +72,11 @@ export interface SiteSession {
   signed_in_at: number;
   last_used: number | null;
   expired: boolean;
+  mode: SignInMode;
 }
+
+/** When a signed-in site's sign-in is used: only after the site refused without it, or every time. */
+export type SignInMode = "when_needed" | "always";
 
 /** The sign-in window's state, for its bar. */
 export type SignInStatus =
@@ -145,6 +159,8 @@ export interface VideoInfo {
   channel: string | null;
   view_count: number | null;
   formats: Format[];
+  /** Found with the site's sign-in, because the video needed it (or the user asked). */
+  with_account: boolean;
 }
 
 export interface PlaylistEntry {
@@ -404,6 +420,8 @@ export interface DownloadRequest {
   choice: Choice;
   trim: Trim | null;
   place: Place | null;
+  /** Use the site's sign-in from the start. */
+  account: boolean;
 }
 
 /** Where a playlist video goes: a folder inside the download folder, and a number in front of its name. */

@@ -34,6 +34,7 @@ const SIGN_IN_PAGES: &[(&str, &str)] = &[
     ("twitch.tv", "https://www.twitch.tv/login"),
     ("reddit.com", "https://www.reddit.com/login/"),
     ("vimeo.com", "https://vimeo.com/log_in"),
+    ("patreon.com", "https://www.patreon.com/login"),
 ];
 
 /// The cookie that appears once a user is signed in, for sites where it is
@@ -47,6 +48,8 @@ const SESSION_COOKIES: &[(&str, &str)] = &[
     ("tiktok.com", "sessionid"),
     ("twitch.tv", "auth-token"),
     ("reddit.com", "reddit_session"),
+    // yt-dlp's Patreon extractor looks for the same one.
+    ("patreon.com", "session_id"),
 ];
 
 /// Google's answer when it won't let an embedded browser sign in ("This

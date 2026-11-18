@@ -13,9 +13,10 @@ use std::path::PathBuf;
 use serde::Serialize;
 
 use super::cookies::{self, Cookie};
-use super::{sign_in, site, Sessions};
+use super::sign_in::{self, Verdict};
+use super::{site, Sessions};
 use crate::binaries::BinaryManager;
-use crate::error::{ErrorKind, Result};
+use crate::error::Result;
 use crate::ytdlp::metadata;
 
 /// A browser yt-dlp can read cookies from.
@@ -90,27 +91,26 @@ pub async fn import(
         "--cookies".into(),
         dump.path().into(),
     ];
-    if let Err(error) = metadata::fetch_with(bins, url, &args).await {
+    let result = metadata::fetch_with(bins, url, &args).await.map(|_| ());
+    if let Err(error) = &result {
         let log = format!("{} {}", error.message, error.details.as_deref().unwrap_or_default()).to_lowercase();
-        if let Some(refusal) = refusal(id, site, &log, error.kind) {
+        if let Some(refusal) = refusal(id, &log) {
             return Ok(Err(refusal));
         }
-        if !sign_in::past_the_wall(&error) {
-            return Err(error);
-        }
-        // Past the sign-in to an error of the video's own: the sign-in works.
     }
     let mine = cookies::scoped(dump.read_back(), &site::cookie_domains(site), super::now() as i64);
-    if mine.is_empty() {
-        // The browser had nothing for the site; whatever got through did so without an account.
-        return Ok(Err(not_signed_in(id, site)));
+    match sign_in::verdict(result, site, &mine) {
+        // The browser had nothing for the site: whatever got through did so without an account.
+        Verdict::Works if mine.is_empty() => Ok(Err(not_signed_in(id, site))),
+        Verdict::Works => Ok(Ok(mine)),
+        Verdict::NotSignedIn => Ok(Err(not_signed_in(id, site))),
+        Verdict::Failed(error) => Err(error),
     }
-    Ok(Ok(mine))
 }
 
-/// Turns what yt-dlp said into the reason, where it is about the browser or
-/// the account rather than the network or the site.
-fn refusal(id: &str, site: &str, log: &str, kind: ErrorKind) -> Option<Refusal> {
+/// Turns what yt-dlp said into the reason, where it is about reading the
+/// browser rather than the account, the network or the site.
+fn refusal(id: &str, log: &str) -> Option<Refusal> {
     let name = name_of(id);
     if log.contains("could not copy") && log.contains("cookie database") {
         return Some(Refusal {
@@ -131,10 +131,10 @@ fn refusal(id: &str, site: &str, log: &str, kind: ErrorKind) -> Option<Refusal> 
     if log.contains("could not find") && log.contains("cookies database") {
         return Some(Refusal {
             short: format!("{name} has no cookies"),
-            reason: format!("Siphon found no {name} profile with cookies. Sign in to {site} in {name} first."),
+            reason: format!("Siphon found no {name} profile with cookies. Sign in to the site in {name} first."),
         });
     }
-    (kind == ErrorKind::LoginRequired).then(|| not_signed_in(id, site))
+    None
 }
 
 fn not_signed_in(id: &str, site: &str) -> Refusal {
@@ -152,33 +152,22 @@ mod tests {
     /// What yt-dlp says when each way of reading a browser fails (from `yt_dlp/cookies.py`).
     #[test]
     fn explains_each_way_a_browser_can_refuse() {
-        let short = |id: &str, log: &str, kind: ErrorKind| {
-            refusal(id, "youtube.com", &log.to_lowercase(), kind).map(|r| r.short)
-        };
+        let short = |id: &str, log: &str| refusal(id, &log.to_lowercase()).map(|r| r.short);
         assert_eq!(
-            short("chrome", "ERROR: Could not copy Chrome cookie database. See  https://github.com/yt-dlp/yt-dlp/issues/7271  for more info", ErrorKind::Internal).as_deref(),
+            short("chrome", "ERROR: Could not copy Chrome cookie database. See  https://github.com/yt-dlp/yt-dlp/issues/7271  for more info").as_deref(),
             Some("Close Chrome first")
         );
         assert_eq!(
-            short("brave", "ERROR: Failed to decrypt with DPAPI. See  https://github.com/yt-dlp/yt-dlp/issues/10927  for more info", ErrorKind::Internal).as_deref(),
+            short("brave", "ERROR: Failed to decrypt with DPAPI. See  https://github.com/yt-dlp/yt-dlp/issues/10927  for more info").as_deref(),
             Some("Brave's cookies can't be read")
         );
         assert_eq!(
-            short("firefox", "FileNotFoundError: could not find firefox cookies database in C:\\Users\\x\\AppData\\Roaming\\Mozilla\\Firefox\\Profiles", ErrorKind::Internal).as_deref(),
+            short("firefox", "FileNotFoundError: could not find firefox cookies database in C:\\Users\\x\\AppData\\Roaming\\Mozilla\\Firefox\\Profiles").as_deref(),
             Some("Firefox has no cookies")
         );
-        assert_eq!(
-            short("firefox", "ERROR: [youtube] abc: Sign in to confirm your age. Use --cookies-from-browser or --cookies for the authentication.", ErrorKind::LoginRequired).as_deref(),
-            Some("Firefox isn't signed in to youtube.com")
-        );
-        // A dropped connection is not the browser's fault: shown as the error it is.
-        assert_eq!(
-            short(
-                "firefox",
-                "ERROR: Unable to download webpage: timed out",
-                ErrorKind::Network
-            ),
-            None
-        );
+        // Whether the account got through is the verdict's to say (see `sign_in::verdict`);
+        // a dropped connection is not the browser's fault either.
+        assert_eq!(short("firefox", "ERROR: [youtube] abc: Sign in to confirm your age. Use --cookies-from-browser or --cookies for the authentication."), None);
+        assert_eq!(short("firefox", "ERROR: Unable to download webpage: timed out"), None);
     }
 }

@@ -25,7 +25,7 @@ use tokio::sync::oneshot;
 use super::cookies::{self, Cookie};
 use super::{browsers, site, Method, Sessions};
 use crate::binaries::BinaryManager;
-use crate::error::{AppError, ErrorKind, Result};
+use crate::error::{AppError, Chance, ErrorKind, Result};
 use crate::ytdlp::metadata;
 
 /// The sign-in window, its bar (Siphon's own page: the site's name, Done,
@@ -131,6 +131,44 @@ pub(super) fn past_the_wall(error: &AppError) -> bool {
         )
 }
 
+/// What a check's lookup says about a sign-in.
+#[derive(Debug)]
+pub(super) enum Verdict {
+    /// Through, or past the sign-in to an error of the video's own.
+    Works,
+    /// The site still wants a sign-in.
+    NotSignedIn,
+    /// The check itself couldn't tell (offline, the bot check).
+    Failed(AppError),
+}
+
+/// Judges a check's lookup, run with `cookies` (the site's own).
+///
+/// A refusal that only an account with access gets past (members-only, a
+/// supporter tier) reads the same whether the account lacks access or isn't
+/// signed in at all. Where the site's session cookie is known, its presence
+/// tells them apart; elsewhere, having any cookies of the site is taken as
+/// signed in, and the video then says the account has no access.
+pub(super) fn verdict(result: Result<()>, site: &str, cookies: &[Cookie]) -> Verdict {
+    match result {
+        Ok(()) => Verdict::Works,
+        Err(error) if error.chance == Chance::Needed => Verdict::NotSignedIn,
+        Err(error) if error.chance == Chance::Maybe => {
+            let signed_in = match site::session_cookie(site) {
+                Some(name) => cookies.iter().any(|cookie| cookie.name == name),
+                None => !cookies.is_empty(),
+            };
+            if signed_in {
+                Verdict::Works
+            } else {
+                Verdict::NotSignedIn
+            }
+        }
+        Err(error) if past_the_wall(&error) => Verdict::Works,
+        Err(error) => Verdict::Failed(error),
+    }
+}
+
 /// Runs the lookup that failed again with `cookies`. Returns the cookies as
 /// yt-dlp left them (sites renew some on the way) if it got past the sign-in,
 /// None if the site still wants one.
@@ -142,14 +180,14 @@ async fn check(
     cookies: &[Cookie],
 ) -> Result<Option<Vec<Cookie>>> {
     let trial = sessions.trial_file(cookies)?;
-    match metadata::fetch(bins, url, Some(trial.path())).await {
-        Err(error) if error.kind == ErrorKind::LoginRequired => Ok(None),
-        Err(error) if !past_the_wall(&error) => Err(error),
-        // Through, or past the sign-in to an error of the video's own.
-        _ => {
+    let result = metadata::fetch(bins, url, Some(trial.path())).await.map(|_| ());
+    match verdict(result, site, cookies) {
+        Verdict::Works => {
             let renewed = cookies::scoped(trial.read_back(), &site::cookie_domains(site), super::now() as i64);
             Ok(Some(if renewed.is_empty() { cookies.to_vec() } else { renewed }))
         }
+        Verdict::NotSignedIn => Ok(None),
+        Verdict::Failed(error) => Err(error),
     }
 }
 
@@ -507,5 +545,49 @@ mod tests {
         assert!(!past_the_wall(&AppError::internal(
             "Couldn't start the download engine."
         )));
+    }
+
+    #[test]
+    fn a_sign_in_works_once_the_site_lets_it_past() {
+        let refused = |log: &str| Err(classify(log));
+        let cookie = |name: &str| Cookie {
+            domain: "youtube.com".into(),
+            include_subdomains: true,
+            path: "/".into(),
+            secure: true,
+            http_only: true,
+            expires: 0,
+            name: name.into(),
+            value: "fake".into(),
+        };
+        let signed_in = [cookie("SAPISID")];
+        let visitor = [cookie("VISITOR_INFO1_LIVE")];
+        let works = |verdict: Verdict| matches!(verdict, Verdict::Works);
+        let not_yet = |verdict: Verdict| matches!(verdict, Verdict::NotSignedIn);
+
+        assert!(works(verdict(Ok(()), "youtube.com", &signed_in)));
+        let age = "ERROR: [youtube] abc: Sign in to confirm your age. Use --cookies-from-browser or --cookies for the authentication.";
+        assert!(not_yet(verdict(refused(age), "youtube.com", &signed_in)));
+
+        // Members-only reads the same signed in or not: the session cookie tells.
+        let members = "ERROR: [youtube] abc: Join this channel to get access to members-only content like this video, and other exclusive perks.";
+        assert!(works(verdict(refused(members), "youtube.com", &signed_in)));
+        assert!(not_yet(verdict(refused(members), "youtube.com", &visitor)));
+        // A site whose session cookie isn't known: any of its cookies count.
+        let tier = "ERROR: [example] 1: You do not have access to this post";
+        assert!(works(verdict(refused(tier), "example.com", &visitor)));
+        assert!(not_yet(verdict(refused(tier), "example.com", &[])));
+
+        // An error of the video's own: past the sign-in. A dropped connection tells nothing.
+        let own = "ERROR: [Instagram] CWqAgUZgCku: Video info extraction failed: HTTP Error 400: Bad Request";
+        assert!(works(verdict(refused(own), "instagram.com", &[])));
+        assert!(matches!(
+            verdict(
+                refused("ERROR: Unable to download webpage: timed out"),
+                "youtube.com",
+                &signed_in
+            ),
+            Verdict::Failed(_)
+        ));
     }
 }

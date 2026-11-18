@@ -75,6 +75,7 @@ fn info(formats: Vec<Format>, seconds: f64) -> VideoInfo {
         view_count: None,
         extractor: None,
         formats,
+        with_account: false,
     }
 }
 
