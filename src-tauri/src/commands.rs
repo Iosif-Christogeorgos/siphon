@@ -183,15 +183,15 @@ pub async fn pause_download(downloads: Downloads<'_>, id: String) -> Result<()> 
     Ok(())
 }
 
-/// The settings, plus the facts the settings screen needs to show them.
-/// Called once the frontend has restored its download list: the files of
-/// paused or failed downloads it no longer lists are removed.
+/// Removes the files of paused or failed downloads the frontend no longer
+/// lists. Called once it has restored its download list.
 #[tauri::command]
 pub async fn forget_other_downloads(downloads: Downloads<'_>, ids: Vec<String>) -> Result<()> {
     downloads.forget_all_but(&ids.into_iter().collect()).await;
     Ok(())
 }
 
+/// The settings, plus the facts the settings screen needs to show them.
 #[derive(Serialize)]
 pub struct SettingsView {
     #[serde(flatten)]
@@ -283,8 +283,9 @@ fn ensure_ready(bins: &BinaryManager) -> Result<()> {
     }
 }
 
-/// Only files Siphon downloaded this session can be opened: the webview
-/// can't use these commands to launch arbitrary paths.
+/// Only files Siphon downloaded, this session or one it remembers in
+/// `downloads.json`, can be opened: the webview can't use these commands to
+/// launch arbitrary paths.
 fn existing(downloads: &DownloadManager, path: String) -> Result<PathBuf> {
     let path = PathBuf::from(path);
     if !downloads.produced(&path) {

@@ -442,7 +442,8 @@ impl DownloadManager {
         }
     }
 
-    /// Whether `path` is a file a download produced this session.
+    /// Whether `path` is a file a download produced, this session or one
+    /// remembered in `downloads.json`.
     pub fn produced(&self, path: &Path) -> bool {
         self.finished.lock().unwrap().contains(path)
     }
