@@ -13,6 +13,13 @@ import { useUi } from "@/stores/ui";
 import type { PlaylistEntry, PlaylistInfo } from "@/types";
 
 /**
+ * How many selected videos are looked up for the total size. The rest are
+ * scaled from them by length: looking up every video of a long playlist took
+ * minutes and sent YouTube a request per video.
+ */
+const SAMPLE = 15;
+
+/**
  * A playlist or channel: pick which videos to download, then add them to the
  * queue in one go. A channel's videos are grouped by tab (Videos, Live, Shorts),
  * and links to other playlists open them.
@@ -48,22 +55,17 @@ export function PlaylistPane({ playlist, onOpen }: { playlist: PlaylistInfo; onO
     });
   const allSelected = videos.length > 0 && videos.every((entry) => selected.has(entry.url));
 
-  // The total size: each selected video is looked up (a few at a time) and planned.
   const chosen = videos.filter((entry) => selected.has(entry.url));
+  const sample = chosen.slice(0, SAMPLE);
   const estimates = useQueries({
-    queries: chosen.map((entry) => ({
+    queries: sample.map((entry) => ({
       queryKey: ["estimate", entry.url, choice],
       queryFn: () => (choice ? ipc.estimateDownload(entry.url, choice) : Promise.resolve(null)),
       enabled: choice !== null,
       staleTime: Number.POSITIVE_INFINITY,
     })),
   });
-  const checked = estimates.filter((estimate) => estimate.isSuccess || estimate.isError).length;
-  const total = estimates.reduce((sum, estimate) => sum + (estimate.data ?? 0), 0);
-  const size =
-    total === 0 && checked < chosen.length
-      ? "working out the total size…"
-      : `≈ ${formatBytes(total)}${checked < chosen.length ? ` so far (${checked} of ${chosen.length} checked)` : ""}`;
+  const size = totalSize(chosen, sample, estimates.map((estimate) => (estimate.isFetched ? (estimate.data ?? null) : undefined)));
 
   const addToQueue = () => {
     if (!choice) return;
@@ -197,6 +199,39 @@ export function PlaylistPane({ playlist, onOpen }: { playlist: PlaylistInfo; onO
       )}
     </>
   );
+}
+
+/**
+ * The size line: the exact total for a short selection; for a longer one,
+ * the sample's size per second of video scaled to the rest by their length
+ * (or the sample's average per video where a length is unknown).
+ * `sizes` holds the sample's estimates in order: undefined while still being
+ * looked up, null when it couldn't be.
+ */
+function totalSize(chosen: PlaylistEntry[], sample: PlaylistEntry[], sizes: (number | null | undefined)[]): string {
+  const known = sample.flatMap((entry, index) => {
+    const size = sizes[index];
+    return size != null ? [{ entry, size }] : [];
+  });
+  const pending = sizes.filter((size) => size === undefined).length;
+  const sum = known.reduce((total, item) => total + item.size, 0);
+
+  if (chosen.length <= sample.length) {
+    if (known.length === 0 && pending > 0) return "working out the total size…";
+    return pending > 0 ? `≈ ${formatBytes(sum)} so far (${sample.length - pending} of ${sample.length} checked)` : `≈ ${formatBytes(sum)}`;
+  }
+  if (pending > 0 || known.length === 0) {
+    return pending > 0 ? "working out the total size…" : "total size unknown";
+  }
+  const timed = known.filter((item) => item.entry.duration);
+  const seconds = timed.reduce((total, item) => total + (item.entry.duration ?? 0), 0);
+  const perSecond = seconds > 0 ? timed.reduce((total, item) => total + item.size, 0) / seconds : null;
+  const perVideo = sum / known.length;
+  const sampled = new Set(known.map((item) => item.entry.url));
+  const rest = chosen
+    .filter((entry) => !sampled.has(entry.url))
+    .reduce((total, entry) => total + (perSecond && entry.duration ? perSecond * entry.duration : perVideo), 0);
+  return `≈ ${formatBytes(sum + rest)}, estimated from ${known.length} videos`;
 }
 
 function EntryRow({
