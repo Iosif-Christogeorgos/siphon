@@ -3,6 +3,7 @@ name = "siphon"
 version = "0.10.0"
 description = "A universal video downloader built on yt-dlp"
 authors = ["Iosif Christogeorgos"]
+license = "GPL-3.0-or-later"
 edition = "2021"
 
 [build-dependencies]

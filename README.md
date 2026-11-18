@@ -221,3 +221,13 @@ app-icon.svg             Icon source; regenerate with `npx tauri icon app-icon.s
 ## Stack
 
 Tauri 2, React 19, TypeScript, Vite, Tailwind CSS 4, shadcn/ui, Motion, Zustand, TanStack Query and Lucide icons. There is no telemetry or tracking. The only network requests are the ones needed to fetch a video and to update Siphon and its managed binaries.
+
+## License
+
+Copyright (C) 2026 Iosif Christogeorgos
+
+Siphon is free software: you can redistribute it and/or modify it under the terms of the [GNU General Public License](LICENSE) as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version. It is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; see the license for details.
+
+In short: anyone may use, change and share Siphon, but a copy they share, changed or not, must come with its full source under the same license.
+
+yt-dlp, FFmpeg and Deno are not part of Siphon. Siphon downloads them from their own projects when it first starts, and each keeps its own license.
