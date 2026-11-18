@@ -1,6 +1,7 @@
 //! Turns yt-dlp's stderr into a plain-language [`AppError`].
 
 use crate::error::{AppError, ErrorKind, Retry};
+use crate::sessions::cookies::redact;
 
 /// Substring → (kind, whether to try again, friendly message). Checked in
 /// order against the lower-cased log, so more specific phrases come first.
@@ -222,7 +223,7 @@ pub fn classify(log: &str) -> AppError {
     let haystack = log.to_lowercase();
     for (needles, kind, retry, message) in RULES {
         if needles.iter().any(|needle| haystack.contains(needle)) {
-            return AppError::new(*kind, *message).retrying(*retry).with_details(log);
+            return AppError::new(*kind, *message).retrying(*retry).with_details(redact(log));
         }
     }
 
@@ -234,7 +235,7 @@ pub fn classify(log: &str) -> AppError {
         .map(|line| line.trim().to_string())
         .filter(|line| !line.is_empty() && line.len() <= 200)
         .unwrap_or_else(|| "Something went wrong while talking to the site.".to_string());
-    AppError::internal(message).with_details(log)
+    AppError::internal(redact(&message)).with_details(redact(log))
 }
 
 #[cfg(test)]

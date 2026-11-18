@@ -18,6 +18,7 @@ use crate::binaries::BinaryManager;
 use crate::error::{AppError, ErrorKind, Result};
 use crate::plan::codecs::VideoCodec;
 use crate::process;
+use crate::sessions::Sessions;
 use crate::throttle::Throttle;
 use crate::ytdlp::metadata::{Format, FormatKind, VideoInfo};
 use crate::ytdlp::{self, errors};
@@ -167,6 +168,11 @@ async fn download_proxy(app: &AppHandle, bins: &BinaryManager, video: &VideoInfo
     // A download like any other, so it keeps to the speed limit too.
     let flow = app.state::<std::sync::Arc<Throttle>>().flow().await?;
     flow.route(&mut cmd);
+    // A video that needed signing in needs it for the preview too.
+    let cookies = app.state::<std::sync::Arc<Sessions>>().cookie_file(&video.url);
+    if let Some(cookies) = &cookies {
+        cmd.arg("--cookies").arg(cookies.path());
+    }
     cmd.args(["--output", &format!("{name}.%(ext)s"), "--"]).arg(&video.url);
 
     let _in_use = bins.in_use().await;

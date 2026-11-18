@@ -1,6 +1,8 @@
 //! `yt-dlp -J`: what a link points to, and which formats it offers.
 
 use std::collections::HashSet;
+use std::ffi::OsString;
+use std::path::Path;
 use std::time::Duration;
 
 use serde::{Deserialize, Deserializer, Serialize};
@@ -245,11 +247,22 @@ fn text<'de, D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Optio
 // ── Fetching ────────────────────────────────────────────────────────────
 
 /// Looks up a link. Returns a single video with its formats, or a playlist
-/// with a lightweight entry list (no per-video requests).
-pub async fn fetch(bins: &BinaryManager, url: &str) -> Result<Media> {
+/// with a lightweight entry list (no per-video requests). `cookies` is the
+/// site's sign-in, if any (see `crate::sessions`).
+pub async fn fetch(bins: &BinaryManager, url: &str, cookies: Option<&Path>) -> Result<Media> {
+    let mut cookie_args: Vec<OsString> = Vec::new();
+    if let Some(cookies) = cookies {
+        cookie_args.extend(["--cookies".into(), cookies.into()]);
+    }
+    fetch_with(bins, url, &cookie_args).await
+}
+
+/// [`fetch`], with yt-dlp told where to find cookies some other way (a browser, for a sign-in).
+pub async fn fetch_with(bins: &BinaryManager, url: &str, cookie_args: &[OsString]) -> Result<Media> {
     let url = validate_url(url)?;
 
     let mut cmd = command(bins);
+    cmd.args(cookie_args);
     cmd.args([
         "--dump-single-json",
         // List playlist items without resolving each one (fast).

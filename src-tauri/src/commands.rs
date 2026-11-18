@@ -19,10 +19,13 @@ use crate::plan::explain::{self, PlanSummary};
 use crate::plan::registry::{self, Registry};
 use crate::plan::{self, Choice, Trim};
 use crate::preview::{self, Preview};
+use crate::sessions::browsers::{self, Browser};
+use crate::sessions::sign_in::{self, Outcome};
+use crate::sessions::{Method, Sessions, SiteSession};
 use crate::settings::{Settings, SettingsStore};
 use crate::state::{CapabilityCache, MediaCache};
 use crate::throttle::Throttle;
-use crate::ytdlp::metadata::{self, Media};
+use crate::ytdlp::metadata::Media;
 
 type Binaries<'a> = State<'a, Arc<BinaryManager>>;
 type Downloads<'a> = State<'a, Arc<DownloadManager>>;
@@ -54,9 +57,14 @@ pub async fn binaries_sync(
 
 /// Looks a link up and remembers the result for planning and downloading.
 #[tauri::command]
-pub async fn fetch_media(bins: Binaries<'_>, cache: State<'_, MediaCache>, url: String) -> Result<Media> {
+pub async fn fetch_media(
+    bins: Binaries<'_>,
+    sessions: State<'_, Arc<Sessions>>,
+    cache: State<'_, MediaCache>,
+    url: String,
+) -> Result<Media> {
     ensure_ready(&bins)?;
-    let media = metadata::fetch(&bins, &url).await?;
+    let media = sessions.fetch_media(&bins, &url).await?;
     if let Media::Video(video) = &media {
         cache.insert(url.trim(), Arc::new((**video).clone()));
     }
@@ -115,6 +123,7 @@ static ESTIMATES: Semaphore = Semaphore::const_new(3);
 #[tauri::command]
 pub async fn estimate_download(
     bins: Binaries<'_>,
+    sessions: State<'_, Arc<Sessions>>,
     cache: State<'_, MediaCache>,
     caps: State<'_, CapabilityCache>,
     url: String,
@@ -128,7 +137,7 @@ pub async fn estimate_download(
                 .acquire()
                 .await
                 .map_err(|err| AppError::internal("Couldn't look the video up.").with_details(err.to_string()))?;
-            match metadata::fetch(&bins, &url).await? {
+            match sessions.fetch_media(&bins, &url).await? {
                 Media::Video(video) => {
                     let video = Arc::new(*video);
                     cache.insert(url.trim(), Arc::clone(&video));
@@ -273,6 +282,53 @@ pub fn notify(app: AppHandle, title: String, body: String) {
     }
     let short = |text: String| text.chars().take(300).collect::<String>();
     let _ = app.notification().builder().title(short(title)).body(short(body)).show();
+}
+
+/// The browsers on this computer a sign-in can be taken over from.
+#[tauri::command]
+pub fn sign_in_browsers() -> Vec<Browser> {
+    browsers::installed()
+}
+
+/// Signs in to the site of `url` (a video that needed it) with `method`, and
+/// checks the sign-in works on that video before keeping it.
+#[tauri::command]
+pub async fn sign_in(app: AppHandle, url: String, method: Method) -> Result<Outcome> {
+    sign_in::sign_in(&app, &url, method).await
+}
+
+/// For the sign-in window's bar: the site it's for.
+#[tauri::command]
+pub fn sign_in_site(app: AppHandle) -> Option<String> {
+    sign_in::current_site(&app)
+}
+
+/// The sign-in window's Done.
+#[tauri::command]
+pub async fn sign_in_done(app: AppHandle) {
+    sign_in::done(&app, false).await;
+}
+
+/// The sign-in window's Cancel (and its close button).
+#[tauri::command]
+pub fn sign_in_cancel(app: AppHandle) {
+    sign_in::finish(&app, Outcome::Cancelled);
+}
+
+/// The sites Siphon is signed in to, for Settings. Never any cookie.
+#[tauri::command]
+pub fn signed_in_sites(sessions: State<'_, Arc<Sessions>>) -> Vec<SiteSession> {
+    sessions.list()
+}
+
+/// Forgets a site's sign-in: its cookies and its sign-in window's profile.
+#[tauri::command]
+pub fn sign_out(app: AppHandle, sessions: State<'_, Arc<Sessions>>, site: String) {
+    // Its sign-in window can't stay open on a profile that is being deleted.
+    if sign_in::current_site(&app).as_deref() == Some(site.as_str()) {
+        sign_in::finish(&app, Outcome::Cancelled);
+    }
+    sessions.sign_out(&site);
 }
 
 fn ensure_ready(bins: &BinaryManager) -> Result<()> {

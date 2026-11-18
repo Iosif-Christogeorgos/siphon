@@ -28,10 +28,11 @@ use crate::log;
 use crate::plan::codecs::VideoCodec;
 use crate::plan::{self, AudioAction, Choice, Recipe, Trim};
 use crate::process;
+use crate::sessions::{CookieFile, Sessions};
 use crate::settings::{Settings, SettingsStore};
 use crate::state::{CapabilityCache, MediaCache};
 use crate::throttle::{self, Throttle};
-use crate::ytdlp::metadata::{self, Media, VideoInfo};
+use crate::ytdlp::metadata::{Media, VideoInfo};
 use crate::ytdlp::{self, args, errors, progress};
 use tracker::{Progress, Tracker};
 
@@ -165,6 +166,10 @@ struct Job {
     /// job (see `end_job`), whether that finished, failed, was paused or was
     /// cancelled, which closes its proxy listener and connections.
     flow: Option<throttle::Flow>,
+    /// The site's sign-in for yt-dlp, while the job runs: a temporary
+    /// `cookies.txt` that goes with the job the same way as `flow`, and is
+    /// deleted with it (see `sessions::CookieFile`).
+    cookies: Option<CookieFile>,
 }
 
 /// Who may run: jobs take a slot in the order they were added.
@@ -392,6 +397,22 @@ impl DownloadManager {
         }
     }
 
+    /// Gives a job's yt-dlp run its site's sign-in, replacing an earlier try's.
+    fn attach_cookies(&self, id: &str, cookies: Option<CookieFile>) -> bool {
+        let signed_in = cookies.is_some();
+        if let Some(job) = self.jobs.lock().unwrap().get_mut(id) {
+            job.cookies = cookies;
+        }
+        signed_in
+    }
+
+    /// Adds the job's cookie file, if it has one, to a yt-dlp command.
+    fn add_cookies(&self, id: &str, cmd: &mut Command) {
+        if let Some(file) = self.jobs.lock().unwrap().get(id).and_then(|job| job.cookies.as_ref()) {
+            cmd.arg("--cookies").arg(file.path());
+        }
+    }
+
     /// Sends a yt-dlp command's downloads through the job's flow.
     fn route(&self, id: &str, cmd: &mut Command) -> Result<()> {
         let jobs = self.jobs.lock().unwrap();
@@ -497,10 +518,12 @@ impl DownloadManager {
         while !self.is_idle() && Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        // A job that hasn't ended by now still loses its proxy: no listener
-        // is left open, whatever the job is stuck on.
+        // A job that hasn't ended by now still loses its proxy and its
+        // cookies: no listener is left open and no cookie file on disk,
+        // whatever the job is stuck on.
         for job in self.jobs.lock().unwrap().values_mut() {
             job.flow = None;
+            job.cookies = None;
         }
         self.save();
     }
@@ -1137,7 +1160,8 @@ impl DownloadManager {
         if let Some(video) = cache.get(url).filter(|_| !refresh) {
             return Ok(video);
         }
-        match metadata::fetch(job.bins, url).await? {
+        let sessions = Arc::clone(&job.app.state::<Arc<Sessions>>());
+        match sessions.fetch_media(job.bins, url).await? {
             Media::Video(video) => {
                 let video = Arc::new(*video);
                 cache.insert(url, Arc::clone(&video));
@@ -1184,6 +1208,10 @@ impl DownloadManager {
                 "--no-mtime",
             ]);
         self.route(job.id, &mut cmd)?;
+        // Signed in to this site? Its cookies, and only its own.
+        let sessions = Arc::clone(&job.app.state::<Arc<Sessions>>());
+        let signed_in = self.attach_cookies(job.id, sessions.cookie_file(url));
+        self.add_cookies(job.id, &mut cmd);
         if !continues {
             // A new download ignores partial files of the same name; a
             // later try leaves this out and carries on from them instead.
@@ -1265,7 +1293,7 @@ impl DownloadManager {
         self.keep_leftovers(job.id, leftovers);
         match failure {
             Failure::Stopped(_) => Err(AppError::cancelled()),
-            Failure::Exited(log) => Err(errors::classify(&log)),
+            Failure::Exited(log) => Err(sessions.explain(errors::classify(&log), url, signed_in)),
             Failure::Spawn(error) => Err(error),
         }
     }
@@ -1807,5 +1835,71 @@ mod proxy_tests {
         manager.shut_down().await;
         assert!(!listening(first).await);
         assert!(!listening(second).await);
+    }
+}
+
+#[cfg(test)]
+mod cookie_tests {
+    use super::*;
+    use crate::sessions::cookies::Cookie;
+    use crate::sessions::Method;
+
+    /// A job of a signed-in site, as `fetch_streams` sets it up: returns its cookie file.
+    fn running_job(manager: &DownloadManager, sessions: &Arc<Sessions>, id: &str) -> PathBuf {
+        manager.register(id);
+        let file = sessions.cookie_file("https://www.youtube.com/watch?v=abc").unwrap();
+        let path = file.path().to_path_buf();
+        assert!(manager.attach_cookies(id, Some(file)));
+        let mut cmd = Command::new("yt-dlp");
+        manager.add_cookies(id, &mut cmd);
+        assert!(cmd.as_std().get_args().any(|arg| arg == "--cookies"));
+        assert!(path.exists());
+        path
+    }
+
+    #[tokio::test]
+    async fn the_cookie_file_goes_however_a_download_ends() {
+        let dir = std::env::temp_dir().join(format!("siphon-test-job-cookies-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let sessions = Sessions::in_dir(dir.clone());
+        let fake = Cookie {
+            domain: "youtube.com".into(),
+            include_subdomains: true,
+            path: "/".into(),
+            secure: true,
+            http_only: true,
+            expires: 0,
+            name: "SID".into(),
+            value: "fake-test-value".into(),
+        };
+        sessions.save("youtube.com", vec![fake], Method::Window).unwrap();
+        let manager = DownloadManager::default();
+
+        for id in ["finished", "failed"] {
+            let file = running_job(&manager, &sessions, id);
+            manager.end_job(id);
+            assert!(!file.exists(), "{id}: the cookie file is still there");
+        }
+
+        let file = running_job(&manager, &sessions, "paused");
+        manager.pause("paused").await;
+        manager.end_job("paused");
+        assert!(!file.exists(), "paused: the cookie file is still there");
+
+        let file = running_job(&manager, &sessions, "cancelled");
+        manager.cancel("cancelled").await;
+        manager.end_job("cancelled");
+        assert!(!file.exists(), "cancelled: the cookie file is still there");
+
+        // Quitting, with downloads whose jobs never get to end.
+        let first = running_job(&manager, &sessions, "a");
+        let second = running_job(&manager, &sessions, "b");
+        manager.shut_down().await;
+        assert!(!first.exists() && !second.exists(), "quit: a cookie file is still there");
+
+        // A site Siphon isn't signed in to runs without one.
+        manager.register("other");
+        assert!(!manager.attach_cookies("other", sessions.cookie_file("https://vimeo.com/1")));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
