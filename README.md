@@ -33,6 +33,8 @@ npm run tauri dev
 
 The first launch shows a setup screen while Siphon downloads its engines (about 150 MB). After that, paste a video link, pick where you will watch it, and press **Download**. Files are saved to your Downloads folder unless you choose another in Settings.
 
+The dev build keeps its own settings, sign-ins, downloads and tools, in folders ending in `.dev` (`%APPDATA%\app.siphon.desktop.dev`), so it never touches an installed Siphon's and can run beside it.
+
 ## Build an installer
 
 ```sh
