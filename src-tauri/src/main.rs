@@ -21,10 +21,12 @@ mod ytdlp;
 use std::sync::Arc;
 
 use tauri::Manager;
-// Only release builds register it (see `main`); this keeps debug builds from
-// flagging the dependency as unused.
-#[cfg(debug_assertions)]
-use tauri_plugin_single_instance as _;
+
+/// Added to the identifier of debug builds, so the dev build keeps its own
+/// folders (`%APPDATA%\app.siphon.desktop.dev` and the like) apart from the
+/// installed Siphon's: its settings, sign-ins, paused downloads and webview
+/// profile. Every folder Tauri resolves follows the identifier.
+const DEV_SUFFIX: &str = ".dev";
 
 /// Looks for new versions of the managed tools once a day while the app is
 /// open. (The frontend triggers the check at launch.) Waking hourly keeps
@@ -44,20 +46,22 @@ async fn keep_tools_updated(app: tauri::AppHandle) {
 }
 
 fn main() {
-    let builder = tauri::Builder::default();
-    // Opening Siphon again brings the open window forward instead of starting
-    // a second copy, which would share its files and settings. It has to be the
-    // first plugin. Release builds only: the dev build shares the identifier, and
-    // has to run beside the installed app (see docs/decisions.md, Testing notes).
-    #[cfg(not(debug_assertions))]
-    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-        if let Some(window) = app.get_webview_window("main") {
-            let _ = window.unminimize();
-            let _ = window.show();
-            let _ = window.set_focus();
-        }
-    }));
-    builder
+    let mut context = tauri::generate_context!();
+    if cfg!(debug_assertions) {
+        context.config_mut().identifier.push_str(DEV_SUFFIX);
+    }
+    tauri::Builder::default()
+        // Opening Siphon again brings the open window forward instead of starting
+        // a second copy, which would share its files and settings. It has to be
+        // the first plugin. The dev build has its own identifier, so it still
+        // runs beside the installed app.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -126,7 +130,7 @@ fn main() {
             app_update::app_update_check,
             app_update::app_update_install,
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("failed to start Siphon")
         .run(|app, event| {
             // Closing the app must not leave yt-dlp or ffmpeg running behind

@@ -1590,9 +1590,8 @@ fn work_root(app: &AppHandle) -> Result<PathBuf> {
 }
 
 /// Removes work folders a crash left behind. Run at launch; folders from the
-/// last day are kept, because they may belong to another copy of Siphon
-/// (the dev and installed builds share this folder), and so are those of
-/// paused or failed downloads (`kept`), which a later try carries on from.
+/// last day are kept as a margin, and so are those of paused or failed
+/// downloads (`kept`), which a later try carries on from.
 pub fn sweep_work(app: &AppHandle, kept: &HashSet<String>) {
     let Ok(Ok(entries)) = work_root(app).map(std::fs::read_dir) else {
         return;
