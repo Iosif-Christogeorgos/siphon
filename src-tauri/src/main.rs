@@ -100,6 +100,7 @@ fn main() {
             commands::set_settings,
             commands::open_file,
             commands::reveal_file,
+            commands::files_present,
             app_update::app_update_check,
             app_update::app_update_install,
         ])

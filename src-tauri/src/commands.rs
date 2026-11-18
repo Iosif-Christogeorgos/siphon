@@ -248,6 +248,17 @@ pub fn reveal_file(app: AppHandle, downloads: Downloads<'_>, path: String) -> Re
         .map_err(|err| AppError::internal("Couldn't open the folder.").with_details(err.to_string()))
 }
 
+/// Which of these downloaded files are still where Siphon put them, in the same
+/// order. A path Siphon didn't download counts as gone, so this can't be used
+/// to look around the disk.
+#[tauri::command]
+pub fn files_present(downloads: Downloads<'_>, paths: Vec<String>) -> Vec<bool> {
+    paths
+        .into_iter()
+        .map(|path| existing(&downloads, path).is_ok())
+        .collect()
+}
+
 fn ensure_ready(bins: &BinaryManager) -> Result<()> {
     if bins.is_ready() {
         Ok(())

@@ -22,6 +22,8 @@ export interface Download extends DownloadSource {
   /** Set once finished. */
   path: string | null;
   size: number | null;
+  /** When it finished (ms since 1970). Missing on downloads finished before 0.11. */
+  finishedAt?: number;
   /** Set once failed. */
   error: AppError | null;
 }
@@ -196,6 +198,7 @@ export const useDownloads = create<DownloadsState>((set, get) => {
             status: "finished",
             path: event.path,
             size: event.size,
+            finishedAt: Date.now(),
             progress: { stage: "finishing", fraction: 1, speed: null, eta: null },
           });
           break;

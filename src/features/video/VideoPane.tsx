@@ -15,6 +15,7 @@ import { useChoice, useChoices } from "@/stores/choices";
 import { useDownloadGroup, useDownloads } from "@/stores/downloads";
 import { useTrim } from "@/stores/trim";
 import type { Trim, VideoInfo } from "@/types";
+import { AlreadyDownloaded } from "./AlreadyDownloaded";
 import { VideoCard } from "./VideoCard";
 
 /** Everything shown for a loaded video: the card, the trimmer, the choices, the plan and the button. */
@@ -87,6 +88,8 @@ export function VideoPane({ video }: { video: VideoInfo }) {
           ) : null
         }
       />
+
+      <AlreadyDownloaded url={video.url} exclude={downloadIds} />
 
       <AnimatePresence initial={false}>
         {trimOpen && video.duration && (

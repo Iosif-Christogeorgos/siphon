@@ -42,7 +42,8 @@ export const ipc = {
   setSettings: (settings: Settings) => invoke<SettingsView>("set_settings", { settings }),
   openFile: (path: string) => invoke<void>("open_file", { path }),
   revealFile: (path: string) => invoke<void>("reveal_file", { path }),
-  /** The version of a newer Siphon release, or null. */
+  /** Which of these downloaded files are still there, in the same order. */
+  filesPresent: (paths: string[]) => invoke<boolean[]>("files_present", { paths }),  /** The version of a newer Siphon release, or null. */
   appUpdateCheck: () => invoke<string | null>("app_update_check"),
   /** Installs the newest release and restarts the app. */
   appUpdateInstall: () => invoke<void>("app_update_install"),
