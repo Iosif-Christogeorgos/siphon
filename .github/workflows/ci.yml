@@ -1,4 +1,4 @@
-# Runs the checks from the README on every push to main and every pull
+# Runs the checks from docs/development.md on every push to main and every pull
 # request. The release workflow runs it too, before it builds anything, so a
 # tag on a broken commit never becomes a release.
 name: CI

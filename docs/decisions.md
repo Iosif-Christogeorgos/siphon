@@ -1,6 +1,6 @@
 # Decisions and known issues
 
-Why Siphon works the way it does, and what is known not to be right yet. Progress by phase is in the [README](../README.md#status).
+Why Siphon works the way it does, and what is known not to be right yet. What each part does is in [how-it-works.md](how-it-works.md).
 
 ## Decisions
 

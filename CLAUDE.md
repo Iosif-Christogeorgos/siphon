@@ -1,6 +1,6 @@
 # Working on Siphon
 
-Siphon is a Tauri 2 desktop video downloader built on yt-dlp and ffmpeg. Architecture is in [README.md](README.md); reasons and known issues are in [docs/decisions.md](docs/decisions.md).
+Siphon is a Tauri 2 desktop video downloader built on yt-dlp and ffmpeg. Architecture is in [docs/how-it-works.md](docs/how-it-works.md) (the README is the public front page); building and releasing in [docs/development.md](docs/development.md); reasons and known issues are in [docs/decisions.md](docs/decisions.md).
 
 ## Starting a session
 
