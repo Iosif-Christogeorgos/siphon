@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { type ReactNode, useState } from "react";
+import { SignInPrompt } from "@/features/sign-in/SignInPrompt";
 import { spring } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import type { AppError, ErrorKind } from "@/types";
@@ -32,10 +33,23 @@ const PRESENTATION: Record<ErrorKind, { icon: LucideIcon; title: string }> = {
   internal: { icon: CircleAlert, title: "Something went wrong" },
 };
 
-/** A friendly error with the raw log tucked behind a "Details" toggle. */
-export function ErrorCard({ error, action }: { error: AppError; action?: ReactNode }) {
+/**
+ * A friendly error with the raw log tucked behind a "Details" toggle. Where
+ * signing in to the site can fix it, and the card knows the video (`signIn`),
+ * it offers that instead of the plain message.
+ */
+export function ErrorCard({
+  error,
+  action,
+  signIn,
+}: {
+  error: AppError;
+  action?: ReactNode;
+  signIn?: { url: string; onSignedIn?: () => void };
+}) {
   const [open, setOpen] = useState(false);
   const { icon: Icon, title } = PRESENTATION[error.kind];
+  const offer = error.sign_in && signIn ? { need: error.sign_in, ...signIn } : null;
 
   return (
     <div role="alert" className="rounded-[1.25rem] border bg-card p-4 shadow-card">
@@ -43,13 +57,19 @@ export function ErrorCard({ error, action }: { error: AppError; action?: ReactNo
         <div className="grid size-9 shrink-0 place-items-center rounded-xl bg-destructive-soft text-destructive">
           <Icon className="size-4.5" />
         </div>
-        <div className="min-w-0 flex-1">
-          <h2 className="font-semibold tracking-tight">{title}</h2>
-          <p data-selectable className="mt-0.5 text-[13px] text-pretty text-muted-foreground">
-            {error.message}
-          </p>
-        </div>
-        {action && <div className="shrink-0">{action}</div>}
+        {offer ? (
+          <SignInPrompt need={offer.need} url={offer.url} onSignedIn={offer.onSignedIn} />
+        ) : (
+          <>
+            <div className="min-w-0 flex-1">
+              <h2 className="font-semibold tracking-tight">{title}</h2>
+              <p data-selectable className="mt-0.5 text-[13px] text-pretty text-muted-foreground">
+                {error.message}
+              </p>
+            </div>
+            {action && <div className="shrink-0">{action}</div>}
+          </>
+        )}
       </div>
 
       {error.details && (
