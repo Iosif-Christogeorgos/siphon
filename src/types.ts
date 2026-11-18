@@ -110,6 +110,10 @@ export interface PlaylistEntry {
   duration: number | null;
   thumbnail: string | null;
   channel: string | null;
+  /** A link to another playlist (a channel's Playlists tab), opened rather than downloaded. */
+  is_playlist: boolean;
+  /** The part of a channel it was listed under ("Videos", "Live", "Shorts"); null for a plain playlist. */
+  section: string | null;
 }
 
 export interface PlaylistInfo {

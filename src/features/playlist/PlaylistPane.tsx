@@ -1,6 +1,6 @@
 import { useQueries } from "@tanstack/react-query";
-import { Check, ImageOff, ListPlus, ListVideo } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Check, ChevronRight, ImageOff, ListPlus, ListVideo } from "lucide-react";
+import { Fragment, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { PresetArea } from "@/features/presets/PresetArea";
 import { formatBytes, formatDuration } from "@/lib/format";
@@ -12,14 +12,23 @@ import { useTrim } from "@/stores/trim";
 import { useUi } from "@/stores/ui";
 import type { PlaylistEntry, PlaylistInfo } from "@/types";
 
-/** A playlist: pick which videos to download, then add them to the queue in one go. */
-export function PlaylistPane({ playlist }: { playlist: PlaylistInfo }) {
+/**
+ * A playlist or channel: pick which videos to download, then add them to the
+ * queue in one go. A channel's videos are grouped by tab (Videos, Live, Shorts),
+ * and links to other playlists open them.
+ */
+export function PlaylistPane({ playlist, onOpen }: { playlist: PlaylistInfo; onOpen: (url: string) => void }) {
   const choice = useChoice();
   const start = useDownloads((state) => state.start);
   const openPanel = useUi((state) => state.openPanel);
 
   const { entries } = playlist;
-  const [selected, setSelected] = useState(() => new Set(entries.map((entry) => entry.url)));
+  const videos = entries.filter((entry) => !entry.is_playlist);
+  // A channel starts with its first tab (Videos) selected, not its Live and Shorts too.
+  const [selected, setSelected] = useState(() => {
+    const first = videos[0]?.section ?? null;
+    return new Set(videos.filter((entry) => entry.section === first).map((entry) => entry.url));
+  });
   const [added, setAdded] = useState(0);
 
   // Stream picks and trim ranges belong to a single video, not to a playlist.
@@ -28,36 +37,51 @@ export function PlaylistPane({ playlist }: { playlist: PlaylistInfo }) {
     useTrim.getState().reset();
   }, []);
 
-  const toggle = (url: string) =>
+  const toggle = (urls: string[], on: boolean) =>
     setSelected((current) => {
       const next = new Set(current);
-      if (!next.delete(url)) next.add(url);
+      for (const url of urls) {
+        if (on) next.add(url);
+        else next.delete(url);
+      }
       return next;
     });
-  const allSelected = selected.size === entries.length;
+  const allSelected = videos.length > 0 && videos.every((entry) => selected.has(entry.url));
 
   // The total size: each selected video is looked up (a few at a time) and planned.
-  const chosenUrls = entries.filter((entry) => selected.has(entry.url)).map((entry) => entry.url);
+  const chosen = videos.filter((entry) => selected.has(entry.url));
   const estimates = useQueries({
-    queries: chosenUrls.map((url) => ({
-      queryKey: ["estimate", url, choice],
-      queryFn: () => (choice ? ipc.estimateDownload(url, choice) : Promise.resolve(null)),
+    queries: chosen.map((entry) => ({
+      queryKey: ["estimate", entry.url, choice],
+      queryFn: () => (choice ? ipc.estimateDownload(entry.url, choice) : Promise.resolve(null)),
       enabled: choice !== null,
       staleTime: Number.POSITIVE_INFINITY,
     })),
   });
   const checked = estimates.filter((estimate) => estimate.isSuccess || estimate.isError).length;
   const total = estimates.reduce((sum, estimate) => sum + (estimate.data ?? 0), 0);
+  const size =
+    total === 0 && checked < chosen.length
+      ? "working out the total size…"
+      : `≈ ${formatBytes(total)}${checked < chosen.length ? ` so far (${checked} of ${chosen.length} checked)` : ""}`;
 
   const addToQueue = () => {
     if (!choice) return;
-    const chosen = entries.filter((entry) => selected.has(entry.url));
     for (const entry of chosen) {
       start({ url: entry.url, title: entry.title, thumbnail: entry.thumbnail }, choice, null);
     }
     setAdded(chosen.length);
     openPanel("downloads");
   };
+
+  // Grouped by section, in the order the site lists them.
+  const sections: { name: string | null; entries: PlaylistEntry[] }[] = [];
+  for (const entry of entries) {
+    const last = sections.at(-1);
+    if (last && last.name === entry.section) last.entries.push(entry);
+    else sections.push({ name: entry.section, entries: [entry] });
+  }
+  const links = entries.length - videos.length;
 
   return (
     <>
@@ -70,66 +94,106 @@ export function PlaylistPane({ playlist }: { playlist: PlaylistInfo }) {
             {playlist.title}
           </h2>
           <p className="mt-0.5 truncate text-[13px] text-muted-foreground">
-            {[playlist.channel, `${entries.length} ${entries.length === 1 ? "video" : "videos"}`].filter(Boolean).join(" · ")}
+            {[
+              playlist.channel,
+              videos.length > 0 && `${videos.length} ${videos.length === 1 ? "video" : "videos"}`,
+              links > 0 && `${links} ${links === 1 ? "playlist" : "playlists"}`,
+            ]
+              .filter(Boolean)
+              .join(" · ")}
           </p>
         </div>
       </div>
 
       <div className="overflow-hidden rounded-[1.25rem] border bg-card shadow-card">
-        <div className="flex items-center justify-between border-b py-2 pr-2 pl-4">
-          <span className="text-[13px] text-muted-foreground tabular-nums">
-            {selected.size} of {entries.length} selected
-            {chosenUrls.length > 0 && choice && (
-              <span className="text-subtle-foreground">
-                {" · "}
-                {total === 0 && checked < chosenUrls.length
-                  ? "working out the total size…"
-                  : `≈ ${formatBytes(total)}${checked < chosenUrls.length ? ` so far (${checked} of ${chosenUrls.length} checked)` : ""}`}
-              </span>
-            )}
-          </span>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setSelected(allSelected ? new Set() : new Set(entries.map((entry) => entry.url)))}
-          >
-            {allSelected ? "Select none" : "Select all"}
-          </Button>
-        </div>
+        {videos.length > 0 && (
+          <div className="flex items-center justify-between border-b py-2 pr-2 pl-4">
+            <span className="text-[13px] text-muted-foreground tabular-nums">
+              {selected.size} of {videos.length} selected
+              {chosen.length > 0 && choice && <span className="text-subtle-foreground"> · {size}</span>}
+            </span>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => toggle(videos.map((entry) => entry.url), !allSelected)}
+            >
+              {allSelected ? "Select none" : "Select all"}
+            </Button>
+          </div>
+        )}
         <ul className="scrollbar-thin max-h-72 overflow-y-auto p-1.5">
-          {entries.map((entry, index) => (
-            <li key={entry.url}>
-              <EntryRow entry={entry} index={index} checked={selected.has(entry.url)} onToggle={() => toggle(entry.url)} />
-            </li>
-          ))}
+          {sections.map((section, index) => {
+            const urls = section.entries.filter((entry) => !entry.is_playlist).map((entry) => entry.url);
+            const on = urls.length > 0 && urls.every((url) => selected.has(url));
+            return (
+              <Fragment key={`${section.name}:${index}`}>
+                {section.name && (
+                  <li className="sticky -top-1.5 z-10 -mx-1.5 flex items-center justify-between bg-card px-3.5 pt-2 pb-1">
+                    <span className="text-xs font-medium text-muted-foreground">
+                      {section.name} <span className="text-subtle-foreground tabular-nums">· {section.entries.length}</span>
+                    </span>
+                    {urls.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => toggle(urls, !on)}
+                        className="rounded-md px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                      >
+                        {on ? "Select none" : "Select all"}
+                      </button>
+                    )}
+                  </li>
+                )}
+                {section.entries.map((entry) => (
+                  <li key={entry.url}>
+                    {entry.is_playlist ? (
+                      <LinkRow entry={entry} onOpen={() => onOpen(entry.url)} />
+                    ) : (
+                      <EntryRow
+                        entry={entry}
+                        index={videos.indexOf(entry)}
+                        checked={selected.has(entry.url)}
+                        onToggle={() => toggle([entry.url], !selected.has(entry.url))}
+                      />
+                    )}
+                  </li>
+                ))}
+              </Fragment>
+            );
+          })}
         </ul>
       </div>
 
-      <div className="pt-1">
-        <PresetArea summary={undefined} disabled={false} playlist />
-      </div>
-      <p className="px-1 text-[13px] text-pretty text-muted-foreground">
-        The best streams and format for each video are worked out from what it offers when its turn comes.
-      </p>
+      {videos.length === 0 ? (
+        <p className="px-1 text-[13px] text-pretty text-muted-foreground">Open a playlist to choose its videos.</p>
+      ) : (
+        <>
+          <div className="pt-1">
+            <PresetArea summary={undefined} disabled={false} playlist />
+          </div>
+          <p className="px-1 text-[13px] text-pretty text-muted-foreground">
+            The best streams and format for each video are worked out from what it offers when its turn comes.
+          </p>
 
-      <Button size="lg" className="h-13 w-full rounded-2xl" disabled={selected.size === 0 || !choice} onClick={addToQueue}>
-        <ListPlus className="size-4.5" />
-        {selected.size === 0
-          ? "Select videos to download"
-          : `Add ${selected.size} ${selected.size === 1 ? "video" : "videos"} to the queue`}
-      </Button>
-      {added > 0 && (
-        <p role="status" className="text-center text-[13px] text-muted-foreground">
-          Added {added} {added === 1 ? "video" : "videos"}. Follow them in{" "}
-          <button
-            type="button"
-            onClick={() => openPanel("downloads")}
-            className="font-medium text-primary underline-offset-2 hover:underline"
-          >
-            Downloads
-          </button>
-          .
-        </p>
+          <Button size="lg" className="h-13 w-full rounded-2xl" disabled={selected.size === 0 || !choice} onClick={addToQueue}>
+            <ListPlus className="size-4.5" />
+            {selected.size === 0
+              ? "Select videos to download"
+              : `Add ${selected.size} ${selected.size === 1 ? "video" : "videos"} to the queue`}
+          </Button>
+          {added > 0 && (
+            <p role="status" className="text-center text-[13px] text-muted-foreground">
+              Added {added} {added === 1 ? "video" : "videos"}. Follow them in{" "}
+              <button
+                type="button"
+                onClick={() => openPanel("downloads")}
+                className="font-medium text-primary underline-offset-2 hover:underline"
+              >
+                Downloads
+              </button>
+              .
+            </p>
+          )}
+        </>
       )}
     </>
   );
@@ -162,23 +226,8 @@ function EntryRow({
       >
         {checked && <Check className="size-3" strokeWidth={3} />}
       </span>
-      <span className="w-5 shrink-0 text-right text-xs text-subtle-foreground tabular-nums">{index + 1}</span>
-      <span className="relative aspect-video w-14 shrink-0 overflow-hidden rounded-md bg-muted">
-        {entry.thumbnail ? (
-          <img
-            src={entry.thumbnail}
-            alt=""
-            loading="lazy"
-            draggable={false}
-            referrerPolicy="no-referrer"
-            className="size-full object-cover"
-          />
-        ) : (
-          <span className="grid size-full place-items-center text-subtle-foreground">
-            <ImageOff className="size-3" />
-          </span>
-        )}
-      </span>
+      <span className="w-6 shrink-0 text-right text-xs text-subtle-foreground tabular-nums">{index + 1}</span>
+      <Thumb src={entry.thumbnail} />
       <span className={cn("min-w-0 flex-1 truncate text-[13px]", !checked && "text-muted-foreground")}>
         {entry.title}
       </span>
@@ -186,5 +235,38 @@ function EntryRow({
         <span className="shrink-0 text-xs text-muted-foreground tabular-nums">{formatDuration(entry.duration)}</span>
       )}
     </button>
+  );
+}
+
+/** A link to another playlist: opens it, to choose from its videos. */
+function LinkRow({ entry, onOpen }: { entry: PlaylistEntry; onOpen: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="group flex w-full items-center gap-3 rounded-xl px-2 py-1.5 text-left transition-colors hover:bg-accent"
+    >
+      <ListVideo className="size-4.5 shrink-0 text-primary" />
+      <span className="w-6 shrink-0" />
+      <Thumb src={entry.thumbnail} />
+      <span className="min-w-0 flex-1 truncate text-[13px]">{entry.title}</span>
+      <span className="flex shrink-0 items-center gap-0.5 text-xs text-muted-foreground group-hover:text-foreground">
+        Open <ChevronRight className="size-3.5" />
+      </span>
+    </button>
+  );
+}
+
+function Thumb({ src }: { src: string | null }) {
+  return (
+    <span className="relative aspect-video w-14 shrink-0 overflow-hidden rounded-md bg-muted">
+      {src ? (
+        <img src={src} alt="" loading="lazy" draggable={false} referrerPolicy="no-referrer" className="size-full object-cover" />
+      ) : (
+        <span className="grid size-full place-items-center text-subtle-foreground">
+          <ImageOff className="size-3" />
+        </span>
+      )}
+    </span>
   );
 }

@@ -148,6 +148,8 @@ Every download joins a queue. A set number run at once (three by default) and th
 
 A playlist link shows its videos with checkboxes. The ones you select are added to the queue with the current preset, and the best format is worked out for each video when its turn comes. The estimated total size fills in as Siphon looks the selected videos up. A YouTube video link that also names a playlist offers a way to the whole playlist.
 
+A channel link (`youtube.com/@name`) lists the channel's videos grouped as Videos, Live and Shorts, with Videos selected. A channel's Playlists tab lists its playlists; clicking one opens it. Streams that are live or haven't started yet are left out until they can be downloaded.
+
 **Settings** (the gear in the title bar) holds the download folder, the file-name style, the number of simultaneous downloads, the speed limit, the theme and the update choices. They are stored in `settings.json` in the app's config folder (`%APPDATA%\app.siphon.desktop` on Windows), except the theme, which only the interface uses and which is kept with it. The last preset choice and your saved presets are in `choices.json` next to it.
 
 The theme follows Windows' light or dark mode by default (**System**), and changes when Windows does. **Light** or **Dark** keeps Siphon in that theme whatever Windows uses.

@@ -1,5 +1,6 @@
 //! `yt-dlp -J`: what a link points to, and which formats it offers.
 
+use std::collections::HashSet;
 use std::time::Duration;
 
 use serde::{Deserialize, Deserializer, Serialize};
@@ -112,6 +113,10 @@ pub struct PlaylistEntry {
     pub duration: Option<f64>,
     pub thumbnail: Option<String>,
     pub channel: Option<String>,
+    /// A link to another playlist (a channel's Playlists tab), opened rather than downloaded.
+    pub is_playlist: bool,
+    /// The part of a channel it was listed under ("Videos", "Live", "Shorts"); none for a plain playlist.
+    pub section: Option<String>,
 }
 
 // ── What yt-dlp emits ───────────────────────────────────────────────────
@@ -147,6 +152,9 @@ struct RawInfo {
     view_count: Option<f64>,
     #[serde(default, deserialize_with = "text")]
     extractor_key: Option<String>,
+    /// For a flat entry: the extractor its link belongs to ("Youtube" for a video, "YoutubeTab" for a playlist).
+    #[serde(default, deserialize_with = "text")]
+    ie_key: Option<String>,
     #[serde(default, deserialize_with = "text")]
     live_status: Option<String>,
     #[serde(default)]
@@ -403,30 +411,79 @@ fn tracks(raw: &RawFormat) -> (bool, bool) {
 }
 
 fn playlist(raw: RawInfo, requested_url: &str) -> PlaylistInfo {
-    let entries = raw
-        .entries
-        .unwrap_or_default()
-        .into_iter()
-        .flatten()
-        .filter_map(|entry| {
-            Some(PlaylistEntry {
-                url: entry.url.or(entry.webpage_url)?,
-                id: entry.id.unwrap_or_default(),
-                title: entry.title.unwrap_or_else(|| "Untitled video".to_string()),
-                duration: entry.duration,
-                thumbnail: entry.thumbnail.or_else(|| last_thumbnail(entry.thumbnails)),
-                channel: entry.channel.or(entry.uploader),
-            })
-        })
-        .collect();
+    let title = raw.title.unwrap_or_else(|| "Untitled playlist".to_string());
+    let mut entries = Vec::new();
+    let mut seen = HashSet::new();
+    collect_entries(raw.entries.unwrap_or_default(), &title, None, &mut entries, &mut seen);
 
     PlaylistInfo {
         id: raw.id.unwrap_or_default(),
-        title: raw.title.unwrap_or_else(|| "Untitled playlist".to_string()),
         url: raw.webpage_url.unwrap_or_else(|| requested_url.to_string()),
         channel: raw.channel.or(raw.uploader),
+        title,
         entries,
     }
+}
+
+/// Flattens a playlist's entries. A YouTube channel lists its tabs (Videos,
+/// Live, Shorts) as playlists with their videos inside; those videos are
+/// listed under the tab's name. A link to another playlist that came without
+/// its videos (a channel's Playlists tab) is kept as a link to open. Streams
+/// that are live or haven't started can't be downloaded yet, and a video
+/// listed twice is kept once.
+fn collect_entries(
+    raw: Vec<Option<RawInfo>>,
+    parent: &str,
+    section: Option<&str>,
+    entries: &mut Vec<PlaylistEntry>,
+    seen: &mut HashSet<String>,
+) {
+    for entry in raw.into_iter().flatten() {
+        if let Some(inner) = entry.entries {
+            let name = entry.title.as_deref().map(|title| section_name(title, parent));
+            collect_entries(inner, parent, name.as_deref().or(section), entries, seen);
+            continue;
+        }
+        if matches!(entry.live_status.as_deref(), Some("is_live" | "is_upcoming")) {
+            continue;
+        }
+        let is_playlist = is_playlist_link(&entry);
+        let Some(url) = entry.url.or(entry.webpage_url) else { continue };
+        if !seen.insert(url.clone()) {
+            continue;
+        }
+        entries.push(PlaylistEntry {
+            url,
+            id: entry.id.unwrap_or_default(),
+            title: entry
+                .title
+                .unwrap_or_else(|| (if is_playlist { "Untitled playlist" } else { "Untitled video" }).to_string()),
+            duration: entry.duration,
+            thumbnail: entry.thumbnail.or_else(|| last_thumbnail(entry.thumbnails)),
+            channel: entry.channel.or(entry.uploader),
+            is_playlist,
+            section: section.map(str::to_string),
+        });
+    }
+}
+
+/// "Blender - Videos" under the channel "Blender" is the section "Videos".
+fn section_name(title: &str, parent: &str) -> String {
+    title
+        .strip_prefix(parent)
+        .and_then(|rest| rest.strip_prefix(" - "))
+        .unwrap_or(title)
+        .to_string()
+}
+
+/// Whether a flat entry links to a playlist or channel rather than a video.
+fn is_playlist_link(entry: &RawInfo) -> bool {
+    entry.kind.as_deref() == Some("playlist")
+        || entry
+            .ie_key
+            .as_deref()
+            .is_some_and(|key| ["Tab", "Playlist", "Channel"].iter().any(|end| key.ends_with(end)))
+        || entry.url.as_deref().is_some_and(|url| url.contains("/playlist?list="))
 }
 
 /// yt-dlp orders thumbnails worst → best.
@@ -491,5 +548,73 @@ mod tests {
     fn an_audio_file_with_unknown_codecs_stays_audio() {
         let file = r#"{"format_id": "773", "ext": "m4a", "video_ext": "none", "audio_ext": "m4a"}"#;
         assert_eq!(kind_of(file), Some(FormatKind::Audio));
+    }
+
+    fn listed(json: &str) -> PlaylistInfo {
+        playlist(serde_json::from_str(json).unwrap(), "https://example.com/list")
+    }
+
+    #[test]
+    fn a_channel_lists_the_videos_of_its_tabs_under_their_names() {
+        // The shape yt-dlp gives for youtube.com/@BlenderOfficial (2026-11-18): the tabs
+        // are playlists with their videos inside; a live and an upcoming stream are left out,
+        // and a video in two tabs is listed once.
+        let channel = listed(
+            r#"{"_type": "playlist", "title": "Blender", "channel": "Blender", "entries": [
+                {"_type": "playlist", "title": "Blender - Videos", "entries": [
+                    {"_type": "url", "ie_key": "Youtube", "title": "What's New in Blender 5.3!",
+                     "url": "https://www.youtube.com/watch?v=pvUy69I_Xuk", "duration": 1681},
+                    {"_type": "url", "ie_key": "Youtube", "title": "Making of",
+                     "url": "https://www.youtube.com/watch?v=mHrHLqQj7Ts", "duration": 280}]},
+                {"_type": "playlist", "title": "Blender - Live", "entries": [
+                    {"_type": "url", "ie_key": "Youtube", "title": "Blender Today LIVE #293",
+                     "url": "https://www.youtube.com/watch?v=a", "duration": 4036, "live_status": "was_live"},
+                    {"_type": "url", "ie_key": "Youtube", "title": "On now",
+                     "url": "https://www.youtube.com/watch?v=b", "live_status": "is_live"},
+                    {"_type": "url", "ie_key": "Youtube", "title": "Next week",
+                     "url": "https://www.youtube.com/watch?v=c", "live_status": "is_upcoming"}]},
+                {"_type": "playlist", "title": "Blender - Shorts", "entries": [
+                    {"_type": "url", "ie_key": "Youtube", "title": "Making of",
+                     "url": "https://www.youtube.com/watch?v=mHrHLqQj7Ts"}]}
+            ]}"#,
+        );
+        let rows: Vec<_> = channel
+            .entries
+            .iter()
+            .map(|entry| (entry.section.as_deref(), entry.title.as_str(), entry.is_playlist))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                (Some("Videos"), "What's New in Blender 5.3!", false),
+                (Some("Videos"), "Making of", false),
+                (Some("Live"), "Blender Today LIVE #293", false),
+            ]
+        );
+    }
+
+    #[test]
+    fn links_to_other_playlists_are_kept_as_links() {
+        // youtube.com/@BlenderOfficial/playlists: each entry is a whole playlist.
+        let tab = listed(
+            r#"{"_type": "playlist", "title": "Blender - Playlists", "entries": [
+                {"_type": "url", "ie_key": "YoutubeTab", "title": "Blender Conference 2026",
+                 "url": "https://www.youtube.com/playlist?list=PLa1F2ddGya_-I9y1nXALrBqrZNdlUE012"},
+                null
+            ]}"#,
+        );
+        assert_eq!(tab.entries.len(), 1);
+        assert!(tab.entries[0].is_playlist);
+        assert_eq!(tab.entries[0].section, None);
+    }
+
+    #[test]
+    fn a_plain_playlist_has_no_sections_and_only_videos() {
+        let list = listed(
+            r#"{"_type": "playlist", "title": "Blender Releases", "entries": [
+                {"_type": "url", "ie_key": "Youtube", "title": "Blender 4.0",
+                 "url": "https://www.youtube.com/watch?v=x", "duration": 120}]}"#,
+        );
+        assert!(list.entries.iter().all(|entry| entry.section.is_none() && !entry.is_playlist));
     }
 }

@@ -160,7 +160,7 @@ export function Home() {
                   )}
                 </>
               ) : (
-                <PlaylistPane playlist={media.data} />
+                <PlaylistPane playlist={media.data} onOpen={setUrl} />
               )}
             </motion.section>
           )}
