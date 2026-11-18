@@ -117,9 +117,23 @@ fn signed_in(sessions: &Sessions, site: &str, cookies: Vec<Cookie>, method: Meth
     })
 }
 
+/// Whether a lookup that failed got past the site's sign-in all the same:
+/// the site answered with an error of the video's own (removed, unreadable,
+/// protected) rather than "sign in". The sign-in works then, and the video's
+/// own error shows once it is looked up again. A failed connection, a bot
+/// check or a refusal prove nothing either way, and neither does a problem
+/// on Siphon's side (no `details`: yt-dlp never answered).
+pub(super) fn past_the_wall(error: &AppError) -> bool {
+    error.details.is_some()
+        && matches!(
+            error.kind,
+            ErrorKind::Unavailable | ErrorKind::Drm | ErrorKind::Internal
+        )
+}
+
 /// Runs the lookup that failed again with `cookies`. Returns the cookies as
-/// yt-dlp left them (sites renew some on the way) if it got through, None if
-/// the site still wants a sign-in.
+/// yt-dlp left them (sites renew some on the way) if it got past the sign-in,
+/// None if the site still wants one.
 async fn check(
     bins: &BinaryManager,
     sessions: &Sessions,
@@ -129,12 +143,13 @@ async fn check(
 ) -> Result<Option<Vec<Cookie>>> {
     let trial = sessions.trial_file(cookies)?;
     match metadata::fetch(bins, url, Some(trial.path())).await {
-        Ok(_) => {
+        Err(error) if error.kind == ErrorKind::LoginRequired => Ok(None),
+        Err(error) if !past_the_wall(&error) => Err(error),
+        // Through, or past the sign-in to an error of the video's own.
+        _ => {
             let renewed = cookies::scoped(trial.read_back(), &site::cookie_domains(site), super::now() as i64);
             Ok(Some(if renewed.is_empty() { cookies.to_vec() } else { renewed }))
         }
-        Err(error) if error.kind == ErrorKind::LoginRequired => Ok(None),
-        Err(error) => Err(error),
     }
 }
 
@@ -459,5 +474,38 @@ fn reply(app: &AppHandle, outcome: Outcome) {
     let pending = app.state::<SignInWindow>().pending.lock().unwrap().take();
     if let Some(pending) = pending {
         let _ = pending.reply.send(outcome);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ytdlp::errors::classify;
+
+    #[test]
+    fn a_video_that_fails_for_its_own_reason_still_proves_the_sign_in() {
+        // Found 2026-11-18: signed in to Instagram, the test reel then failed
+        // like this, and Done could never finish.
+        assert!(past_the_wall(&classify(
+            "ERROR: [Instagram] CWqAgUZgCku: Video info extraction failed: HTTP Error 400: Bad Request (caused by <HTTPError 400: Bad Request>)"
+        )));
+        assert!(past_the_wall(&classify(
+            "ERROR: [youtube] abc: Video unavailable. This video has been removed by the uploader"
+        )));
+        // Still behind the sign-in, or nothing learned.
+        assert!(!past_the_wall(&classify(
+            "ERROR: [youtube] abc: Sign in to confirm your age. Use --cookies-from-browser or --cookies for the authentication."
+        )));
+        assert!(!past_the_wall(&classify(
+            "ERROR: Unable to download webpage: timed out"
+        )));
+        assert!(!past_the_wall(&classify(
+            "ERROR: [youtube] abc: Sign in to confirm you’re not a bot. Use --cookies-from-browser or --cookies for the authentication."
+        )));
+        assert!(!past_the_wall(&classify("ERROR: HTTP Error 429: Too Many Requests")));
+        // Siphon's own trouble: yt-dlp never answered.
+        assert!(!past_the_wall(&AppError::internal(
+            "Couldn't start the download engine."
+        )));
     }
 }

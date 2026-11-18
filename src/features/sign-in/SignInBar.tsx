@@ -1,6 +1,6 @@
 import { Info, LoaderCircle, X } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { LogoGlyph } from "@/components/Logo";
 import { Button } from "@/components/ui/button";
 import { Hint } from "@/components/ui/tooltip";
@@ -16,11 +16,12 @@ import type { SignInStatus } from "@/types";
  */
 export function SignInBar() {
   const [site, setSite] = useState<string | null>(null);
-  const [status, setStatus] = useState<SignInStatus>({ phase: "waiting" });
+  const [state, setState] = useState<SignInStatus>({ phase: "waiting" });
+  const status = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     void ipc.signInSite().then(setSite);
-    const unlisten = onSignInStatus(setStatus);
+    const unlisten = onSignInStatus(setState);
     // Escape closes the window, as it would a dialog.
     const onKey = (event: KeyboardEvent) => event.key === "Escape" && void ipc.signInCancel();
     window.addEventListener("keydown", onKey);
@@ -30,14 +31,14 @@ export function SignInBar() {
     };
   }, []);
 
-  const checking = status.phase === "checking";
+  const checking = state.phase === "checking";
   const line =
-    status.phase === "checking"
+    state.phase === "checking"
       ? "Checking your sign-in…"
-      : status.phase === "not_yet"
+      : state.phase === "not_yet"
         ? "Not signed in yet. Finish on the page, then press Done."
-        : status.phase === "failed"
-          ? status.message
+        : state.phase === "failed"
+          ? state.message
           : "Sign in on the page below, then press Done.";
 
   return (
@@ -48,24 +49,35 @@ export function SignInBar() {
         <p className="truncate text-[13px] font-medium tracking-tight">
           Sign in to <span className="text-primary">{site ?? "…"}</span>
         </p>
-        <div className="relative h-4 overflow-hidden">
-          <AnimatePresence initial={false}>
-            <motion.p
-              key={line}
-              role="status"
-              className={cn(
-                "absolute inset-0 truncate text-xs leading-4",
-                status.phase === "not_yet" || status.phase === "failed" ? "text-destructive" : "text-muted-foreground",
-              )}
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -8 }}
-              transition={spring}
-            >
-              {line}
-            </motion.p>
-          </AnimatePresence>
-        </div>
+        {/* The whole line on hover, only when it didn't fit (an error can be long). */}
+        <Hint
+          label={line}
+          side="bottom"
+          className="max-w-80 text-pretty"
+          when={() => {
+            const shown = status.current?.querySelector("p");
+            return !!shown && shown.scrollWidth > shown.clientWidth;
+          }}
+        >
+          <div ref={status} className="pointer-events-auto relative h-4 overflow-hidden">
+            <AnimatePresence initial={false}>
+              <motion.p
+                key={line}
+                role="status"
+                className={cn(
+                  "absolute inset-0 truncate text-xs leading-4",
+                  state.phase === "not_yet" || state.phase === "failed" ? "text-destructive" : "text-muted-foreground",
+                )}
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={spring}
+              >
+                {line}
+              </motion.p>
+            </AnimatePresence>
+          </div>
+        </Hint>
       </div>
 
       <Hint

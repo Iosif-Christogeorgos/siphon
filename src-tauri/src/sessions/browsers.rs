@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use serde::Serialize;
 
 use super::cookies::{self, Cookie};
-use super::{site, Sessions};
+use super::{sign_in, site, Sessions};
 use crate::binaries::BinaryManager;
 use crate::error::{ErrorKind, Result};
 use crate::ytdlp::metadata;
@@ -67,7 +67,7 @@ pub struct Refusal {
 
 /// Reads `browser`'s cookies for `url`'s site and checks they unlock `url`.
 /// The lookup is the check: it runs with the browser's cookies, and only if
-/// it gets through are the site's own cookies (and no others) kept.
+/// it gets past the sign-in are the site's own cookies (and no others) kept.
 pub async fn import(
     bins: &BinaryManager,
     sessions: &Sessions,
@@ -90,24 +90,22 @@ pub async fn import(
         "--cookies".into(),
         dump.path().into(),
     ];
-    match metadata::fetch_with(bins, url, &args).await {
-        Ok(_) => {
-            let mine = cookies::scoped(dump.read_back(), &site::cookie_domains(site), super::now() as i64);
-            if mine.is_empty() {
-                // The video played without an account after all; nothing to keep.
-                return Ok(Err(not_signed_in(id, site)));
-            }
-            Ok(Ok(mine))
+    if let Err(error) = metadata::fetch_with(bins, url, &args).await {
+        let log = format!("{} {}", error.message, error.details.as_deref().unwrap_or_default()).to_lowercase();
+        if let Some(refusal) = refusal(id, site, &log, error.kind) {
+            return Ok(Err(refusal));
         }
-        Err(error) => {
-            let log = format!("{} {}", error.message, error.details.as_deref().unwrap_or_default()).to_lowercase();
-            if let Some(refusal) = refusal(id, site, &log, error.kind) {
-                Ok(Err(refusal))
-            } else {
-                Err(error)
-            }
+        if !sign_in::past_the_wall(&error) {
+            return Err(error);
         }
+        // Past the sign-in to an error of the video's own: the sign-in works.
     }
+    let mine = cookies::scoped(dump.read_back(), &site::cookie_domains(site), super::now() as i64);
+    if mine.is_empty() {
+        // The browser had nothing for the site; whatever got through did so without an account.
+        return Ok(Err(not_signed_in(id, site)));
+    }
+    Ok(Ok(mine))
 }
 
 /// Turns what yt-dlp said into the reason, where it is about the browser or
