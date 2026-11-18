@@ -61,6 +61,8 @@ cargo test --manifest-path src-tauri/Cargo.toml    # Rust unit tests
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 ```
 
+GitHub runs all of them (`.github/workflows/ci.yml`) on every push to `main` and every pull request, and the release workflow runs them first, so a release is never built from a commit that fails them.
+
 ## How it works
 
 ### Managed binaries
@@ -209,7 +211,8 @@ src-tauri/               Rust backend (Tauri 2)
   src/app_update.rs      Checking for and installing a newer Siphon
   src/preview.rs         Where the trim preview plays from (embed, stream or cached copy)
   src/commands.rs        The IPC surface
-.github/workflows/release.yml   Builds and signs a draft release when a version tag is pushed
+.github/workflows/ci.yml        Runs the checks on every push and pull request
+.github/workflows/release.yml   Runs the checks, then builds and signs a draft release when a version tag is pushed
 docs/presets.md          What each preset does and assumes, with sources
 docs/decisions.md        Why things work the way they do, and known issues
 app-icon.svg             Icon source; regenerate with `npx tauri icon app-icon.svg`
