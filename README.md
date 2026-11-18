@@ -2,7 +2,7 @@
 
 A minimal desktop video downloader for Windows 11 (Windows only). Siphon is a GUI for [yt-dlp](https://github.com/yt-dlp/yt-dlp) and [FFmpeg](https://ffmpeg.org): paste a link, see what it is, download it.
 
-Siphon is a personal-use tool. It does not bypass DRM; protected videos get a clear message instead of a download.
+Siphon is a personal-use tool. It does not bypass DRM; protected videos get a clear message instead of a download. Videos that need an account can be downloaded by signing in with your own, which unlocks only what that account can watch.
 
 ## Status
 
@@ -58,6 +58,7 @@ npm run typecheck                                  # TypeScript
 npm run lint                                       # oxlint: correctness, React hooks, unused code
 npm run knip                                       # unused files, exports and dependencies
 cargo test --manifest-path src-tauri/Cargo.toml    # Rust unit tests
+cargo fmt --manifest-path src-tauri/Cargo.toml --check
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 ```
 
@@ -164,6 +165,16 @@ The theme follows Windows' light or dark mode by default (**System**), and chang
 | Date Title | `2014-11-10 Big Buck Bunny.mp4` |
 | Custom | Your own yt-dlp template, for example `%(channel)s - %(title)s` |
 
+### Signing in
+
+When a video needs an account (age-restricted, members-only, a post only signed-in viewers see), the error says which site ("**youtube.com** needs you to sign in") and offers **Sign in**, with the way to sign in beside it:
+
+- **Sign-in window**: the site's own sign-in page in a Siphon window, with its own browser profile. Sign in as usual and press **Done**; on YouTube, Instagram, X and a few others it finishes by itself.
+- **A browser on this computer**: takes the sign-in over from it. Firefox works; Chrome, Edge and Brave on Windows encrypt their cookies so only they can read them, and Siphon says so.
+- **cookies.txt**: a cookies file exported from your browser with an extension.
+
+Siphon checks the sign-in on the video before saying it worked, then looks the video up again and retries that site's failed downloads. Each site's cookies are kept apart, encrypted for your Windows account, and given to that site's downloads only, in a temporary file deleted when the download ends. Private, paid and password-protected videos don't offer sign-in, because an account doesn't help with those. A sign-in that has run out says so. **Settings → Signed-in sites** lists them, with **Sign out**. Details, including why Google sometimes refuses embedded sign-in windows, are in [docs/sign-in.md](docs/sign-in.md).
+
 ### Updates
 
 Video sites change often and yt-dlp follows within days, so an old yt-dlp is the usual reason a download stops working. Siphon keeps its tools current on its own.
@@ -200,9 +211,9 @@ Progress comes from `--progress-template` lines that the backend parses and fold
 src/                     React + TypeScript frontend
   components/            Shared UI (title bar, error card, shadcn/ui primitives)
   features/              One folder per feature: setup, link, video, playlist, presets, options,
-                         trim, download, queue, settings, speed, home
+                         trim, download, queue, settings, speed, sign-in, home
   lib/                   IPC wrappers, formatting, motion presets
-  stores/                Zustand stores (binaries, choices, downloads, trim, toasts, appUpdate, ui, speed),
+  stores/                Zustand stores (binaries, choices, downloads, trim, toasts, appUpdate, ui, speed, signIn),
                          and the shared settings query
   types.ts               Types mirrored from the Rust backend
 src-tauri/               Rust backend (Tauri 2)
@@ -213,6 +224,8 @@ src-tauri/               Rust backend (Tauri 2)
   src/ffmpeg/            Hardware encoder detection and conversion arguments
   src/downloads/         The download queue, jobs (pause, resume, cancel) and progress tracking
   src/throttle/          The speed limit: the local proxy, the shared fair limiter, the system proxy
+  src/sessions/          Signed-in sites: cookie jars (DPAPI), which site a link is, the sign-in window,
+                         taking a sign-in over from a browser or a cookies.txt file
   src/settings.rs        User preferences and where they are stored
   src/app_update.rs      Checking for and installing a newer Siphon
   src/preview.rs         Where the trim preview plays from (embed, stream or cached copy)
@@ -220,13 +233,14 @@ src-tauri/               Rust backend (Tauri 2)
 .github/workflows/ci.yml        Runs the checks on every push and pull request
 .github/workflows/release.yml   Runs the checks, then builds and signs a draft release when a version tag is pushed
 docs/presets.md          What each preset does and assumes, with sources
+docs/sign-in.md          How signing in to sites works, what is kept where, and how to test it
 docs/decisions.md        Why things work the way they do, and known issues
 app-icon.svg             Icon source; regenerate with `npx tauri icon app-icon.svg`
 ```
 
 ## Stack
 
-Tauri 2, React 19, TypeScript, Vite, Tailwind CSS 4, shadcn/ui, Motion, Zustand, TanStack Query and Lucide icons. There is no telemetry or tracking. The only network requests are the ones needed to fetch a video and to update Siphon and its managed binaries.
+Tauri 2, React 19, TypeScript, Vite, Tailwind CSS 4, shadcn/ui, Motion, Zustand, TanStack Query and Lucide icons. There is no telemetry or tracking. The only network requests are the ones needed to fetch a video, to sign in to a site when you ask, and to update Siphon and its managed binaries.
 
 ## License
 
