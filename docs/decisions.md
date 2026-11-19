@@ -123,6 +123,18 @@ Added 2026-11-18. How it works, and how to test it, is in [sign-in.md](sign-in.m
 - **Chromium browsers on Windows mostly can't be imported from**, and Siphon says why instead of failing vaguely. Since 2024 Chrome, Edge and Brave encrypt cookies so only the browser can read them. Measured 2026-11-18: Edge and Brave both refused in about 1.3 s ("Failed to decrypt with DPAPI"), Brave also while running.
 - **The cookies.txt dialog opens from Rust**, like the other file access, so the webview can't name a file for Siphon to read.
 
+### Live recording
+
+Added 2026-11-19. How it works, what was measured and what is known not to work: [live.md](live.md).
+
+- **Recorded as MPEG-TS, made into the preset's file afterwards.** A crash, a power cut or a killed process leaves everything up to that moment playable; the finished file is only made, checked, and the recording removed, once it has ended. If it can't be made or fails its checks, the recording is kept as recorded rather than lost.
+- **Stop is Ctrl+Break, not a kill.** yt-dlp runs in its own process group; `siphon.exe --siphon-interrupt <pid>` (a helper, since only a process on the same console can send it) breaks it, and Siphon waits for the ffmpeg under it to finish its file. Plain Ctrl+C was ignored in testing.
+- **No Pause for recordings:** a live stream doesn't wait. Closing Siphon stops them gently; they are finished at the next start ("Recovered"), from the files `downloads.json` lists as they appear.
+- **Everything Siphon starts ends with it** (a job object, `process::end_with_siphon`), for downloads too: before, a crash left yt-dlp and ffmpeg running, which for a recording meant a file growing with nobody to stop it.
+- **Siphon waits for a stream itself** rather than with `--wait-for-video`, so the quality is planned from what the stream offers once it starts.
+- **Recordings skip the queue and go first within the speed limit**, up to their stream's bitrate and a quarter more: one that falls behind misses parts of the stream.
+- **Share and Edit are not offered for a stream as it airs**, nor Trim: they make a file from the whole video.
+
 ### Managed binaries
 
 - **FFmpeg uses the `-shared` build** (a 91 MB download rather than 200 MB) and is refreshed at most every 30 days.

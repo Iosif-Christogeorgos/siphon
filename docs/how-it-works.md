@@ -113,6 +113,10 @@ Every video is tried without an account first, even on a site you're signed in t
 
 Siphon checks the sign-in on the video before saying it worked, then looks the video up again and retries that site's failed downloads. Each site's cookies are kept apart, encrypted for your Windows account, and given to that site's downloads only, in a temporary file deleted when the download ends. A sign-in that has run out says so, and so does an account without access. **Settings → Signed-in sites** lists them, with **Sign out** and when to use each: **When needed** (the default) or **Always**. Details, including why Google sometimes refuses embedded sign-in windows, are in [sign-in.md](sign-in.md).
 
+## Live recording
+
+A live stream gets **Record** instead of Download, and a scheduled stream or an offline channel **Record when it starts**. Siphon waits for it, records it as MPEG-TS (so nothing recorded is lost to a crash), carries on through short dropouts, and when it ends or is stopped makes it into the preset's file (Max quality, Watch or Audio) and checks it. Where the site keeps what already aired, it can record **from the start**, catching up first. Recordings go first within the speed limit and are finished after a crash or closing. Details, measurements and limits are in [live.md](live.md).
+
 ## Updates
 
 Video sites change often and yt-dlp follows within days, so an old yt-dlp is the usual reason a download stops working. Siphon keeps its tools current on its own.
@@ -152,7 +156,7 @@ src-tauri/               Rust backend (Tauri 2)
   src/plan/              The preset registry, codec rules and the planner (choice → recipe → summary)
   src/choices.rs         The remembered choice and saved presets (choices.json), and migrating old ones
   src/ffmpeg/            Hardware encoder detection and conversion arguments
-  src/downloads/         The download queue, jobs (pause, resume, cancel) and progress tracking
+  src/downloads/         The download queue, jobs (pause, resume, cancel), progress tracking, and live recording (live.rs)
   src/throttle/          The speed limit: the local proxy, the shared fair limiter, the system proxy
   src/sessions/          Signed-in sites: cookie jars (DPAPI), which site a link is, the sign-in window,
                          taking a sign-in over from a browser or a cookies.txt file
@@ -166,6 +170,7 @@ docs/how-it-works.md     This file
 docs/development.md      Building, checking and releasing
 docs/presets.md          What each preset does and assumes, with sources
 docs/sign-in.md          How signing in to sites works, what is kept where, and how to test it
+docs/live.md             Recording live streams: how, what was tested, and its limits
 docs/decisions.md        Why things work the way they do, and known issues
 docs/media/              The README's screenshots and demo
 app-icon.svg             Icon source; regenerate with `npx tauri icon app-icon.svg`

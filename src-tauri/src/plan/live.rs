@@ -153,7 +153,7 @@ pub fn hints(recipe: &Recipe, extractor: Option<&str>, limit: Option<u64>, free:
     let needs = stream_rate(recipe);
     match (limit, needs) {
         (Some(limit), Some(needs)) if limit < needs => hints.push(warning(format!(
-            "Your speed limit ({}) is lower than this stream needs ({}). The recording will fall behind and stop. Raise the limit in Settings first.",
+            "Your speed limit ({}) is lower than this stream needs ({}). The recording will fall behind, and parts of the stream will be missing from it. Raise the limit in Settings first.",
             rate(limit),
             rate(needs)
         ))),

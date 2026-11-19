@@ -79,6 +79,10 @@ Combined with **Share**, each clip is made as sharp as it can be while still fit
 
 Paste a playlist or channel link to pick the videos you want, with an estimated total size. Videos you already have are marked and skipped, so pasting the same playlist again fetches only what's new. Save them in a folder named after the playlist, numbered in order.
 
+### Record live streams
+
+Paste a live stream from Twitch, YouTube, Kick and more, and press **Record**, or **Record when it starts** for a scheduled stream or an offline channel. Siphon records from now or, where the site allows, from the start, keeps going through short dropouts, and makes it into a file that plays everywhere when you press Stop or the stream ends. A crash or power cut never loses what was recorded: Siphon finishes it the next time it starts.
+
 ### Sign in only when a video needs it
 
 Age-restricted, members-only or account-only videos can be downloaded with your own account. That unlocks only what your account can already watch. Siphon tries every video without an account first, tells you how likely signing in is to help, and keeps each site's sign-in encrypted for your Windows account. It doesn't bypass DRM: protected videos get a clear message instead.
@@ -114,6 +118,7 @@ Press **Trim** on the video card to download only part of it. In the trim panel,
 | [How it works](docs/how-it-works.md) | The tools, the planner, trimming, the queue, settings and updates in detail |
 | [Presets](docs/presets.md) | What each preset makes, what it assumes, and the sources behind it |
 | [Signing in](docs/sign-in.md) | How sign-in works, what is kept where, and what it can't do |
+| [Live recording](docs/live.md) | How recording works, what was tested, and its limits |
 | [Decisions](docs/decisions.md) | Why things work the way they do, what was measured, and known issues |
 | [Development](docs/development.md) | Running from source, checks, building an installer and releasing |
 
