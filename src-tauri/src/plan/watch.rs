@@ -138,7 +138,11 @@ impl Planner<'_> {
             Some(video) => {
                 let native = &natives[native_of(&video).expect("filtered on it")];
                 recipe.container = native.container;
-                recipe.audio = self.audio_for(&video, native.audio, AudioCodec::Aac);
+                // Sound that can't be copied becomes what this file type plays:
+                // AAC can't go in a WebM. (YouTube offers Opus beside VP9, but a
+                // live stream recorded from the start has only AAC.)
+                let fallback = native.audio.first().copied().unwrap_or(AudioCodec::Aac);
+                recipe.audio = self.audio_for(&video, native.audio, fallback);
                 if let Some(note) = native.note {
                     recipe.hints.push(info(note));
                 }

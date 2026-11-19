@@ -242,6 +242,22 @@ fn windows_copies_vp9_only_when_the_extension_is_installed() {
     assert_eq!(with.format_selector(), "313+251");
     assert_eq!(with.container, Container::Webm);
     assert!(with.hints.iter().any(|hint| hint.text.contains("this PC has")));
+
+    // Only AAC beside the VP9 (a YouTube live stream from its start): the
+    // sound becomes Opus, which WebM takes, not AAC, which it doesn't.
+    let mut aac_only = youtube_4k();
+    aac_only
+        .formats
+        .retain(|format| format.kind != FormatKind::Audio || format.acodec.as_deref() != Some("opus"));
+    let with = plan_with(&aac_only, preset(TargetId::Windows), &caps);
+    assert_eq!(with.container, Container::Webm);
+    assert!(matches!(
+        with.audio.as_ref().map(|audio| &audio.action),
+        Some(AudioAction::Encode {
+            codec: AudioCodec::Opus,
+            ..
+        })
+    ));
 }
 
 #[test]
