@@ -375,12 +375,25 @@ pub fn finalize_args(recipe: &Recipe, input: Recorded, output: &Path) -> Vec<OsS
     }
     // Subtitles and data tracks of a live stream (timed metadata, ad markers) don't belong in the file.
     push(&["-sn", "-dn"]);
+    // Recorded from the start and stopped while catching up, the sound has run
+    // far ahead of the picture (it's much smaller): keep what has both. Its
+    // length is the recipe's (see `downloads::live`); `-shortest` alone
+    // doesn't trim sound that is converted beside a copied picture (measured
+    // 2026-11-19: 765 s of picture came with 3490 s of sound).
+    if recipe.video.is_some() && keeps_audio {
+        push(&["-shortest"]);
+    }
+    if let Some(length) = recipe.duration.filter(|length| *length > 0.0) {
+        push(&["-t", &format!("{length:.3}")]);
+    }
     args.push(output.into());
     args
 }
 
 /// The arguments that join the video and audio files a recording from the
-/// start left, when Siphon closed before yt-dlp could, into one MPEG-TS file.
+/// start left (stopped, or cut short, before yt-dlp joined them) into one
+/// Matroska file. Not MPEG-TS: YouTube's best video there is often VP9, which
+/// MPEG-TS can't hold.
 pub fn join_parts_args(parts: &[std::path::PathBuf], output: &Path) -> Vec<OsString> {
     let mut args: Vec<OsString> = ["-hide_banner", "-nostdin", "-y", "-loglevel", "error"]
         .map(OsString::from)
@@ -391,7 +404,7 @@ pub fn join_parts_args(parts: &[std::path::PathBuf], output: &Path) -> Vec<OsStr
     for index in 0..parts.len() {
         args.extend(["-map".into(), format!("{index}").into()]);
     }
-    args.extend(["-c", "copy", "-f", "mpegts"].map(OsString::from));
+    args.extend(["-c", "copy", "-f", "matroska"].map(OsString::from));
     args.push(output.into());
     args
 }
@@ -402,7 +415,8 @@ pub fn probe_args(file: &Path) -> Vec<OsString> {
         "-v",
         "error",
         "-show_entries",
-        "format=duration:stream=codec_type,start_time,duration",
+        // Matroska and WebM state no length per track, only a DURATION tag.
+        "format=duration:stream=codec_type,start_time,duration:stream_tags=DURATION",
         "-of",
         "json",
     ]
@@ -443,12 +457,23 @@ impl Probed {
     pub fn parse(json: &str) -> Option<Self> {
         let value: serde_json::Value = serde_json::from_str(json).ok()?;
         let number = |value: &serde_json::Value| -> Option<f64> { value.as_str()?.parse().ok() };
+        // "00:12:44.967000000"
+        let clock = |value: &serde_json::Value| -> Option<f64> {
+            let mut seconds = 0.0;
+            for part in value.as_str()?.split(':') {
+                seconds = seconds * 60.0 + part.parse::<f64>().ok()?;
+            }
+            Some(seconds)
+        };
         let mut probed = Probed {
             duration: number(&value["format"]["duration"]),
             ..Probed::default()
         };
         for stream in value["streams"].as_array()? {
-            let span = number(&stream["start_time"]).zip(number(&stream["duration"]).or(probed.duration));
+            let length = number(&stream["duration"])
+                .or_else(|| clock(&stream["tags"]["DURATION"]))
+                .or(probed.duration);
+            let span = number(&stream["start_time"]).zip(length);
             match stream["codec_type"].as_str() {
                 Some("video") if probed.video.is_none() => probed.video = span.or(Some((0.0, 0.0))),
                 Some("audio") if probed.audio.is_none() => probed.audio = span.or(Some((0.0, 0.0))),
@@ -456,6 +481,18 @@ impl Probed {
             }
         }
         Some(probed)
+    }
+
+    /// How much of the file has picture and sound both (or its length, with
+    /// only one of them): what a recording made from it keeps.
+    pub fn common_length(&self) -> Option<f64> {
+        match (self.video, self.audio) {
+            (Some((video_start, video_length)), Some((audio_start, audio_length))) => {
+                let end = (video_start + video_length).min(audio_start + audio_length);
+                Some((end - video_start.max(audio_start)).max(0.0))
+            }
+            _ => self.duration,
+        }
     }
 
     /// Whether this finished file holds what was recorded: the tracks it
@@ -538,6 +575,25 @@ mod recording_tests {
     fn a_finished_recording_must_be_as_long_as_what_was_recorded_and_in_sync() {
         let probed = Probed::parse(RECORDED).unwrap();
         assert_eq!(probed.video, Some((1.4, 38.033333)));
+        assert!((probed.common_length().unwrap() - 37.825289).abs() < 1e-6);
+        // From the start, stopped while catching up: the sound ran 40 minutes ahead.
+        let ahead = Probed {
+            video: Some((0.0, 600.0)),
+            audio: Some((0.0, 2860.0)),
+            duration: Some(2860.0),
+        };
+        assert_eq!(ahead.common_length(), Some(600.0));
+        // Matroska: lengths only in tags. A recording from the start that came
+        // out with 12:50 of picture and an hour of sound must not pass as an hour.
+        let tagged = Probed::parse(
+            r#"{"streams":[{"codec_type":"video","start_time":"0.000000","tags":{"DURATION":"00:12:50.000000000"}},
+                {"codec_type":"audio","start_time":"0.000000","tags":{"DURATION":"01:04:29.841000000"}}],
+                "format":{"duration":"3869.841000"}}"#,
+        )
+        .unwrap();
+        assert_eq!(tagged.video, Some((0.0, 770.0)));
+        assert_eq!(tagged.common_length(), Some(770.0));
+        assert!(tagged.matches(3869.8, true, true).is_err());
         assert!(probed.matches(38.0, true, true).is_ok());
         // Too short: something went missing on the way.
         assert!(probed.matches(60.0, true, true).unwrap_err().contains("long"));
@@ -607,9 +663,17 @@ mod recording_tests {
             Path::new("a.mp4"),
         ));
         assert!(
-            copy.contains("-i a.ts -map 0:v:0 -c:v copy -map 0:a:0? -c:a copy -sn -dn a.mp4"),
+            copy.contains("-i a.ts -map 0:v:0 -c:v copy -map 0:a:0? -c:a copy -sn -dn -shortest a.mp4"),
             "{copy}"
         );
+        recipe.duration = Some(765.0);
+        let both = text(finalize_args(
+            &recipe,
+            Recorded::File(Path::new("a.mkv")),
+            Path::new("a.mp4"),
+        ));
+        assert!(both.contains("-shortest -t 765.000 a.mp4"), "{both}");
+        recipe.duration = None;
         let joined = text(finalize_args(
             &recipe,
             Recorded::List(Path::new("parts.txt")),

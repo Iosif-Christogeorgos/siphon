@@ -69,6 +69,12 @@ pub struct DownloadTick {
 /// Parses one stdout line. Returns `None` for anything that isn't ours.
 pub fn parse(line: &str) -> Option<Line> {
     let line = line.trim();
+    // Fetching several streams at once (a live stream from its start), yt-dlp
+    // puts the stream's number in front of each line: "1: SIPHON_DL|…".
+    let line = match line.split_once(": ") {
+        Some((number, rest)) if !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()) => rest,
+        _ => line,
+    };
     if let Some(rest) = line.strip_prefix("SIPHON_DL|") {
         // The file name goes last because it may itself contain pipes.
         let fields: Vec<&str> = rest.splitn(8, '|').collect();
@@ -205,5 +211,18 @@ mod tests {
     #[test]
     fn ignores_ordinary_output() {
         assert_eq!(parse("[youtube] Extracting URL"), None);
+    }
+
+    #[test]
+    fn reads_the_lines_of_streams_fetched_side_by_side() {
+        // A live stream from the start (2026-11-19): video and audio in two threads.
+        let line = r"2: SIPHON_DL|downloading|81923|NA|NA|140|none|mp4a.40.2|C:\rec\Show.siphon-ab.rec1.f140.mkv";
+        let Some(Line::Download(tick)) = parse(line) else {
+            panic!("not read: {line}");
+        };
+        assert_eq!(tick.format_id, "140");
+        assert_eq!(tick.filename.as_deref(), Some(r"C:\rec\Show.siphon-ab.rec1.f140.mkv"));
+        // A title that starts with a number and a colon is no thread number.
+        assert!(parse("1: A song: SIPHON_DL|x").is_none());
     }
 }

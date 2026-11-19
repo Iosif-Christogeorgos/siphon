@@ -245,15 +245,12 @@ pub fn record_args(recipe: &Recipe, from_start: bool) -> Vec<String> {
         "fragment:exp=1:8",
     ]);
     if from_start {
-        // What already aired comes in pieces, and four at once catch up sooner.
         // The site's video and audio arrive as two files, joined at the end.
-        push(&[
-            "--live-from-start",
-            "--concurrent-fragments",
-            "4",
-            "--merge-output-format",
-            "mkv",
-        ]);
+        // One piece at a time, the default: with several at once, yt-dlp keeps
+        // every piece in a file of its own until the stream ends, and the
+        // recording's own files stay empty all along (seen 2026-11-19). One at
+        // a time still caught up 26 minutes of 720p60 in under a minute.
+        push(&["--live-from-start", "--merge-output-format", "mkv"]);
     }
     args
 }
@@ -270,6 +267,12 @@ pub fn recording_template(name: &str, own: &str, part: usize, from_start: bool) 
 /// What a recording's files carry in their names after the download's own
 /// marker: `Title.siphon-1a2b3c4d.rec1.ts`, `….rec2.ts` after a reconnect.
 const RECORDING_MARKER: &str = ".rec";
+
+/// What every file of part `part` of a recording has in its name, whatever
+/// yt-dlp adds after it: `.siphon-1a2b3c4d.rec1.` (so `rec1` is not `rec10`).
+pub fn recording_needle(own: &str, part: usize) -> String {
+    format!("{own}{RECORDING_MARKER}{part}.")
+}
 
 /// A recording file's name without what Siphon added: the part, the format
 /// yt-dlp added (`.f137`), and the download's marker.
@@ -294,6 +297,11 @@ mod recording_tests {
         assert_eq!(recording_stem("Lofi radio.siphon-1a2b3c4d.rec1"), "Lofi radio");
         assert_eq!(recording_stem("Lofi radio.siphon-1a2b3c4d.rec2.f137"), "Lofi radio");
         assert_eq!(recording_template("A", &own, 1, true), "A.siphon-1a2b3c4d.rec1.%(ext)s");
+        // Every file of the first part, and none of the tenth.
+        let needle = recording_needle(&own, 1);
+        assert!(first.contains(&needle));
+        assert!("A.siphon-1a2b3c4d.rec1.f308.mkv".contains(&needle));
+        assert!(!"A.siphon-1a2b3c4d.rec10.ts".contains(&needle));
         // A title that happens to contain the marker keeps it.
         assert_eq!(recording_stem("Notes on .records.siphon-ab.rec1"), "Notes on .records");
     }

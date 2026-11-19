@@ -201,6 +201,35 @@ impl Readings {
     }
 }
 
+/// How often a recording's folder is looked at for files yt-dlp didn't name.
+const FILE_LOOK: Duration = Duration::from_secs(2);
+
+/// The files in `dir` whose names carry `needle` (see `args::recording_needle`):
+/// a recording part's own, without what yt-dlp keeps beside them.
+fn recording_files(dir: &Path, needle: &str) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut files: Vec<PathBuf> = entries
+        .flatten()
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.contains(needle) && !name.ends_with(".ytdl") && !name.contains("-Frag") && !name.ends_with(".part")
+        })
+        .map(|entry| entry.path())
+        .collect();
+    files.sort();
+    files
+}
+
+/// Removes a recording's files, with what yt-dlp kept beside them (a piece
+/// being fetched, its notes on a recording from the start).
+async fn remove_recorded(recording: &Recording) {
+    let files: Vec<PathBuf> = recording.files().cloned().collect();
+    super::remove_partial_files(&files).await;
+}
+
 fn unix_now() -> u64 {
     crate::sessions::now()
 }
@@ -455,6 +484,9 @@ impl DownloadManager {
         let mut last_disk_check: Option<Instant> = None;
         let mut disk_left = None;
         let output_dir = recording.output_dir.clone();
+        // What this part's files have in their names, to find them on disk.
+        let needle = args::recording_needle(&args::own_marker(job.id), part);
+        let mut last_look: Option<Instant> = None;
         let result = self
             .run_child(job.bins, job.id, cmd, |event| match event {
                 ChildEvent::Line(line) => {
@@ -478,6 +510,19 @@ impl DownloadManager {
                         return;
                     }
                     last_report = Some(now);
+                    // yt-dlp doesn't always say which files it writes (fetching two
+                    // streams at once, it reports them on stderr): look for them too.
+                    if last_look.is_none_or(|at| now.duration_since(at) >= FILE_LOOK) {
+                        last_look = Some(now);
+                        let found = recording_files(&output_dir, &needle);
+                        if let Some(current) = recording.parts.last_mut() {
+                            let new: Vec<PathBuf> = found.into_iter().filter(|file| !current.contains(file)).collect();
+                            if !new.is_empty() {
+                                current.extend(new);
+                                self.keep_recording(job.id, recording);
+                            }
+                        }
+                    }
                     let mut reading = readings.at(recording.bytes(), now, unix_now());
                     if last_disk_check.is_none_or(|at| now.duration_since(at) >= DISK_CHECK) {
                         last_disk_check = Some(now);
@@ -572,7 +617,7 @@ impl DownloadManager {
                 1 => inputs.extend(files),
                 // From the start, cut short before yt-dlp joined the video and audio.
                 _ => {
-                    let joined = work.join(format!("part{}.ts", index + 1));
+                    let joined = work.join(format!("part{}.mkv", index + 1));
                     let mut cmd = process::command(job.bins.ffmpeg());
                     cmd.args(ffmpeg::join_parts_args(&files, &joined));
                     self.run_tool(job, cmd, |_| {}).await?;
@@ -587,10 +632,12 @@ impl DownloadManager {
         // How long it is, for the check and the progress.
         let mut recorded = 0.0;
         for input in &inputs {
+            // What has picture and sound both: from the start, stopped while
+            // catching up, the sound may have run far ahead.
             recorded += self
                 .probe(job, input)
                 .await
-                .and_then(|probed| probed.duration)
+                .and_then(|probed| probed.common_length())
                 .unwrap_or(0.0);
         }
         let raw_bytes: u64 = inputs.iter().map(|input| file_size(input)).sum();
@@ -654,9 +701,7 @@ impl DownloadManager {
         match checked {
             Ok(()) => {
                 tokio::fs::rename(&partial, &output).await?;
-                for file in recording.files() {
-                    let _ = tokio::fs::remove_file(file).await;
-                }
+                remove_recorded(recording).await;
                 log::line(job.app, &format!("record {title}: finished, {recorded:.0} s"));
                 Ok(Done {
                     path: output,
@@ -740,30 +785,44 @@ impl DownloadManager {
         why: &str,
     ) -> Result<Done> {
         let mut kept = Vec::new();
+        // MPEG-TS as recorded from now on; Matroska for video and audio a recording from the start joined.
+        let ext_of = |input: &PathBuf| {
+            input
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .unwrap_or("ts")
+                .to_string()
+        };
         for (index, input) in inputs.iter().enumerate() {
+            let ext = ext_of(input);
             let name = if inputs.len() == 1 {
-                format!("{stem}.ts")
+                format!("{stem}.{ext}")
             } else {
-                format!("{stem} (part {}).ts", index + 1)
+                format!("{stem} (part {}).{ext}", index + 1)
             };
             let target = self.unique_output(recording.output_dir.join(name), job.id);
             move_file(input, &target).await?;
             kept.push(target);
         }
         // Whatever is left (a video and audio pair that was joined) has a joined copy now.
-        for file in recording.files() {
-            let _ = tokio::fs::remove_file(file).await;
-        }
+        remove_recorded(recording).await;
         self.forget_recording(job.id, false).await;
         let parts = if kept.len() > 1 {
             format!(" in {} parts, one for each stretch of the stream", kept.len())
         } else {
             String::new()
         };
+        let first = kept.remove(0);
+        let ext = ext_of(&first);
+        let players = if ext == "ts" {
+            "VLC and Windows' own players"
+        } else {
+            "VLC"
+        };
         Ok(Done {
-            path: kept.remove(0),
+            path: first,
             note: Some(format!(
-                "{why} It's saved as it was recorded (.ts){parts}, which plays in VLC and Windows' own players."
+                "{why} It's saved as it was recorded (.{ext}){parts}, which plays in {players}."
             )),
         })
     }
@@ -842,9 +901,7 @@ impl DownloadManager {
         let recording = self.recordings.lock().unwrap().remove(id);
         self.save();
         if let (true, Some(recording)) = (delete, recording) {
-            for file in recording.files() {
-                let _ = tokio::fs::remove_file(file).await;
-            }
+            remove_recorded(&recording).await;
         }
     }
 
@@ -952,5 +1009,54 @@ mod tests {
         let left = readings.disk_left(DISK_RESERVE + 3_600_000_000, &reading);
         assert_eq!(left, Some(3600.0));
         assert_eq!(readings.disk_left(DISK_RESERVE + 10_000_000_000, &reading), None);
+    }
+}
+
+#[cfg(test)]
+mod cleanup_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn removing_a_recording_takes_what_yt_dlp_kept_beside_it_and_nothing_else() {
+        let dir = std::env::temp_dir().join(format!("siphon-cleanup-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let video = dir.join("Show.siphon-ab12.rec1.f302.mkv");
+        let kept = [
+            "Show.siphon-ab12.rec1.f302.mkv.ytdl",
+            "Show.siphon-ab12.rec1.f302.mkv-Frag7",
+            "Show.siphon-ab12.rec1.f302.mkv.part",
+        ];
+        let others = [
+            "Show.mkv",
+            "Show.siphon-ab12.rec2.ts",
+            "Another.siphon-ab12.rec1.f302.mkv-Frag7",
+        ];
+        for name in kept.iter().chain(&others) {
+            std::fs::write(dir.join(name), b"x").unwrap();
+        }
+        std::fs::write(&video, b"recorded").unwrap();
+        let recording = Recording {
+            url: "https://example.com/live".into(),
+            title: "Show".into(),
+            thumbnail: None,
+            recipe: serde_json::from_value(serde_json::json!({
+                "video": null, "audio": null, "container": "mkv", "strip_audio": false, "reason": null,
+                "promise": "", "hints": [], "duration": null, "trim": null, "source_fraction": 1.0,
+                "badge": "lossless", "size_limit": null, "fits": null, "blocked": null,
+                "section_request_size": null, "fallback": null, "cut_encode": null
+            }))
+            .unwrap(),
+            output_dir: dir.clone(),
+            parts: vec![vec![video.clone()]],
+        };
+        remove_recorded(&recording).await;
+        assert!(!video.exists());
+        for name in kept {
+            assert!(!dir.join(name).exists(), "{name} was left");
+        }
+        for name in others {
+            assert!(dir.join(name).exists(), "{name} was removed");
+        }
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

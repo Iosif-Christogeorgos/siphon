@@ -1777,9 +1777,9 @@ async fn collect_lines(stream: impl AsyncRead + Unpin) -> String {
 
 /// Removes what a stopped download left on disk: the files yt-dlp
 /// downloaded streams to, with their `.part`, `.ytdl` and fragment
-/// companions. They all carry the download's own marker, so none of them
-/// can be a file that was in the folder before.
-async fn remove_partial_files(stream_files: &[PathBuf]) {
+/// (`-Frag12`) companions. They all carry the download's own marker, so none
+/// of them can be a file that was in the folder before.
+pub(super) async fn remove_partial_files(stream_files: &[PathBuf]) {
     for file in stream_files {
         let (Some(dir), Some(name)) = (file.parent(), file.file_name().and_then(|name| name.to_str())) else {
             continue;
@@ -1794,7 +1794,7 @@ async fn remove_partial_files(stream_files: &[PathBuf]) {
             };
             let is_companion = entry_name
                 .strip_prefix(name)
-                .is_some_and(|rest| rest.starts_with(".part") || rest == ".ytdl");
+                .is_some_and(|rest| rest.starts_with(".part") || rest.starts_with("-Frag") || rest == ".ytdl");
             if is_companion || entry_name == name {
                 let _ = tokio::fs::remove_file(entry.path()).await;
             }

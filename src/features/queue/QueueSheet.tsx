@@ -351,7 +351,7 @@ function statusPieces(download: Download): { key: string; node: ReactNode }[] {
             node: (
               <>
                 <Info />
-                Saved as .ts
+                Saved as recorded
               </>
             ),
           },

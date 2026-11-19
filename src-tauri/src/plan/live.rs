@@ -6,6 +6,7 @@
 
 use std::time::Duration;
 
+use super::codecs::AudioCodec;
 use super::explain::{self, PlanSummary};
 use super::registry::Group;
 use super::{plan as plan_file, Capabilities, Choice, Hint, HintLevel, Recipe};
@@ -97,6 +98,13 @@ fn hourly(video: &VideoInfo, from_start: bool) -> Result<VideoInfo> {
 }
 
 fn sized_for_an_hour(mut format: Format) -> Format {
+    // YouTube's live audio states no codec either; in an MP4 it is AAC.
+    // Unknown, it would be converted, for nothing.
+    let unnamed = format.acodec.is_none() && format.kind == FormatKind::Audio;
+    if unnamed && matches!(format.ext.as_str(), "mp4" | "m4a") {
+        format.acodec = Some("mp4a.40.2".into());
+        format.audio_codec = Some(AudioCodec::Aac);
+    }
     if format.kind == FormatKind::Audio && format.abr.or(format.tbr).is_none() {
         // YouTube lists its live audio as "low" (48 kbit/s) and "high" (128) without numbers.
         let low = format
@@ -227,7 +235,7 @@ fn span(seconds: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plan::codecs::{AudioCodec, VideoCodec};
+    use crate::plan::codecs::VideoCodec;
     use crate::plan::registry::TargetId;
     use crate::plan::{PresetChoice, VideoAction};
     use crate::ytdlp::metadata::Live;
@@ -238,9 +246,10 @@ mod tests {
             ext: "mp4".into(),
             kind,
             vcodec: (kind != FormatKind::Audio).then(|| "avc1.640028".into()),
-            acodec: (kind != FormatKind::Video).then(|| "mp4a.40.2".into()),
+            // YouTube's live audio names no codec.
+            acodec: (kind == FormatKind::Muxed).then(|| "mp4a.40.2".into()),
             video_codec: (kind != FormatKind::Audio).then_some(VideoCodec::H264),
-            audio_codec: (kind != FormatKind::Video).then_some(AudioCodec::Aac),
+            audio_codec: (kind == FormatKind::Muxed).then_some(AudioCodec::Aac),
             width: height.map(|h| h * 16 / 9),
             height,
             fps: height.map(|_| 30.0),
@@ -304,6 +313,9 @@ mod tests {
         let recipe = plan(&youtube_live(), &preset("max"), false, &Capabilities::BASIC).unwrap();
         assert_eq!(recipe.format_selector(), "270+234");
         assert_eq!(recipe.video.as_ref().unwrap().action, VideoAction::Copy);
+        // Watch on Windows copies both: the unnamed audio is AAC.
+        let watch = plan(&youtube_live(), &preset("windows"), false, &Capabilities::BASIC).unwrap();
+        assert!(!watch.encodes_video() && !watch.encodes_audio(), "{watch:?}");
         // 5421 + 128 kbit/s for an hour: about 2.5 GB.
         let per_hour = recipe.estimated_size().unwrap();
         assert!((2_400_000_000..2_600_000_000).contains(&per_hour), "{per_hour}");
