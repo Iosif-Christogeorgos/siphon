@@ -176,7 +176,7 @@ pub fn hints(recipe: &Recipe, extractor: Option<&str>, limit: Option<u64>, free:
     }
     if extractor.is_some_and(|key| key.to_lowercase().starts_with("twitch")) {
         hints.push(info(
-            "Twitch shows ads to viewers without a subscription, and they end up in the recording. Signing in with a subscribed or Turbo account can help.",
+            "Twitch shows ads during live streams, and they end up in the recording. Siphon doesn't remove them.",
         ));
     }
     hints
