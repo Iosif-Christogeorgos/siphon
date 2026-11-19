@@ -13,6 +13,7 @@
 
 mod limiter;
 mod proxy;
+mod socks;
 mod upstream;
 
 use std::net::{Ipv4Addr, SocketAddr};

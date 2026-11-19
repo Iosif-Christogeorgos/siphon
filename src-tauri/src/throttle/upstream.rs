@@ -1,19 +1,27 @@
 //! The proxy this PC already uses, if any, so downloads still go through it.
 //!
 //! Before Siphon put its own proxy in between, yt-dlp found the system proxy
-//! itself, the way Python does: from the `HTTP(S)_PROXY` variables if any
-//! are set, otherwise from Windows' proxy settings. The same rules apply
-//! here. Like yt-dlp, a setup script (PAC) is not followed, and only HTTP
-//! proxies can be chained to: a SOCKS proxy is skipped and the site is
-//! reached directly.
+//! itself, the way Python does: from the `HTTP(S)_PROXY` and `ALL_PROXY`
+//! variables if any are set, otherwise from Windows' proxy settings. The same
+//! rules apply here, for HTTP and SOCKS proxies alike. Like yt-dlp, a setup
+//! script (PAC) is not followed.
+
+use super::socks;
 
 /// A proxy to reach a site through.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Upstream {
+    pub kind: Kind,
     pub host: String,
     pub port: u16,
-    /// `user:password`, sent as basic proxy authentication.
+    /// `user:password`: basic proxy authentication for HTTP, the SOCKS sign-in for SOCKS.
     pub credentials: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Http,
+    Socks(socks::Version),
 }
 
 /// Where a request for `host` should go: through which proxy, or `None` for direct.
@@ -49,25 +57,67 @@ fn is_loopback(host: &str) -> bool {
     host.eq_ignore_ascii_case("localhost") || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
-/// `http://user:pass@proxy:8080/` or `proxy:8080`. Anything but an HTTP proxy is `None`.
+/// `http://user:pass@proxy:8080/`, `socks5h://proxy:1080` or `proxy:8080` (HTTP).
+/// A kind of proxy Siphon can't go through (`https://`, say) is `None`.
 fn parse_url(value: &str) -> Option<Upstream> {
+    use socks::Version::{Five, Four};
+
     let value = value.trim();
-    let rest = match value.split_once("://") {
-        Some((scheme, rest)) if scheme.eq_ignore_ascii_case("http") => rest,
-        Some(_) => return None,
-        None => value,
+    let (scheme, rest) = value.split_once("://").unwrap_or(("http", value));
+    let (kind, default_port) = match scheme.to_ascii_lowercase().as_str() {
+        "http" => (Kind::Http, 80),
+        "socks5" => (Kind::Socks(Five { remote_dns: false }), 1080),
+        "socks5h" => (Kind::Socks(Five { remote_dns: true }), 1080),
+        // Windows' and Python's default SOCKS is SOCKS4.
+        "socks4" | "socks" => (Kind::Socks(Four { remote_dns: false }), 1080),
+        "socks4a" => (Kind::Socks(Four { remote_dns: true }), 1080),
+        _ => return None,
     };
     let authority = rest.split('/').next()?;
     let (credentials, address) = match authority.rsplit_once('@') {
-        Some((credentials, address)) => (Some(credentials.to_string()), address),
+        Some((credentials, address)) => (Some(decode_credentials(credentials)), address),
         None => (None, authority),
     };
-    let (host, port) = split_host_port(address, 80)?;
+    let (host, port) = split_host_port(address, default_port)?;
     Some(Upstream {
+        kind,
         host,
         port,
         credentials,
     })
+}
+
+/// `me%40work:p%3Ass` → `me@work:p:ss`: a link's user and password are
+/// percent-encoded, as Python decodes them.
+fn decode_credentials(credentials: &str) -> String {
+    let (user, password) = credentials.split_once(':').unwrap_or((credentials, ""));
+    let decode = |text: &str| {
+        let bytes = text.as_bytes();
+        let mut out = Vec::with_capacity(bytes.len());
+        let mut i = 0;
+        while i < bytes.len() {
+            let hex = (bytes[i] == b'%')
+                .then(|| bytes.get(i + 1..i + 3))
+                .flatten()
+                .and_then(|hex| u8::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok());
+            match hex {
+                Some(byte) => {
+                    out.push(byte);
+                    i += 3;
+                }
+                None => {
+                    out.push(bytes[i]);
+                    i += 1;
+                }
+            }
+        }
+        String::from_utf8_lossy(&out).into_owned()
+    };
+    if credentials.contains(':') {
+        format!("{}:{}", decode(user), decode(password))
+    } else {
+        decode(user)
+    }
 }
 
 /// `example.com:443` → ("example.com", 443); `[::1]:8080` → ("::1", 8080).
@@ -104,19 +154,28 @@ fn no_proxy_matches(list: &str, host: &str) -> bool {
 }
 
 /// Windows' "ProxyServer": `proxy:8080` for everything, or
-/// `http=proxy:8080;https=proxy:8443;socks=…` per kind of link.
+/// `http=proxy:8080;https=proxy:8443;socks=…` per kind of link. As in
+/// Python, a `socks` entry (SOCKS4 unless it says otherwise) is used for
+/// links whose kind has no entry of its own.
 fn windows_server(server: &str, https: bool) -> Option<Upstream> {
     if !server.contains('=') {
         return parse_url(server);
     }
-    let wanted = if https { "https" } else { "http" };
-    server.split(';').find_map(|entry| {
-        let (kind, address) = entry.split_once('=')?;
-        kind.trim()
-            .eq_ignore_ascii_case(wanted)
-            .then(|| parse_url(address))
-            .flatten()
-    })
+    let entry = |wanted: &str| {
+        server.split(';').find_map(|entry| {
+            let (kind, address) = entry.split_once('=')?;
+            kind.trim().eq_ignore_ascii_case(wanted).then(|| address.trim())
+        })
+    };
+    if let Some(address) = entry(if https { "https" } else { "http" }) {
+        return parse_url(address);
+    }
+    let socks = entry("socks")?;
+    if socks.contains("://") {
+        parse_url(socks)
+    } else {
+        parse_url(&format!("socks4://{socks}"))
+    }
 }
 
 /// Windows' "ProxyOverride": `;`-separated names with `*` wildcards; `<local>`
@@ -170,8 +229,15 @@ fn windows_settings() -> Option<(String, String)> {
 mod tests {
     use super::*;
 
+    use socks::Version::{Five, Four};
+
     fn upstream(host: &str, port: u16) -> Option<Upstream> {
+        via(Kind::Http, host, port)
+    }
+
+    fn via(kind: Kind, host: &str, port: u16) -> Option<Upstream> {
         Some(Upstream {
+            kind,
             host: host.into(),
             port,
             credentials: None,
@@ -186,16 +252,42 @@ mod tests {
         assert_eq!(
             parse_url("http://me:secret@10.0.0.1:8080"),
             Some(Upstream {
+                kind: Kind::Http,
                 host: "10.0.0.1".into(),
                 port: 8080,
                 credentials: Some("me:secret".into()),
             })
         );
-        // Only HTTP proxies can be chained to.
-        assert_eq!(parse_url("socks5://proxy.lan:1080"), None);
+        // A proxy Siphon can't speak to (over TLS) is left out, as before.
+        assert_eq!(parse_url("https://proxy.lan:443"), None);
         assert_eq!(split_host_port("[::1]:8080", 80), Some(("::1".into(), 8080)));
         assert_eq!(split_host_port("example.com", 443), Some(("example.com".into(), 443)));
         assert_eq!(split_host_port("example.com:x", 443), None);
+    }
+
+    #[test]
+    fn reads_socks_proxy_addresses() {
+        let socks5 = Kind::Socks(Five { remote_dns: false });
+        assert_eq!(parse_url("socks5://proxy.lan:9050"), via(socks5, "proxy.lan", 9050));
+        assert_eq!(
+            parse_url("SOCKS5H://proxy.lan"),
+            via(Kind::Socks(Five { remote_dns: true }), "proxy.lan", 1080)
+        );
+        let socks4 = Kind::Socks(Four { remote_dns: false });
+        assert_eq!(parse_url("socks4://10.0.0.1:1080"), via(socks4, "10.0.0.1", 1080));
+        assert_eq!(parse_url("socks://10.0.0.1"), via(socks4, "10.0.0.1", 1080));
+        assert_eq!(
+            parse_url("socks4a://proxy.lan:1080"),
+            via(Kind::Socks(Four { remote_dns: true }), "proxy.lan", 1080)
+        );
+        // A user name and password are percent-encoded in a link.
+        assert_eq!(
+            parse_url("socks5h://me%40work:p%3Ass%25@127.0.0.1:1080")
+                .unwrap()
+                .credentials
+                .as_deref(),
+            Some("me@work:p:ss%")
+        );
     }
 
     #[test]
@@ -204,8 +296,19 @@ mod tests {
         let split = "http=web:80;https=secure:8443;socks=sock:1080";
         assert_eq!(windows_server(split, false), upstream("web", 80));
         assert_eq!(windows_server(split, true), upstream("secure", 8443));
-        // No entry for this kind of link: straight to the site.
-        assert_eq!(windows_server("socks=sock:1080", true), None);
+        // Only a SOCKS entry: it serves every kind of link, as SOCKS4 (Windows' default).
+        let socks4 = Kind::Socks(Four { remote_dns: false });
+        assert_eq!(windows_server("socks=sock:1080", true), via(socks4, "sock", 1080));
+        assert_eq!(
+            windows_server("http=web:80;socks=sock:1080", true),
+            via(socks4, "sock", 1080)
+        );
+        assert_eq!(
+            windows_server("socks=socks5h://sock:9050", false),
+            via(Kind::Socks(Five { remote_dns: true }), "sock", 9050)
+        );
+        // Neither an entry for this kind of link nor a SOCKS one: straight to the site.
+        assert_eq!(windows_server("ftp=files:21", true), None);
 
         let exceptions = "*.internal.example;intranet*;<local>";
         assert!(bypassed_by_windows(exceptions, "files.internal.example"));

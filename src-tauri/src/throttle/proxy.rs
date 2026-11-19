@@ -15,7 +15,8 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinSet;
 
 use super::limiter::{FlowId, Limiter, CHUNK};
-use super::upstream::{self, split_host_port, Upstream};
+use super::socks;
+use super::upstream::{self, split_host_port, Kind, Upstream};
 use super::Meter;
 
 /// A request head larger than this is not a request we should pass on.
@@ -104,6 +105,13 @@ async fn tunnel_to(host: &str, port: u16, upstream: Option<Upstream>) -> io::Res
         return connect(host, port).await;
     };
     let mut proxy = connect(&upstream.host, upstream.port).await?;
+    if let Kind::Socks(version) = upstream.kind {
+        let asked = socks::handshake(&mut proxy, version, host, port, upstream.credentials.as_deref());
+        tokio::time::timeout(CONNECT_TIMEOUT, asked)
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "the SOCKS proxy didn't answer"))??;
+        return Ok(proxy);
+    }
     let authority = if host.contains(':') {
         format!("[{host}]:{port}")
     } else {
@@ -132,7 +140,12 @@ async fn tunnel_to(host: &str, port: u16, upstream: Option<Upstream>) -> io::Res
 /// `GET http://host/path`: the same request, sent on to the site (or the
 /// system proxy) on a connection of its own that closes after the answer.
 async fn open_forward(request: &RequestHead<'_>) -> io::Result<(TcpStream, Vec<u8>)> {
-    let target = request.target;
+    let (host, ..) = forward_target(request.target)?;
+    forward(request, upstream::for_host(&host, false)).await
+}
+
+/// `http://host:port/path` → host, port and path.
+fn forward_target(target: &str) -> io::Result<(String, u16, &str)> {
     let rest = target
         .get(..7)
         .filter(|scheme| scheme.eq_ignore_ascii_case("http://"))
@@ -143,10 +156,16 @@ async fn open_forward(request: &RequestHead<'_>) -> io::Result<(TcpStream, Vec<u
         None => (rest, "/"),
     };
     let (host, port) = split_host_port(authority, 80).ok_or_else(|| invalid("a bad address"))?;
-    let upstream = upstream::for_host(&host, false);
-    let server = match &upstream {
-        Some(proxy) => connect(&proxy.host, proxy.port).await?,
-        None => connect(&host, port).await?,
+    Ok((host, port, path))
+}
+
+async fn forward(request: &RequestHead<'_>, upstream: Option<Upstream>) -> io::Result<(TcpStream, Vec<u8>)> {
+    let target = request.target;
+    let (host, port, path) = forward_target(target)?;
+    // An HTTP proxy is sent the request; through a SOCKS proxy, the site is.
+    let (server, upstream) = match upstream {
+        Some(proxy) if proxy.kind == Kind::Http => (connect(&proxy.host, proxy.port).await?, Some(proxy)),
+        other => (tunnel_to(&host, port, other).await?, None),
     };
     // A proxy is sent the whole link, a site only the path.
     let mut head = format!(
@@ -418,6 +437,7 @@ mod tests {
             String::from_utf8(head).unwrap()
         });
         let via = Upstream {
+            kind: Kind::Http,
             host: "127.0.0.1".into(),
             port: upstream_port,
             credentials: Some("me:secret".into()),
@@ -426,6 +446,103 @@ mod tests {
         let head = asked.await.unwrap();
         assert!(head.starts_with("CONNECT www.example.com:443 HTTP/1.1\r\n"));
         assert!(head.contains("Proxy-Authorization: Basic bWU6c2VjcmV0\r\n"));
+    }
+
+    /// A SOCKS5 proxy for one connection: grants it, then really connects to
+    /// the address it was asked for and relays both ways. Returns that address.
+    async fn socks5_proxy() -> (Upstream, tokio::task::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let task = tokio::spawn(async move {
+            let (mut client, _) = listener.accept().await.unwrap();
+            let mut greeting = [0; 3];
+            client.read_exact(&mut greeting).await.unwrap();
+            assert_eq!(greeting, [5, 1, 0]);
+            client.write_all(&[5, 0]).await.unwrap();
+            let mut ask = [0; 4];
+            client.read_exact(&mut ask).await.unwrap();
+            assert_eq!(&ask[..3], &[5, 1, 0]);
+            let host = match ask[3] {
+                1 => {
+                    let mut ip = [0; 4];
+                    client.read_exact(&mut ip).await.unwrap();
+                    std::net::Ipv4Addr::from(ip).to_string()
+                }
+                3 => {
+                    let mut name = vec![0; usize::from(client.read_u8().await.unwrap())];
+                    client.read_exact(&mut name).await.unwrap();
+                    String::from_utf8(name).unwrap()
+                }
+                other => panic!("address type {other}"),
+            };
+            let port = client.read_u16().await.unwrap();
+            // The test sites listen on 127.0.0.1 only; don't try ::1 first.
+            let address = if host == "localhost" {
+                "127.0.0.1"
+            } else {
+                host.as_str()
+            };
+            let mut site = TcpStream::connect((address, port)).await.unwrap();
+            client.write_all(&[5, 0, 0, 1, 127, 0, 0, 1, 0, 0]).await.unwrap();
+            let _ = tokio::io::copy_bidirectional(&mut client, &mut site).await;
+            format!("{host}:{port}")
+        });
+        let upstream = Upstream {
+            kind: Kind::Socks(socks::Version::Five { remote_dns: true }),
+            host: "127.0.0.1".into(),
+            port,
+            credentials: None,
+        };
+        (upstream, task)
+    }
+
+    #[tokio::test]
+    async fn tunnels_through_a_socks_proxy() {
+        let (site_port, site) = site(b"through socks".to_vec()).await;
+        let (via, asked) = socks5_proxy().await;
+        let mut server = tunnel_to("localhost", site_port, Some(via)).await.unwrap();
+        server.write_all(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n").await.unwrap();
+        let answer = String::from_utf8(read_all(&mut server).await).unwrap();
+        assert!(answer.ends_with("through socks"), "{answer}");
+        assert!(site.await.unwrap().starts_with("GET / HTTP/1.1"));
+        // The test proxy relays until both ends have closed.
+        drop(server);
+        // socks5h: the proxy was given the name, not an address looked up here.
+        assert_eq!(asked.await.unwrap(), format!("localhost:{site_port}"));
+    }
+
+    #[tokio::test]
+    async fn never_goes_around_a_socks_proxy_that_is_down() {
+        // A site that is up, and a SOCKS proxy on a port nothing listens on.
+        let (site_port, _site) = site(b"direct".to_vec()).await;
+        let closed = TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let via = Upstream {
+            kind: Kind::Socks(socks::Version::Five { remote_dns: true }),
+            host: "127.0.0.1".into(),
+            port: closed,
+            credentials: None,
+        };
+        assert!(tunnel_to("127.0.0.1", site_port, Some(via)).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn sends_a_plain_request_through_a_socks_proxy_as_to_the_site() {
+        let (site_port, site) = site(b"hello".to_vec()).await;
+        let (via, _) = socks5_proxy().await;
+        let head = format!("GET http://127.0.0.1:{site_port}/clip.mp4 HTTP/1.1\r\nHost: 127.0.0.1:{site_port}\r\n\r\n");
+        let request = RequestHead::parse(head.as_bytes()).unwrap();
+        let (mut server, _) = forward(&request, Some(via)).await.unwrap();
+        let answer = String::from_utf8(read_all(&mut server).await).unwrap();
+        assert!(answer.ends_with("hello"));
+        // Only the path, as to the site itself, and no proxy sign-in header.
+        let head = site.await.unwrap();
+        assert!(head.starts_with("GET /clip.mp4 HTTP/1.1\r\n"), "{head}");
+        assert!(!head.contains("Proxy-Authorization"));
     }
 
     #[tokio::test]
