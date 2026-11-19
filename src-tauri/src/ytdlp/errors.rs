@@ -282,6 +282,18 @@ pub fn is_offline(log: &str) -> bool {
     log.to_lowercase().contains("is not currently live")
 }
 
+/// True when a live recording that finished without an error ended because
+/// its stream did: its playlist said so, and nothing failed on the way. A
+/// stream that stops sending ends ffmpeg without an error too, but leaves
+/// "HTTP error 404" and "Failed to reload playlist" in its log (seen
+/// 2026-11-19); that one may come back, and is waited for.
+pub fn stream_over(log: &str) -> bool {
+    let log = log.to_lowercase();
+    !["error", "failed", "timed out", "connection"]
+        .iter()
+        .any(|word| log.contains(word))
+}
+
 /// Classifies a failed run. `log` is everything yt-dlp wrote to stderr.
 pub fn classify(log: &str) -> AppError {
     let haystack = log.to_lowercase();
@@ -312,6 +324,20 @@ pub fn classify(log: &str) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tells_a_stream_that_ended_from_one_that_dropped() {
+        // A playlist that ended: ffmpeg says nothing at -loglevel warning.
+        assert!(stream_over(""));
+        // From the start, yt-dlp's own progress lines are all there is.
+        assert!(stream_over(
+            "1: SIPHON_DL|downloading|1024|NA|NA|140|none|mp4a.40.2|C:\r.f140.mkv"
+        ));
+        // The server went away (2026-11-19).
+        let dropped = "[http @ 0000027533a89b80] HTTP error 404 Not Found
+                       [in#0/hls @ 0000027533a7ea40] Failed to reload playlist 0";
+        assert!(!stream_over(dropped));
+    }
 
     #[test]
     fn recognises_drm() {

@@ -121,8 +121,10 @@ pub struct Recovered {
 
 /// How one part of a recording ended on its own.
 enum PartEnd {
-    /// yt-dlp finished: the stream ended or stopped sending.
-    Ended,
+    /// The stream ended: its playlist said so, and nothing failed.
+    Over,
+    /// yt-dlp finished, but the stream stopped sending: it may come back.
+    Dropped,
     /// The disk is nearly full: the recording was stopped there.
     DiskFull,
 }
@@ -327,7 +329,10 @@ impl DownloadManager {
             let recorded_some = recording.bytes() > before;
             empty_parts = if recorded_some { 0 } else { empty_parts + 1 };
             match ended {
-                Ok(PartEnd::Ended) => {}
+                // Nothing to wait for. Looking again could find it still "live" for
+                // a moment, and a new part would read the ended stream from its start.
+                Ok(PartEnd::Over) => break Stop::Finish,
+                Ok(PartEnd::Dropped) => {}
                 Ok(PartEnd::DiskFull) => {
                     disk_full = true;
                     break Stop::Finish;
@@ -545,7 +550,8 @@ impl DownloadManager {
         }
         self.keep_recording(job.id, recording);
         match result {
-            Ok(_) => Ok(PartEnd::Ended),
+            Ok(log) if errors::stream_over(&log) => Ok(PartEnd::Over),
+            Ok(_) => Ok(PartEnd::Dropped),
             Err(Failure::Stopped(Stop::Finish)) if disk_full => Ok(PartEnd::DiskFull),
             Err(failure) => Err(failure),
         }
