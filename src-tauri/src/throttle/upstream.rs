@@ -24,6 +24,56 @@ pub enum Kind {
     Socks(socks::Version),
 }
 
+impl Upstream {
+    /// As a link (`socks5h://me:secret@proxy:1080`), for clients that take
+    /// their proxy that way. The user and password are percent-encoded again.
+    pub fn url(&self) -> String {
+        use socks::Version::{Five, Four};
+
+        let scheme = match self.kind {
+            Kind::Http => "http",
+            Kind::Socks(Five { remote_dns: false }) => "socks5",
+            Kind::Socks(Five { remote_dns: true }) => "socks5h",
+            Kind::Socks(Four { remote_dns: false }) => "socks4",
+            Kind::Socks(Four { remote_dns: true }) => "socks4a",
+        };
+        let credentials = match self.credentials.as_deref() {
+            Some(credentials) => match credentials.split_once(':') {
+                Some((user, password)) => format!("{}:{}@", encode(user), encode(password)),
+                None => format!("{}@", encode(credentials)),
+            },
+            None => String::new(),
+        };
+        let host = if self.host.contains(':') {
+            format!("[{}]", self.host)
+        } else {
+            self.host.clone()
+        };
+        format!("{scheme}://{credentials}{host}:{}", self.port)
+    }
+}
+
+/// Percent-encodes everything but letters, digits and `-._~`, for a link's user or password.
+fn encode(text: &str) -> String {
+    text.bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => (byte as char).to_string(),
+            _ => format!("%{byte:02X}"),
+        })
+        .collect()
+}
+
+/// Makes an HTTP client go the way downloads go: through the proxy
+/// [`for_host`] picks for each request, or straight to the site. For the
+/// update checks. reqwest's own reading of Windows' settings is switched off,
+/// because it takes `ProxyServer` as a single address: the per-kind form
+/// (`http=…;https=…`, `socks=…`) went around the proxy or failed.
+pub fn follow_system_proxy(client: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
+    client.no_proxy().proxy(reqwest::Proxy::custom(|url| {
+        for_host(url.host_str()?, url.scheme() == "https").map(|upstream| upstream.url())
+    }))
+}
+
 /// Where a request for `host` should go: through which proxy, or `None` for direct.
 pub fn for_host(host: &str, https: bool) -> Option<Upstream> {
     if is_loopback(host) {
@@ -315,6 +365,31 @@ mod tests {
         assert!(bypassed_by_windows(exceptions, "intranet-2"));
         assert!(bypassed_by_windows(exceptions, "printer"));
         assert!(!bypassed_by_windows(exceptions, "www.youtube.com"));
+    }
+
+    #[test]
+    fn writes_proxies_as_links() {
+        assert_eq!(windows_server("proxy:8080", true).unwrap().url(), "http://proxy:8080");
+        assert_eq!(
+            windows_server("socks=sock:1080", true).unwrap().url(),
+            "socks4://sock:1080"
+        );
+        for link in [
+            "socks4a://proxy.lan:1080",
+            "socks5://10.0.0.1:9050",
+            "socks5h://proxy.lan:1080",
+            "http://[::1]:8080",
+            "http://me:secret@proxy.lan:3128",
+        ] {
+            assert_eq!(parse_url(link).unwrap().url(), link);
+        }
+        // Decoded when read, encoded again when written: the same user and password.
+        let tricky = "socks5h://me%40work:p%3Ass%25@127.0.0.1:1080";
+        assert_eq!(parse_url(tricky).unwrap().url(), tricky);
+        assert_eq!(
+            parse_url("socks4://me@sock:1080").unwrap().url(),
+            "socks4://me@sock:1080"
+        );
     }
 
     #[test]

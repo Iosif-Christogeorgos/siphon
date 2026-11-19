@@ -16,7 +16,14 @@ async fn newer_release(app: &AppHandle) -> Result<Option<Update>> {
     let failed = |err: UpdaterError| {
         AppError::new(ErrorKind::Network, "Couldn't check for a new version of Siphon.").with_details(err.to_string())
     };
-    match app.updater().map_err(failed)?.check().await {
+    // Through the same proxy as downloads, whichever way it is set; the
+    // installer download that follows uses the same client settings.
+    let updater = app
+        .updater_builder()
+        .configure_client(crate::throttle::follow_system_proxy)
+        .build()
+        .map_err(failed)?;
+    match updater.check().await {
         Ok(update) => Ok(update),
         // Nothing has been published yet: that is "no update", not a failure.
         Err(UpdaterError::ReleaseNotFound) => Ok(None),

@@ -16,6 +16,8 @@ mod proxy;
 mod socks;
 mod upstream;
 
+pub use upstream::follow_system_proxy;
+
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;

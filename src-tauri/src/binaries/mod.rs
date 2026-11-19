@@ -184,7 +184,8 @@ impl BinaryManager {
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default();
 
-        let http = reqwest::Client::builder()
+        // Through the same proxy as downloads, whichever way it is set.
+        let http = crate::throttle::follow_system_proxy(reqwest::Client::builder())
             .user_agent(concat!("Siphon/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(15))
             .read_timeout(Duration::from_secs(30))
