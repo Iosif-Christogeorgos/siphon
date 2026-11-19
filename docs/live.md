@@ -53,8 +53,8 @@ Measured 2026-11-19, with a 1080p60 Twitch stream (≈ 0.9 MB/s) and a 4K YouTub
 | Case | Result |
 | --- | --- |
 | Twitch, 1080p, 10 min, Stop | 598 s MP4, 430 MB; plays to the end in Media Foundation and VLC |
-| YouTube from now, 1 min, Stop | 70 s MP4, H.264 and AAC copied |
-| YouTube from the start (a stream 50+ min in), 3 min, Stop | caught up ≈ 4× real time ("55 min behind live"); 12 min 50 s of 1440p60 VP9 + Opus, both tracks equal; decodes cleanly in ffmpeg and Media Foundation |
+| YouTube from now, 1 min, Stop | 70 s MP4, H.264 and AAC copied; decodes cleanly in ffmpeg, Media Foundation and VLC |
+| YouTube from the start (a stream 50+ min in), 3 min, Stop | caught up ≈ 4× real time ("55 min behind live"); 12 min 50 s of 1440p60 VP9 + Opus, both tracks equal; decodes cleanly in ffmpeg and Media Foundation, and plays its full length in VLC |
 | Scheduled YouTube stream (25 h off) | "Starts in 25 h", waiting state, stop waiting |
 | Four offline Twitch channels | recognised as offline, waiting; none went live during the session |
 | Speed limit below the stream's bitrate, and shared with a download | see Speed limit |
