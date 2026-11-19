@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 import { ipc, toAppError } from "@/lib/ipc";
-import type { AppError, Choice, DownloadEvent, Place, Progress, Trim } from "@/types";
+import type { AppError, Choice, DownloadEvent, Place, Progress, RecordRequest, Trim } from "@/types";
 
 export type DownloadStatus = "queued" | "running" | "paused" | "finished" | "failed";
 
@@ -32,14 +32,30 @@ export interface Download extends DownloadSource {
   error: AppError | null;
   /** Download with the site's sign-in (its video needed it, or the user asked). */
   account?: boolean;
+  /** A live recording: records the stream (waiting for it to start) instead of downloading a file. */
+  record?: RecordRequest | null;
+  /** Something worth saying about the finished file (a recording kept as recorded, and why). */
+  note?: string;
+  /** A recording Siphon's closing cut short, finished once it started again. */
+  recovered?: boolean;
 }
 
 interface DownloadsState {
   byId: Record<string, Download>;
   /** Ids in the order they were added. */
   order: string[];
-  /** Adds a download to the queue and returns its id. */
-  start: (source: DownloadSource, choice: Choice, trim: Trim | null, place?: Place | null) => string;
+  /** Adds a download to the queue (a recording starts at once) and returns its id. */
+  start: (
+    source: DownloadSource,
+    choice: Choice,
+    trim: Trim | null,
+    place?: Place | null,
+    record?: RecordRequest | null,
+  ) => string;
+  /** Ends a recording there and makes it into its file. */
+  stop: (id: string) => void;
+  /** Shows the recordings the backend is finishing after Siphon closed mid-recording. */
+  recover: () => Promise<void>;
   /** Stops a download but keeps what it has fetched. */
   pause: (id: string) => void;
   /** Continues a paused download where it stopped. */
@@ -125,22 +141,23 @@ export const useDownloads = create<DownloadsState>((set, get) => {
    * or failed.
    */
   const submit = (download: Download) => {
-    const { id, url, choice, trim, place = null, account = false } = download;
+    const { id, url, choice, trim, place = null, account = false, record = null } = download;
     ipc
-      .startDownload({ id, url, choice, trim, place, account })
+      .startDownload({ id, url, choice, trim, place, account, record })
       .catch((error) => patch(id, { status: "failed", error: toAppError(error) }));
   };
 
   return {
     ...restore(),
 
-    start: (source, choice, trim, place = null) => {
+    start: (source, choice, trim, place = null, record = null) => {
       const download: Download = {
         ...source,
         id: crypto.randomUUID(),
         choice,
         trim,
         place,
+        record,
         status: "queued",
         progress: WAITING,
         path: null,
@@ -154,6 +171,37 @@ export const useDownloads = create<DownloadsState>((set, get) => {
     },
 
     pause: (id) => void ipc.pauseDownload(id),
+
+    stop: (id) => void ipc.stopRecording(id),
+
+    recover: async () => {
+      const recovered = await ipc.recoverRecordings().catch(() => []);
+      for (const recording of recovered) {
+        const progress: Progress = { stage: "finalizing", fraction: 0, speed: null, eta: null };
+        const known = get().byId[recording.id];
+        if (known) {
+          patch(recording.id, { status: "running", progress, recovered: true });
+          continue;
+        }
+        // The list lost it (cleared storage): it comes back so its file isn't a surprise.
+        const download: Download = {
+          id: recording.id,
+          url: recording.url,
+          title: recording.title,
+          thumbnail: recording.thumbnail,
+          choice: { mode: "preset", target: "max", quality: null, tier: null, music_format: "mp3", smooth_editing: false },
+          trim: null,
+          record: { from_start: false },
+          status: "running",
+          progress,
+          path: null,
+          size: null,
+          error: null,
+          recovered: true,
+        };
+        set({ byId: { ...get().byId, [download.id]: download }, order: [...get().order, download.id] });
+      }
+    },
 
     resume: (id) => {
       const download = get().byId[id];
@@ -208,6 +256,8 @@ export const useDownloads = create<DownloadsState>((set, get) => {
             status: "finished",
             path: event.path,
             size: event.size,
+            note: event.note,
+            recovered: event.recovered || get().byId[event.id]?.recovered,
             finishedAt: Date.now(),
             progress: { stage: "finishing", fraction: 1, speed: null, eta: null },
           });

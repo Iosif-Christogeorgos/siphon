@@ -306,6 +306,205 @@ pub(crate) fn audio_encode_args(
     args
 }
 
+/// What a live recording is made from: one recorded file, or a list of them
+/// (the stream dropped and came back) for ffmpeg's concat demuxer.
+#[derive(Debug, Clone, Copy)]
+pub enum Recorded<'a> {
+    File(&'a Path),
+    List(&'a Path),
+}
+
+/// The arguments that make a live recording into the file `recipe`
+/// describes: the streams copied into the preset's container where it can
+/// take them, converted where the preset needs it (see `downloads::live`).
+pub fn finalize_args(recipe: &Recipe, input: Recorded, output: &Path) -> Vec<OsString> {
+    let mut args: Vec<OsString> = Vec::new();
+    let mut push = |values: &[&str]| args.extend(values.iter().map(OsString::from));
+    push(&["-hide_banner", "-nostdin", "-y", "-loglevel", "error"]);
+    push(&["-progress", "pipe:1", "-nostats"]);
+    match input {
+        Recorded::File(file) => {
+            args.extend(["-i".into(), file.into()]);
+        }
+        Recorded::List(list) => {
+            // `safe 0`: the list names files by their full paths.
+            args.extend(["-f", "concat", "-safe", "0", "-i"].map(OsString::from));
+            args.push(list.into());
+        }
+    }
+    let mut push = |values: &[&str]| args.extend(values.iter().map(OsString::from));
+
+    let keeps_audio = recipe.audio.is_some() && !recipe.strip_audio;
+    match &recipe.video {
+        Some(video) => {
+            push(&["-map", "0:v:0"]);
+            match &video.action {
+                VideoAction::Copy => {
+                    push(&["-c:v", "copy"]);
+                    if video.source == VideoCodec::Hevc && matches!(recipe.container, Container::Mp4 | Container::Mov) {
+                        push(&["-tag:v", "hvc1"]);
+                    }
+                }
+                VideoAction::Encode(encode) => {
+                    for arg in video_encode_args(video, encode, None, Pass::Only) {
+                        push(&[&arg]);
+                    }
+                }
+            }
+        }
+        None => push(&["-vn"]),
+    }
+    match (&recipe.audio, keeps_audio) {
+        (Some(audio), true) => {
+            push(&["-map", "0:a:0?"]);
+            match audio.action {
+                AudioAction::Copy => push(&["-c:a", "copy"]),
+                AudioAction::Encode {
+                    codec,
+                    bitrate_kbps,
+                    sample_rate,
+                    stereo,
+                } => {
+                    for arg in audio_encode_args(codec, bitrate_kbps, sample_rate, stereo) {
+                        push(&[&arg]);
+                    }
+                }
+            }
+        }
+        _ => push(&["-an"]),
+    }
+    // Subtitles and data tracks of a live stream (timed metadata, ad markers) don't belong in the file.
+    push(&["-sn", "-dn"]);
+    args.push(output.into());
+    args
+}
+
+/// The arguments that join the video and audio files a recording from the
+/// start left, when Siphon closed before yt-dlp could, into one MPEG-TS file.
+pub fn join_parts_args(parts: &[std::path::PathBuf], output: &Path) -> Vec<OsString> {
+    let mut args: Vec<OsString> = ["-hide_banner", "-nostdin", "-y", "-loglevel", "error"]
+        .map(OsString::from)
+        .to_vec();
+    for part in parts {
+        args.extend(["-i".into(), part.into()]);
+    }
+    for index in 0..parts.len() {
+        args.extend(["-map".into(), format!("{index}").into()]);
+    }
+    args.extend(["-c", "copy", "-f", "mpegts"].map(OsString::from));
+    args.push(output.into());
+    args
+}
+
+/// ffprobe's view of a file's length and tracks, as JSON (see [`Probed::parse`]).
+pub fn probe_args(file: &Path) -> Vec<OsString> {
+    let mut args: Vec<OsString> = [
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration:stream=codec_type,start_time,duration",
+        "-of",
+        "json",
+    ]
+    .map(OsString::from)
+    .to_vec();
+    args.push(file.into());
+    args
+}
+
+/// Decodes the first or the last few seconds of a file and throws them away:
+/// it fails if they don't decode.
+pub fn decode_check_args(file: &Path, at_end: bool) -> Vec<OsString> {
+    let mut args: Vec<OsString> = ["-hide_banner", "-nostdin", "-v", "error", "-xerror"]
+        .map(OsString::from)
+        .to_vec();
+    if at_end {
+        args.extend(["-sseof", "-5"].map(OsString::from));
+    }
+    args.extend(["-i".into(), file.into()]);
+    if !at_end {
+        args.extend(["-t", "5"].map(OsString::from));
+    }
+    args.extend(["-f", "null", if cfg!(windows) { "NUL" } else { "/dev/null" }].map(OsString::from));
+    args
+}
+
+/// A file's length and the span of its first video and audio track, in seconds.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Probed {
+    pub duration: Option<f64>,
+    /// Start and length of the first video track.
+    pub video: Option<(f64, f64)>,
+    pub audio: Option<(f64, f64)>,
+}
+
+impl Probed {
+    /// Reads what [`probe_args`] printed.
+    pub fn parse(json: &str) -> Option<Self> {
+        let value: serde_json::Value = serde_json::from_str(json).ok()?;
+        let number = |value: &serde_json::Value| -> Option<f64> { value.as_str()?.parse().ok() };
+        let mut probed = Probed {
+            duration: number(&value["format"]["duration"]),
+            ..Probed::default()
+        };
+        for stream in value["streams"].as_array()? {
+            let span = number(&stream["start_time"]).zip(number(&stream["duration"]).or(probed.duration));
+            match stream["codec_type"].as_str() {
+                Some("video") if probed.video.is_none() => probed.video = span.or(Some((0.0, 0.0))),
+                Some("audio") if probed.audio.is_none() => probed.audio = span.or(Some((0.0, 0.0))),
+                _ => {}
+            }
+        }
+        Some(probed)
+    }
+
+    /// Whether this finished file holds what was recorded: the tracks it
+    /// should, as long as the recording (`recorded` seconds), with the sound
+    /// in step with the picture. Says what is wrong if not.
+    pub fn matches(&self, recorded: f64, video: bool, audio: bool) -> std::result::Result<(), String> {
+        let length = self.duration.ok_or("it has no length")?;
+        // A second either way, and a little more for long recordings: the
+        // two ends of a live stream rarely line up to the frame.
+        let slack = (recorded * 0.005).max(1.5);
+        if (length - recorded).abs() > slack {
+            return Err(format!("it is {length:.1} s long, but {recorded:.1} s were recorded"));
+        }
+        if video != self.video.is_some() {
+            return Err(if video {
+                "it has no picture"
+            } else {
+                "it has a picture it shouldn't"
+            }
+            .into());
+        }
+        if audio != self.audio.is_some() {
+            return Err(if audio {
+                "it has no sound"
+            } else {
+                "it has sound it shouldn't"
+            }
+            .into());
+        }
+        if let (Some((video_start, video_length)), Some((audio_start, audio_length))) = (self.video, self.audio) {
+            if (video_start - audio_start).abs() > 0.5 {
+                return Err(format!(
+                    "its sound starts {:.2} s away from its picture",
+                    (video_start - audio_start).abs()
+                ));
+            }
+            let video_end = video_start + video_length;
+            let audio_end = audio_start + audio_length;
+            if (video_end - audio_end).abs() > slack {
+                return Err(format!(
+                    "its sound ends {:.1} s away from its picture",
+                    (video_end - audio_end).abs()
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Reads one line of `-progress` output. Returns how far the conversion is,
 /// as seconds of finished output.
 pub fn parse_progress(line: &str) -> Option<f64> {
@@ -322,5 +521,117 @@ mod tests {
         assert_eq!(parse_progress("out_time_us=12500000"), Some(12.5));
         assert_eq!(parse_progress("out_time_us=N/A"), None);
         assert_eq!(parse_progress("frame=120"), None);
+    }
+}
+
+#[cfg(test)]
+mod recording_tests {
+    use super::*;
+
+    /// What ffprobe printed for a 38 s YouTube live recording (2026-11-19).
+    const RECORDED: &str = r#"{"programs": [], "stream_groups": [],
+        "streams": [{"codec_type": "video", "start_time": "1.400000", "duration": "38.033333"},
+                    {"codec_type": "audio", "start_time": "1.400000", "duration": "37.825289"}],
+        "format": {"duration": "38.033333"}}"#;
+
+    #[test]
+    fn a_finished_recording_must_be_as_long_as_what_was_recorded_and_in_sync() {
+        let probed = Probed::parse(RECORDED).unwrap();
+        assert_eq!(probed.video, Some((1.4, 38.033333)));
+        assert!(probed.matches(38.0, true, true).is_ok());
+        // Too short: something went missing on the way.
+        assert!(probed.matches(60.0, true, true).unwrap_err().contains("long"));
+        // An audio file should have no picture, and a video should have sound.
+        assert!(probed.matches(38.0, false, true).is_err());
+        let silent = Probed {
+            audio: None,
+            ..probed.clone()
+        };
+        assert!(silent.matches(38.0, true, true).unwrap_err().contains("no sound"));
+        // Sound that starts two seconds late is out of step.
+        let late = Probed {
+            audio: Some((3.4, 36.0)),
+            ..probed
+        };
+        assert!(late.matches(38.0, true, true).unwrap_err().contains("starts"));
+    }
+
+    #[test]
+    fn a_recording_is_copied_into_its_container_or_its_audio_taken_out() {
+        use crate::plan::{AudioStep, Badge, VideoStep};
+        let mut recipe = Recipe {
+            video: Some(VideoStep {
+                format_id: "270".into(),
+                source: VideoCodec::H264,
+                lines: 1080,
+                width: Some(1920),
+                height: Some(1080),
+                fps: Some(30.0),
+                hdr: false,
+                size: None,
+                kbps: Some(5421.0),
+                action: VideoAction::Copy,
+            }),
+            audio: Some(AudioStep {
+                format_id: Some("234".into()),
+                source: AudioCodec::Aac,
+                source_kbps: Some(128.0),
+                size: None,
+                action: AudioAction::Copy,
+            }),
+            container: Container::Mp4,
+            strip_audio: false,
+            reason: None,
+            promise: String::new(),
+            hints: Vec::new(),
+            duration: None,
+            trim: None,
+            source_fraction: 1.0,
+            badge: Badge::Lossless,
+            size_limit: None,
+            fits: None,
+            blocked: None,
+            section_request_size: None,
+            fallback: None,
+            cut_encode: None,
+        };
+        let text = |args: Vec<OsString>| {
+            args.iter()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let copy = text(finalize_args(
+            &recipe,
+            Recorded::File(Path::new("a.ts")),
+            Path::new("a.mp4"),
+        ));
+        assert!(
+            copy.contains("-i a.ts -map 0:v:0 -c:v copy -map 0:a:0? -c:a copy -sn -dn a.mp4"),
+            "{copy}"
+        );
+        let joined = text(finalize_args(
+            &recipe,
+            Recorded::List(Path::new("parts.txt")),
+            Path::new("a.mp4"),
+        ));
+        assert!(joined.contains("-f concat -safe 0 -i parts.txt"), "{joined}");
+
+        recipe.video = None;
+        recipe.container = Container::Mp3;
+        if let Some(audio) = recipe.audio.as_mut() {
+            audio.action = AudioAction::Encode {
+                codec: AudioCodec::Mp3,
+                bitrate_kbps: Some(192),
+                sample_rate: None,
+                stereo: false,
+            };
+        }
+        let music = text(finalize_args(
+            &recipe,
+            Recorded::File(Path::new("a.ts")),
+            Path::new("a.mp3"),
+        ));
+        assert!(music.contains("-vn -map 0:a:0? -c:a libmp3lame"), "{music}");
     }
 }

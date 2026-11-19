@@ -261,6 +261,27 @@ pub fn section_cut_short(log: &str) -> bool {
     log.contains("error during demuxing") || log.contains(": partial file")
 }
 
+/// True when a lookup failed because the stream hasn't started: a scheduled
+/// YouTube stream or premiere. Recording can wait for it.
+pub fn is_scheduled(log: &str) -> bool {
+    let log = log.to_lowercase();
+    [
+        "this live event will begin",
+        "premieres in",
+        "premiere will begin",
+        "scheduled for",
+    ]
+    .iter()
+    .any(|needle| log.contains(needle))
+}
+
+/// True when a lookup failed because a channel link's channel isn't streaming
+/// now (yt-dlp's "The channel is not currently live", on Twitch, Kick,
+/// YouTube's `/live` and others). Recording can wait for it to go live.
+pub fn is_offline(log: &str) -> bool {
+    log.to_lowercase().contains("is not currently live")
+}
+
 /// Classifies a failed run. `log` is everything yt-dlp wrote to stderr.
 pub fn classify(log: &str) -> AppError {
     let haystack = log.to_lowercase();

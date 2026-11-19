@@ -20,6 +20,7 @@ pub mod codecs;
 mod custom;
 mod edit;
 pub mod explain;
+pub mod live;
 pub mod registry;
 mod share;
 mod watch;
@@ -62,7 +63,7 @@ pub struct PresetChoice {
 
 /// The part of the video to keep, in seconds from its start. Cuts are
 /// always on the exact frames.
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Trim {
     pub start: f64,
     pub end: f64,
@@ -139,7 +140,7 @@ impl Capabilities {
 // ── Recipe (what will happen) ───────────────────────────────────────────
 
 /// How the summary line marks a plan.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Badge {
     /// Original streams, copied.
@@ -151,7 +152,9 @@ pub enum Badge {
     MayNotPlay,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+/// Serialized only to keep a live recording's plan until it is finished
+/// (see `downloads::live`), so it can be finished after a crash.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Recipe {
     pub video: Option<VideoStep>,
     pub audio: Option<AudioStep>,
@@ -186,7 +189,7 @@ pub struct Recipe {
     pub cut_encode: Option<VideoEncode>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VideoStep {
     pub format_id: String,
     pub source: VideoCodec,
@@ -203,13 +206,13 @@ pub struct VideoStep {
     pub action: VideoAction,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum VideoAction {
     Copy,
     Encode(VideoEncode),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VideoEncode {
     pub codec: VideoCodec,
     /// The encoder, picked from what this machine has.
@@ -246,7 +249,7 @@ impl VideoEncode {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AudioStep {
     /// `None` when the audio rides along inside the video stream.
     pub format_id: Option<String>,
@@ -256,7 +259,7 @@ pub struct AudioStep {
     pub action: AudioAction,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AudioAction {
     Copy,
     Encode {
@@ -280,14 +283,14 @@ impl AudioAction {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HintLevel {
     Info,
     Warning,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Hint {
     pub level: HintLevel,
     pub text: String,

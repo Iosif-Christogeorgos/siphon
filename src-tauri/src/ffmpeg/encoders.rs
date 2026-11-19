@@ -10,7 +10,7 @@ use std::time::Duration;
 use crate::plan::codecs::VideoCodec;
 use crate::process;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Hardware {
     /// NVIDIA
     Nvenc,

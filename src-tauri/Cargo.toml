@@ -36,7 +36,10 @@ tauri-plugin-notification = "2"
 # Which site a link belongs to (youtube.com for music.youtube.com), so sign-in cookies go only to their own site.
 psl = "2"
 # DPAPI: sign-in cookies are encrypted for the current Windows user.
-windows-sys = { version = "0.61", features = ["Win32_Security_Cryptography", "Win32_Foundation"] }
+# Console, ToolHelp, Threading: stopping a live recording gently (Ctrl+Break) and waiting for it.
+# FileSystem: the free space left for a recording.
+# JobObjects: what Siphon starts ends with it, even if it crashes.
+windows-sys = { version = "0.61", features = ["Win32_Security_Cryptography", "Win32_Foundation", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_Security"] }
 
 [dev-dependencies]
 # Paused time, for testing the speed limit without waiting for it.

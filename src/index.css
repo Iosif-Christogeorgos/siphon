@@ -36,6 +36,9 @@
   --destructive: light-dark(oklch(0.58 0.19 25), oklch(0.72 0.17 22));
   --destructive-soft: light-dark(oklch(0.58 0.19 25 / 0.08), oklch(0.72 0.17 22 / 0.12));
   --success: light-dark(oklch(0.6 0.13 158), oklch(0.78 0.15 160));
+  /* On air: the LIVE mark and a recording's REC. Its own red, not an error's. */
+  --live: light-dark(oklch(0.6 0.22 27), oklch(0.7 0.2 25));
+  --live-soft: light-dark(oklch(0.6 0.22 27 / 0.1), oklch(0.7 0.2 25 / 0.14));
   --border: light-dark(oklch(0.2 0.02 225 / 0.09), oklch(1 0 0 / 0.075));
   --border-strong: light-dark(oklch(0.2 0.02 225 / 0.16), oklch(1 0 0 / 0.14));
   --input: var(--border-strong);
@@ -75,6 +78,8 @@
   --color-destructive: var(--destructive);
   --color-destructive-soft: var(--destructive-soft);
   --color-success: var(--success);
+  --color-live: var(--live);
+  --color-live-soft: var(--live-soft);
   --color-border: var(--border);
   --color-border-strong: var(--border-strong);
   --color-input: var(--input);
@@ -91,6 +96,13 @@
   --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
 
   --animate-shimmer: shimmer 1.6s linear infinite;
+  /* A recording's dot, breathing slowly. */
+  --animate-rec: rec 2s ease-in-out infinite;
+  @keyframes rec {
+    50% {
+      opacity: 0.35;
+    }
+  }
   @keyframes shimmer {
     from {
       background-position: 200% 0;

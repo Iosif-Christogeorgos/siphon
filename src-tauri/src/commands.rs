@@ -25,7 +25,7 @@ use crate::sessions::{Account, Method, Mode, Sessions, SiteSession};
 use crate::settings::{Settings, SettingsStore};
 use crate::state::{CapabilityCache, MediaCache};
 use crate::throttle::Throttle;
-use crate::ytdlp::metadata::Media;
+use crate::ytdlp::metadata::{self, LiveStatus, Media};
 
 type Binaries<'a> = State<'a, Arc<BinaryManager>>;
 type Downloads<'a> = State<'a, Arc<DownloadManager>>;
@@ -108,19 +108,78 @@ pub fn import_legacy_choices(store: State<'_, ChoiceStore>, old: Value) -> Resul
 }
 
 /// Describes what downloading `url` with `choice` would do, without doing it.
+/// For a live stream, what recording it would do (`from_start`: from the
+/// start), sized per hour, with what the speed limit and the disk allow.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn plan_download(
+    app: AppHandle,
     bins: Binaries<'_>,
     cache: State<'_, MediaCache>,
     caps: State<'_, CapabilityCache>,
+    settings: State<'_, SettingsStore>,
     url: String,
     choice: Choice,
     trim: Option<Trim>,
+    from_start: Option<bool>,
 ) -> Result<PlanSummary> {
     let video = cache
         .get(&url)
         .ok_or_else(|| AppError::internal("Siphon lost track of this video. Paste the link again."))?;
-    explain::summarize(&video, &choice, trim, &caps.get(&bins).await)
+    let caps = caps.get(&bins).await;
+    if video.live.is_none() {
+        return explain::summarize(&video, &choice, trim, &caps);
+    }
+    let from_start = from_start.unwrap_or(false);
+    let mut summary = plan::live::summarize(&video, &choice, from_start, &caps)?;
+    let recipe = plan::live::plan(&video, &choice, from_start, &caps)?;
+    let settings = settings.get();
+    let folder = settings
+        .output_dir
+        .clone()
+        .or_else(|| downloads::default_output_dir(&app).ok());
+    let free = folder.as_deref().and_then(downloads::free_space);
+    summary.hints.extend(plan::live::hints(
+        &recipe,
+        video.extractor.as_deref(),
+        settings.speed_limit,
+        free,
+    ));
+    Ok(summary)
+}
+
+/// Whether a live stream can be recorded from its start: the site keeps what
+/// already aired. Looks it up (a few seconds), and keeps those formats for
+/// planning and recording.
+#[tauri::command]
+pub async fn live_from_start(
+    bins: Binaries<'_>,
+    sessions: State<'_, Arc<Sessions>>,
+    cache: State<'_, MediaCache>,
+    url: String,
+) -> Result<bool> {
+    let video = cache
+        .get(&url)
+        .ok_or_else(|| AppError::internal("Siphon lost track of this video. Paste the link again."))?;
+    if !video.live.as_ref().is_some_and(|live| live.status == LiveStatus::Live) {
+        return Ok(false);
+    }
+    let cookies = if video.with_account {
+        sessions.cookie_file(&video.url)
+    } else {
+        None
+    };
+    // Not offered is the answer to anything that goes wrong here.
+    let formats = metadata::fetch_from_start(&bins, &video.url, cookies.as_ref().map(|file| file.path()))
+        .await
+        .unwrap_or_default();
+    let available = !formats.is_empty();
+    let mut with = (*video).clone();
+    if let Some(live) = with.live.as_mut() {
+        live.from_start = Some(formats);
+    }
+    cache.insert(&url, Arc::new(with));
+    Ok(available)
 }
 
 /// At most this many playlist videos are looked up at once for size estimates.
@@ -198,6 +257,22 @@ pub async fn cancel_download(downloads: Downloads<'_>, id: String) -> Result<()>
 pub async fn pause_download(downloads: Downloads<'_>, id: String) -> Result<()> {
     downloads.pause(&id).await;
     Ok(())
+}
+
+/// Ends a live recording there and makes it into its file. Its stream
+/// keeps going; only the recording stops.
+#[tauri::command]
+pub async fn stop_recording(downloads: Downloads<'_>, id: String) -> Result<()> {
+    downloads.finish(&id).await;
+    Ok(())
+}
+
+/// Finishes the recordings that Siphon's closing or a crash cut short, and
+/// says which, for the download list. Called once at launch, after the list
+/// is restored.
+#[tauri::command]
+pub fn recover_recordings(app: AppHandle, downloads: Downloads<'_>) -> Vec<downloads::Recovered> {
+    downloads.recover(&app)
 }
 
 /// Removes the files of paused or failed downloads the frontend no longer

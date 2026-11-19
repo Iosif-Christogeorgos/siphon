@@ -44,6 +44,35 @@ pub struct VideoInfo {
     /// asked). The download then uses it too: some sites tie their stream
     /// links to the session that asked for them.
     pub with_account: bool,
+    /// A stream that is live now, scheduled, or a channel that is offline:
+    /// recorded rather than downloaded (see `downloads::live`).
+    pub live: Option<Live>,
+}
+
+/// Where a live stream stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveStatus {
+    /// On air now.
+    Live,
+    /// Scheduled: a YouTube premiere or a stream that hasn't started.
+    Upcoming,
+    /// A channel link whose channel isn't streaming now.
+    Offline,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Live {
+    pub status: LiveStatus,
+    /// Unix seconds: when it went on air (live), or is to (upcoming), if the site says.
+    pub since: Option<u64>,
+    /// How many are watching, if the site says.
+    pub viewers: Option<u64>,
+    /// The formats to record it from the start with, when the site keeps what
+    /// already aired (`--live-from-start`). Asked for separately, because it
+    /// takes a second lookup (see `fetch_from_start`); `None` until then.
+    #[serde(skip)]
+    pub from_start: Option<Vec<Format>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -123,6 +152,8 @@ pub struct PlaylistEntry {
     pub is_playlist: bool,
     /// The part of a channel it was listed under ("Videos", "Live", "Shorts"); none for a plain playlist.
     pub section: Option<String>,
+    /// A stream that is live now or scheduled: opened to record, rather than queued.
+    pub live: Option<LiveStatus>,
 }
 
 // ── What yt-dlp emits ───────────────────────────────────────────────────
@@ -163,6 +194,13 @@ struct RawInfo {
     ie_key: Option<String>,
     #[serde(default, deserialize_with = "text")]
     live_status: Option<String>,
+    /// For a stream: when it went live, or is scheduled to.
+    #[serde(default, deserialize_with = "number")]
+    release_timestamp: Option<f64>,
+    #[serde(default, deserialize_with = "number")]
+    timestamp: Option<f64>,
+    #[serde(default, deserialize_with = "number")]
+    concurrent_view_count: Option<f64>,
     #[serde(default)]
     formats: Option<Vec<RawFormat>>,
     /// Unavailable playlist items come through as `null`.
@@ -262,11 +300,48 @@ pub async fn fetch(bins: &BinaryManager, url: &str, cookies: Option<&Path>) -> R
 }
 
 /// [`fetch`], with yt-dlp told where to find cookies some other way (a browser, for a sign-in).
+///
+/// A scheduled stream has no formats yet, and yt-dlp fails on it ("This live
+/// event will begin in 27 hours"); it is looked up again, told not to mind,
+/// for its title and start time. A channel that isn't streaming fails too
+/// ("The channel is not currently live"), and is answered as an offline
+/// channel: both can be recorded once they go live.
 pub async fn fetch_with(bins: &BinaryManager, url: &str, cookie_args: &[OsString]) -> Result<Media> {
     let url = validate_url(url)?;
+    match run_json(bins, url, cookie_args, &[]).await {
+        Err(error) if errors::is_scheduled(error.details.as_deref().unwrap_or_default()) => {
+            run_json(bins, url, cookie_args, &["--ignore-no-formats-error"]).await
+        }
+        Err(error) if errors::is_offline(error.details.as_deref().unwrap_or_default()) => {
+            Ok(Media::Video(Box::new(offline(url))))
+        }
+        result => result,
+    }
+}
 
+/// The formats to record a live stream from its start with, when the site
+/// keeps the part that already aired. Its own lookup, because yt-dlp lists
+/// other formats for it (YouTube: DASH instead of HLS), and only on request.
+pub async fn fetch_from_start(bins: &BinaryManager, url: &str, cookies: Option<&Path>) -> Result<Vec<Format>> {
+    let url = validate_url(url)?;
+    let mut cookie_args: Vec<OsString> = Vec::new();
+    if let Some(cookies) = cookies {
+        cookie_args.extend(["--cookies".into(), cookies.into()]);
+    }
+    match run_json(bins, url, &cookie_args, &["--live-from-start"]).await? {
+        Media::Video(video) if video.live.as_ref().is_some_and(|live| live.status == LiveStatus::Live) => {
+            Ok(video.formats)
+        }
+        _ => Ok(Vec::new()),
+    }
+}
+
+/// One `yt-dlp -J` run, read into a video or a playlist. On failure, the
+/// error's details hold yt-dlp's messages.
+async fn run_json(bins: &BinaryManager, url: &str, cookie_args: &[OsString], extra: &[&str]) -> Result<Media> {
     let mut cmd = command(bins);
     cmd.args(cookie_args);
+    cmd.args(extra);
     cmd.args([
         "--dump-single-json",
         // List playlist items without resolving each one (fast).
@@ -299,6 +374,38 @@ pub async fn fetch_with(bins: &BinaryManager, url: &str, cookie_args: &[OsString
     }
 }
 
+/// A channel link whose channel isn't streaming: named after the channel,
+/// which the link is all there is to go on for (`twitch.tv/name`,
+/// `youtube.com/@name/live`, `kick.com/name`).
+fn offline(url: &str) -> VideoInfo {
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    let name = path
+        .split('/')
+        .skip(3)
+        .filter(|part| !part.is_empty() && *part != "live" && *part != "streams")
+        .last()
+        .map(|part| part.trim_start_matches('@').to_string())
+        .filter(|name| !name.is_empty());
+    VideoInfo {
+        id: name.clone().unwrap_or_default(),
+        title: name.clone().unwrap_or_else(|| "Live channel".to_string()),
+        url: url.to_string(),
+        thumbnail: None,
+        duration: None,
+        channel: name,
+        view_count: None,
+        extractor: None,
+        formats: Vec::new(),
+        with_account: false,
+        live: Some(Live {
+            status: LiveStatus::Offline,
+            since: None,
+            viewers: None,
+            from_start: None,
+        }),
+    }
+}
+
 /// Reads what `yt-dlp -J` printed. A page that offers a single file (an audio
 /// host, many generic pages) gets no format list: yt-dlp puts that one format's
 /// fields (`url`, `format_id`, `ext`, `audio_ext`, …) on the result itself.
@@ -315,12 +422,23 @@ fn parse(json: &[u8]) -> serde_json::Result<RawInfo> {
 }
 
 fn video(raw: RawInfo, requested_url: &str) -> Result<VideoInfo> {
-    if matches!(raw.live_status.as_deref(), Some("is_live" | "is_upcoming")) {
-        return Err(AppError::new(
-            ErrorKind::Unavailable,
-            "This is a live stream. Come back once it has ended and Siphon can download the recording.",
-        ));
-    }
+    let whole = |value: Option<f64>| value.filter(|n| *n > 0.0).map(|n| n as u64);
+    let live = match raw.live_status.as_deref() {
+        Some("is_live") => Some(Live {
+            status: LiveStatus::Live,
+            // YouTube's release time is when the stream went on air; Twitch only has `timestamp`.
+            since: whole(raw.release_timestamp).or(whole(raw.timestamp)),
+            viewers: whole(raw.concurrent_view_count),
+            from_start: None,
+        }),
+        Some("is_upcoming") => Some(Live {
+            status: LiveStatus::Upcoming,
+            since: whole(raw.release_timestamp),
+            viewers: None,
+            from_start: None,
+        }),
+        _ => None,
+    };
 
     let raw_formats = raw.formats.unwrap_or_default();
     let is_drm = |format: &RawFormat| matches!(&format.has_drm, Some(Value::Bool(true)));
@@ -350,6 +468,7 @@ fn video(raw: RawInfo, requested_url: &str) -> Result<VideoInfo> {
         extractor: raw.extractor_key,
         formats,
         with_account: false,
+        live,
     })
 }
 
@@ -460,9 +579,9 @@ fn playlist(raw: RawInfo, requested_url: &str) -> PlaylistInfo {
 /// Flattens a playlist's entries. A YouTube channel lists its tabs (Videos,
 /// Live, Shorts) as playlists with their videos inside; those videos are
 /// listed under the tab's name. A link to another playlist that came without
-/// its videos (a channel's Playlists tab) is kept as a link to open. Streams
-/// that are live or haven't started can't be downloaded yet, and a video
-/// listed twice is kept once.
+/// its videos (a channel's Playlists tab) is kept as a link to open, and so is
+/// a stream that is live or scheduled, to be recorded. A video listed twice is
+/// kept once.
 fn collect_entries(
     raw: Vec<Option<RawInfo>>,
     parent: &str,
@@ -476,9 +595,11 @@ fn collect_entries(
             collect_entries(inner, parent, name.as_deref().or(section), entries, seen);
             continue;
         }
-        if matches!(entry.live_status.as_deref(), Some("is_live" | "is_upcoming")) {
-            continue;
-        }
+        let live = match entry.live_status.as_deref() {
+            Some("is_live") => Some(LiveStatus::Live),
+            Some("is_upcoming") => Some(LiveStatus::Upcoming),
+            _ => None,
+        };
         let is_playlist = is_playlist_link(&entry);
         let Some(url) = entry.url.or(entry.webpage_url) else {
             continue;
@@ -502,6 +623,7 @@ fn collect_entries(
             channel: entry.channel.or(entry.uploader),
             is_playlist,
             section: section.map(str::to_string),
+            live,
         });
     }
 }
@@ -619,8 +741,8 @@ mod tests {
     #[test]
     fn a_channel_lists_the_videos_of_its_tabs_under_their_names() {
         // The shape yt-dlp gives for youtube.com/@BlenderOfficial (2026-11-18): the tabs
-        // are playlists with their videos inside; a live and an upcoming stream are left out,
-        // and a video in two tabs is listed once.
+        // are playlists with their videos inside; a live and an upcoming stream are kept, marked
+        // (they are opened to record), and a video in two tabs is listed once.
         let channel = listed(
             r#"{"_type": "playlist", "title": "Blender", "channel": "Blender", "entries": [
                 {"_type": "playlist", "title": "Blender - Videos", "entries": [
@@ -643,14 +765,16 @@ mod tests {
         let rows: Vec<_> = channel
             .entries
             .iter()
-            .map(|entry| (entry.section.as_deref(), entry.title.as_str(), entry.is_playlist))
+            .map(|entry| (entry.section.as_deref(), entry.title.as_str(), entry.live))
             .collect();
         assert_eq!(
             rows,
             [
-                (Some("Videos"), "What's New in Blender 5.3!", false),
-                (Some("Videos"), "Making of", false),
-                (Some("Live"), "Blender Today LIVE #293", false),
+                (Some("Videos"), "What's New in Blender 5.3!", None),
+                (Some("Videos"), "Making of", None),
+                (Some("Live"), "Blender Today LIVE #293", None),
+                (Some("Live"), "On now", Some(LiveStatus::Live)),
+                (Some("Live"), "Next week", Some(LiveStatus::Upcoming)),
             ]
         );
     }
@@ -681,5 +805,75 @@ mod tests {
             .entries
             .iter()
             .all(|entry| entry.section.is_none() && !entry.is_playlist));
+    }
+}
+
+#[cfg(test)]
+mod live_tests {
+    use super::*;
+
+    #[test]
+    fn reads_a_live_stream_and_when_it_went_on_air() {
+        // YouTube (2026-11-19): the release time is when it went live.
+        let json = br#"{"id": "gCNeDWCI0vo", "title": "Al Jazeera English | Live", "live_status": "is_live",
+            "timestamp": 1678407878, "release_timestamp": 1678408632, "concurrent_view_count": 10627,
+            "webpage_url": "https://www.youtube.com/watch?v=gCNeDWCI0vo", "formats": [
+              {"format_id": "270", "ext": "mp4", "protocol": "m3u8_native", "vcodec": "avc1.640028", "acodec": "none", "height": 1080, "tbr": 4561.2}]}"#;
+        let live = video(parse(json).unwrap(), "https://youtu.be/gCNeDWCI0vo")
+            .unwrap()
+            .live
+            .unwrap();
+        assert_eq!(live.status, LiveStatus::Live);
+        assert_eq!(live.since, Some(1678408632));
+        assert_eq!(live.viewers, Some(10627));
+        // Twitch has only the timestamp, and no viewer count.
+        let twitch = br#"{"id": "319376708325", "title": "LofiGirl (live)", "live_status": "is_live",
+            "timestamp": 1795020396, "formats": []}"#;
+        let live = video(parse(twitch).unwrap(), "https://www.twitch.tv/lofigirl")
+            .unwrap()
+            .live
+            .unwrap();
+        assert_eq!((live.since, live.viewers), (Some(1795020396), None));
+    }
+
+    #[test]
+    fn reads_a_scheduled_stream_without_formats() {
+        // What `--ignore-no-formats-error` gave for a NASA stream 27 hours off (2026-11-19).
+        let json = br#"{"id": "fTDvp9CBXoQ", "title": "SpaceX CRS-35 Undocking", "live_status": "is_upcoming",
+            "release_timestamp": 1795193100, "timestamp": 1794520593, "channel": "NASA", "formats": []}"#;
+        let info = video(parse(json).unwrap(), "https://www.youtube.com/watch?v=fTDvp9CBXoQ").unwrap();
+        let live = info.live.unwrap();
+        assert_eq!((live.status, live.since), (LiveStatus::Upcoming, Some(1795193100)));
+        assert!(info.formats.is_empty());
+        // An ended stream is an ordinary video.
+        let ended = br#"{"id": "a", "live_status": "was_live", "duration": 60, "formats": []}"#;
+        assert!(video(parse(ended).unwrap(), "https://x/a").unwrap().live.is_none());
+    }
+
+    #[test]
+    fn tells_a_scheduled_stream_and_an_offline_channel_from_other_failures() {
+        assert!(errors::is_scheduled(
+            "ERROR: [youtube] fTDvp9CBXoQ: This live event will begin in 27 hours."
+        ));
+        assert!(errors::is_scheduled("ERROR: [youtube] abc: Premieres in 5 hours"));
+        assert!(errors::is_offline(
+            "ERROR: [twitch:stream] monstercat: The channel is not currently live"
+        ));
+        assert!(!errors::is_offline("ERROR: [youtube] abc: Video unavailable"));
+        assert!(!errors::is_scheduled("ERROR: [youtube] abc: Video unavailable"));
+    }
+
+    #[test]
+    fn names_an_offline_channel_after_its_link() {
+        for (url, name) in [
+            ("https://www.twitch.tv/monstercat", "monstercat"),
+            ("https://www.youtube.com/@NASA/live", "NASA"),
+            ("https://kick.com/someone?ref=x", "someone"),
+        ] {
+            let info = offline(url);
+            assert_eq!(info.title, name);
+            assert_eq!(info.live.unwrap().status, LiveStatus::Offline);
+        }
+        assert_eq!(offline("https://example.com/").title, "Live channel");
     }
 }

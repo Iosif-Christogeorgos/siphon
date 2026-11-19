@@ -24,6 +24,14 @@ pub enum Stage {
     Merging,
     Converting,
     Finishing,
+    /// A live recording waits for its stream to start.
+    WaitingLive,
+    /// A live recording is being recorded (or, from the start, catching up).
+    Recording,
+    /// A live stream stopped sending; the recording waits for it to come back.
+    Reconnecting,
+    /// A live recording has ended and is being made into its file.
+    Finalizing,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -35,6 +43,26 @@ pub struct Progress {
     pub speed: Option<f64>,
     /// Seconds remaining for the current stream.
     pub eta: Option<f64>,
+    /// A live recording's own readings, in place of a fraction and time left.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub live: Option<LiveProgress>,
+}
+
+/// How a live recording is going.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct LiveProgress {
+    /// Seconds since recording began.
+    pub elapsed: f64,
+    /// Bytes recorded so far.
+    pub bytes: u64,
+    /// The rate it is being recorded at lately, in bits per second.
+    pub bitrate: Option<f64>,
+    /// Recording from the start: how many seconds behind the live edge it still is.
+    pub behind: Option<f64>,
+    /// Waiting: when the stream is scheduled to start (Unix seconds).
+    pub starts_at: Option<u64>,
+    /// Seconds of recording the disk still has room for, when that is getting short.
+    pub disk_left: Option<f64>,
 }
 
 /// Share of the bar the downloads get when yt-dlp only has to merge afterwards …
@@ -77,6 +105,7 @@ impl Tracker {
                 fraction: 0.0,
                 speed: None,
                 eta: None,
+                live: None,
             },
             samples: VecDeque::new(),
         }
@@ -89,6 +118,7 @@ impl Tracker {
             fraction: 0.0,
             speed: None,
             eta: None,
+            live: None,
         }
     }
 
@@ -99,6 +129,7 @@ impl Tracker {
             fraction: 0.0,
             speed: None,
             eta: None,
+            live: None,
         }
     }
 
@@ -109,6 +140,7 @@ impl Tracker {
             fraction: 0.0,
             speed: None,
             eta: None,
+            live: None,
         }
     }
 

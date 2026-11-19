@@ -7,7 +7,7 @@ import type { KeyboardEvent } from "react";
 export function onRadioKeys(event: KeyboardEvent<HTMLElement>) {
   const step = { ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1 }[event.key];
   if (step === undefined) return;
-  const radios = [...event.currentTarget.querySelectorAll<HTMLButtonElement>("[role=radio]:not(:disabled)")];
+  const radios = [...event.currentTarget.querySelectorAll<HTMLButtonElement>("[role=radio]:not(:disabled):not([aria-disabled=true])")];
   const index = radios.indexOf(document.activeElement as HTMLButtonElement);
   if (index === -1) return;
   event.preventDefault();

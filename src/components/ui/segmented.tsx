@@ -25,8 +25,8 @@ export function Segmented<T extends string | number>({
   group: string;
   /** null when no option is selected. */
   value: T | null;
-  /** `hint` explains an option on hover. */
-  options: { id: T; label: string; icon?: ReactNode; hint?: string }[];
+  /** `hint` explains an option on hover. A `disabled` option stays in view, its hint saying why. */
+  options: { id: T; label: string; icon?: ReactNode; hint?: string; disabled?: boolean }[];
   onChange: (value: T) => void;
   className?: string;
   /** "md" for a primary row, such as the preset groups. */
@@ -47,13 +47,19 @@ export function Segmented<T extends string | number>({
             type="button"
             role="radio"
             aria-checked={selected}
+            // Not `disabled`: a disabled button shows no hint, and the hint says why.
+            aria-disabled={option.disabled || undefined}
             // One stop for Tab; the arrow keys move within the row.
             tabIndex={selected || (value === null && option === options[0]) ? 0 : -1}
-            onClick={() => onChange(option.id)}
+            onClick={() => !option.disabled && onChange(option.id)}
             className={cn(
               "relative flex flex-1 items-center justify-center gap-1.5 rounded-md font-medium whitespace-nowrap outline-none transition-colors duration-150 focus-visible:ring-[3px] focus-visible:ring-ring/40 [&_svg]:size-3.5 [&_svg]:shrink-0",
               size === "md" ? "h-8 px-3 text-[13px]" : "h-7 px-2.5 text-xs",
-              selected ? "text-primary" : "text-muted-foreground hover:text-foreground",
+              option.disabled
+                ? "cursor-default text-subtle-foreground opacity-60"
+                : selected
+                  ? "text-primary"
+                  : "text-muted-foreground hover:text-foreground",
             )}
           >
             {selected && (

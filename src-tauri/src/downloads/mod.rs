@@ -5,7 +5,10 @@
 //! streams the recipe names, then, only if the recipe converts anything,
 //! run Siphon's own ffmpeg pass.
 
+mod live;
 mod tracker;
+
+pub use live::Recovered;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
@@ -77,6 +80,17 @@ pub struct DownloadRequest {
     /// its video needed one (see `sessions::Sessions::lookup`).
     #[serde(default)]
     pub account: bool,
+    /// Record a live stream instead (see [`live`]): waits for it to start if
+    /// it hasn't, and records until it ends or is stopped.
+    #[serde(default)]
+    pub record: Option<live::RecordRequest>,
+}
+
+/// How a job ended well: the finished file, and anything worth saying about it.
+pub struct Done {
+    pub path: PathBuf,
+    /// "Saved as it was recorded (.ts): …", when the file isn't what was asked for.
+    pub note: Option<String>,
 }
 
 /// A playlist video's folder and number. Sent again, unchanged, on every
@@ -147,6 +161,12 @@ pub enum DownloadEvent {
         path: String,
         /// Bytes.
         size: Option<u64>,
+        /// Anything worth saying about the file (a recording kept as it was recorded, and why).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+        /// A recording that was cut short by Siphon closing or crashing, finished after it started again.
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        recovered: bool,
     },
     Failed {
         id: String,
@@ -175,6 +195,8 @@ struct Lookup {
 enum Stop {
     Cancel,
     Pause,
+    /// A live recording's Stop: end it there and make it into its file.
+    Finish,
 }
 
 #[derive(Default)]
@@ -190,6 +212,12 @@ struct Job {
     /// `cookies.txt` that goes with the job the same way as `flow`, and is
     /// deleted with it (see `sessions::CookieFile`).
     cookies: Option<CookieFile>,
+    /// Its process is asked to stop (Ctrl+Break) rather than killed, so the
+    /// file it writes is closed properly: a live recording.
+    graceful: bool,
+    /// That request, while it is under way: it ends once every process it
+    /// asked has ended (see `process::interrupt_tree`).
+    interrupting: Option<tokio::task::JoinHandle<()>>,
 }
 
 /// Who may run: jobs take a slot in the order they were added.
@@ -240,6 +268,11 @@ pub struct DownloadManager {
     /// The finished names running downloads are writing to, and by which
     /// download, so two downloads of one video never pick the same name.
     claimed: Mutex<HashMap<PathBuf, String>>,
+    /// Live recordings that haven't been made into their file yet, by id:
+    /// what they recorded so far and what to make of it. Kept on disk from
+    /// the first byte, so one that Siphon's closing or a crash cut short is
+    /// finished when it starts again (see [`live`]).
+    recordings: Mutex<HashMap<String, live::Recording>>,
     /// Where `leftovers` and `finished` are kept between sessions. None in tests.
     state_file: Option<PathBuf>,
 }
@@ -253,6 +286,8 @@ struct SavedState {
     leftovers: HashMap<String, Leftovers>,
     #[serde(default)]
     finished: Vec<PathBuf>,
+    #[serde(default)]
+    recordings: HashMap<String, live::Recording>,
 }
 
 /// Everything one running job needs.
@@ -266,6 +301,23 @@ struct JobContext<'a> {
 }
 
 impl JobContext<'_> {
+    /// Where the job's file goes: the download folder, or the playlist's folder in it. Made if missing.
+    async fn output_dir(&self) -> Result<PathBuf> {
+        let output_dir = match &self.settings.output_dir {
+            Some(dir) => dir.clone(),
+            None => default_output_dir(self.app)?,
+        };
+        let output_dir = match self.place.folder.as_deref().and_then(folder_name) {
+            Some(folder) => output_dir.join(folder),
+            None => output_dir,
+        };
+        tokio::fs::create_dir_all(&output_dir).await.map_err(|err| {
+            AppError::internal("Couldn't create the download folder. Check the folder in Settings.")
+                .with_details(format!("{}: {err}", output_dir.display()))
+        })?;
+        Ok(output_dir)
+    }
+
     fn emit(&self, progress: Progress) {
         let _ = self.app.emit(
             EVENT,
@@ -295,6 +347,7 @@ impl DownloadManager {
         Self {
             leftovers: Mutex::new(saved.leftovers),
             finished: Mutex::new(saved.finished.into_iter().filter(|path| path.exists()).collect()),
+            recordings: Mutex::new(saved.recordings),
             state_file: Some(state_file),
             ..Self::default()
         }
@@ -307,7 +360,12 @@ impl DownloadManager {
         let bytes = {
             let leftovers = self.leftovers.lock().unwrap();
             let finished = self.finished.lock().unwrap();
-            let view = serde_json::json!({ "leftovers": &*leftovers, "finished": &*finished });
+            let recordings = self.recordings.lock().unwrap();
+            let view = serde_json::json!({
+                "leftovers": &*leftovers,
+                "finished": &*finished,
+                "recordings": &*recordings,
+            });
             serde_json::to_vec(&view)
         };
         let Ok(bytes) = bytes else { return };
@@ -326,9 +384,12 @@ impl DownloadManager {
         taken
     }
 
-    /// The download ids whose files are kept for a later try.
+    /// The download ids whose files are kept for a later try, or a recording
+    /// still to be finished.
     pub fn kept_ids(&self) -> HashSet<String> {
-        self.leftovers.lock().unwrap().keys().cloned().collect()
+        let mut kept: HashSet<String> = self.leftovers.lock().unwrap().keys().cloned().collect();
+        kept.extend(self.recordings.lock().unwrap().keys().cloned());
+        kept
     }
 
     /// Removes the files of paused or failed downloads that the list no longer
@@ -341,10 +402,12 @@ impl DownloadManager {
     }
 
     /// Queues a download. It starts when a slot is free; progress arrives as events.
+    /// A live recording starts at once: the stream doesn't wait either.
     pub fn start(self: &Arc<Self>, app: AppHandle, request: DownloadRequest) -> Result<()> {
         let url = ytdlp::validate_url(&request.url)?.to_string();
         let id = request.id;
-        self.register(&id);
+        let recording = request.record;
+        self.register(&id, recording.is_none());
 
         let manager = Arc::clone(self);
         tauri::async_runtime::spawn(async move {
@@ -356,21 +419,30 @@ impl DownloadManager {
                     progress: Tracker::queued(),
                 },
             );
+            let account = if request.account { Account::Use } else { Account::Auto };
+            let job = || JobContext {
+                app: &app,
+                bins: &bins,
+                id: &id,
+                // Read once the job starts, so changes made while it queued apply.
+                settings: app.state::<SettingsStore>().get(),
+                place: request.place.clone().unwrap_or_default(),
+            };
 
-            let outcome = if manager.wait_for_slot(&app, &id).await {
+            let outcome = if let Some(recording) = recording {
+                match app.state::<Arc<Throttle>>().flow().await {
+                    Ok(flow) => {
+                        manager.attach_flow(&id, flow);
+                        manager.record(&job(), &url, &request.choice, recording, account).await
+                    }
+                    Err(error) => Err(error),
+                }
+            } else if manager.wait_for_slot(&app, &id).await {
                 let outcome = match app.state::<Arc<Throttle>>().flow().await {
                     Ok(flow) => {
                         manager.attach_flow(&id, flow);
-                        let job = JobContext {
-                            app: &app,
-                            bins: &bins,
-                            id: &id,
-                            // Read once the job starts, so changes made while it queued apply.
-                            settings: app.state::<SettingsStore>().get(),
-                            place: request.place.clone().unwrap_or_default(),
-                        };
-                        let account = if request.account { Account::Use } else { Account::Auto };
-                        manager.run(&job, &url, &request.choice, request.trim, account).await
+                        let run = manager.run(&job(), &url, &request.choice, request.trim, account).await;
+                        run.map(|path| Done { path, note: None })
                     }
                     Err(error) => Err(error),
                 };
@@ -389,26 +461,34 @@ impl DownloadManager {
             let event = match (stop, outcome) {
                 (Some(Stop::Cancel), _) => DownloadEvent::Cancelled { id },
                 (Some(Stop::Pause), _) => DownloadEvent::Paused { id },
-                (None, Ok(path)) => {
-                    manager.finished.lock().unwrap().insert(path.clone());
-                    manager.save();
-                    DownloadEvent::Finished {
-                        size: std::fs::metadata(&path).ok().map(|meta| meta.len()),
-                        path: path.to_string_lossy().into_owned(),
-                        id,
-                    }
-                }
-                (None, Err(error)) => DownloadEvent::Failed { id, error },
+                // A stopped recording is finished like one whose stream ended.
+                (None | Some(Stop::Finish), Ok(done)) => manager.finished_event(id, done, false),
+                (None | Some(Stop::Finish), Err(error)) => DownloadEvent::Failed { id, error },
             };
             let _ = app.emit(EVENT, event);
         });
         Ok(())
     }
 
-    /// Adds a job to the list and to the back of the queue.
-    fn register(&self, id: &str) {
+    /// What to tell the frontend about a finished job; its file may be opened from now on.
+    fn finished_event(&self, id: String, done: Done, recovered: bool) -> DownloadEvent {
+        self.finished.lock().unwrap().insert(done.path.clone());
+        self.save();
+        DownloadEvent::Finished {
+            size: std::fs::metadata(&done.path).ok().map(|meta| meta.len()),
+            path: done.path.to_string_lossy().into_owned(),
+            note: done.note,
+            recovered,
+            id,
+        }
+    }
+
+    /// Adds a job to the list, and a download to the back of the queue.
+    fn register(&self, id: &str, queued: bool) {
         self.jobs.lock().unwrap().insert(id.to_string(), Job::default());
-        self.gate.lock().unwrap().waiting.push_back(id.to_string());
+        if queued {
+            self.gate.lock().unwrap().waiting.push_back(id.to_string());
+        }
     }
 
     /// Gives a job that is about to run its way through the speed limit.
@@ -549,13 +629,27 @@ impl DownloadManager {
         self.save();
     }
 
+    /// Ends a live recording there, and makes it into its file.
+    pub async fn finish(&self, id: &str) {
+        self.stop(id, Stop::Finish).await;
+    }
+
     /// Returns false if there is no such job.
     async fn stop(&self, id: &str, stop: Stop) -> bool {
         let pid = {
             let mut jobs = self.jobs.lock().unwrap();
             let Some(job) = jobs.get_mut(id) else { return false };
             job.stop = Some(stop);
-            job.pid
+            if job.graceful && stop != Stop::Cancel {
+                // Asked to stop, so it closes its file properly; whoever runs it
+                // waits for that (see `run_child`).
+                if let Some(pid) = job.pid {
+                    job.interrupting = Some(interrupt(pid));
+                }
+                None
+            } else {
+                job.pid
+            }
         };
         // Wakes the job if it is still waiting in the queue …
         self.gate_changed.notify_waiters();
@@ -580,19 +674,7 @@ impl DownloadManager {
         account: Account,
     ) -> Result<PathBuf> {
         job.emit(Tracker::new(false).current());
-
-        let output_dir = match &job.settings.output_dir {
-            Some(dir) => dir.clone(),
-            None => default_output_dir(job.app)?,
-        };
-        let output_dir = match job.place.folder.as_deref().and_then(folder_name) {
-            Some(folder) => output_dir.join(folder),
-            None => output_dir,
-        };
-        tokio::fs::create_dir_all(&output_dir).await.map_err(|err| {
-            AppError::internal("Couldn't create the download folder. Check the folder in Settings.")
-                .with_details(format!("{}: {err}", output_dir.display()))
-        })?;
+        let output_dir = job.output_dir().await?;
 
         let mut updated = false;
         let mut retries = 0;
@@ -1502,6 +1584,8 @@ impl DownloadManager {
             .map_err(|err| {
                 Failure::Spawn(AppError::setup("Couldn't start the download engine.").with_details(err.to_string()))
             })?;
+        // Ends with Siphon even if Siphon crashes, rather than writing on alone.
+        process::end_with_siphon(&child);
         // Registering the process and reading the stop share one lock with `stop`, so a
         // stop that came just before the process existed is caught here instead of lost.
         let stopped_meanwhile = match self.jobs.lock().unwrap().get_mut(id) {
@@ -1539,8 +1623,14 @@ impl DownloadManager {
 
         let status = child.wait().await;
         let log = stderr_log.await.unwrap_or_default();
-        if let Some(job) = self.jobs.lock().unwrap().get_mut(id) {
+        let interrupting = self.jobs.lock().unwrap().get_mut(id).and_then(|job| {
             job.pid = None;
+            job.interrupting.take()
+        });
+        // Asked to stop gently: what it started (ffmpeg, writing the file) may
+        // outlive it by a moment. Nothing is done with the file until it has gone.
+        if let Some(interrupting) = interrupting {
+            let _ = interrupting.await;
         }
 
         if let Some(stop) = self.stop_of(id) {
@@ -1568,6 +1658,28 @@ enum Failure {
     Stopped(Stop),
     /// Non-zero exit; carries the stderr log.
     Exited(String),
+}
+
+/// Asks the process group `pid` heads to stop, with Siphon's own executable
+/// as the helper that does it (see `process::interrupt_tree`).
+fn interrupt(pid: u32) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        match std::env::current_exe() {
+            Ok(helper) => process::interrupt_tree(&helper, pid, live::STOP_GRACE).await,
+            Err(_) => process::kill_tree(pid).await,
+        }
+    })
+}
+
+/// Bytes free for the current user on the disk `dir` is on.
+pub fn free_space(dir: &Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+    let wide: Vec<u16> = dir.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let mut free = 0u64;
+    // SAFETY: a null-terminated path and pointers to a local; the other two outputs may be null.
+    let ok = unsafe { GetDiskFreeSpaceExW(wide.as_ptr(), &mut free, std::ptr::null_mut(), std::ptr::null_mut()) };
+    (ok != 0).then_some(free)
 }
 
 pub fn default_output_dir(app: &AppHandle) -> Result<PathBuf> {
@@ -1843,7 +1955,7 @@ mod proxy_tests {
 
     /// A job as `start` sets it up once it has a slot, with its proxy listening.
     async fn running_job(manager: &DownloadManager, throttle: &Throttle, id: &str) -> SocketAddr {
-        manager.register(id);
+        manager.register(id, true);
         let flow = throttle.flow().await.unwrap();
         let address = flow.address();
         manager.attach_flow(id, flow);
@@ -1911,7 +2023,7 @@ mod cookie_tests {
 
     /// A job of a signed-in site, as `fetch_streams` sets it up: returns its cookie file.
     fn running_job(manager: &DownloadManager, sessions: &Arc<Sessions>, id: &str) -> PathBuf {
-        manager.register(id);
+        manager.register(id, true);
         let file = sessions.cookie_file("https://www.youtube.com/watch?v=abc").unwrap();
         let path = file.path().to_path_buf();
         assert!(manager.attach_cookies(id, Some(file)));
@@ -1966,7 +2078,7 @@ mod cookie_tests {
         );
 
         // A site Siphon isn't signed in to runs without one.
-        manager.register("other");
+        manager.register("other", true);
         assert!(!manager.attach_cookies("other", sessions.cookie_file("https://vimeo.com/1")));
         let _ = std::fs::remove_dir_all(dir);
     }

@@ -12,6 +12,9 @@ import type { Choices, PlanSummary, QualityOption, Registry, Target } from "@/ty
 /** Resolutions offered for a playlist, where no single video's formats are known. */
 const PLAYLIST_LADDER = [2160, 1440, 1080, 720, 480, 360];
 
+/** The groups that make a file from the whole video: not for a stream as it airs. */
+const FINISHED_ONLY = new Set(["share", "edit"]);
+
 /**
  * Where the download is going: the group (Max quality, Watch, …) on top, then
  * one row of facets: the target in it, the options that target has, the
@@ -22,12 +25,18 @@ export function PresetArea({
   summary,
   disabled,
   playlist = false,
+  live = false,
+  from,
 }: {
   /** The plan for the current choice; gives the quality facet its options and sizes. */
   summary: PlanSummary | undefined;
   disabled: boolean;
   /** A playlist: the quality facet offers a fixed ladder, without sizes. */
   playlist?: boolean;
+  /** A live stream: Share and Edit wait for the finished recording. */
+  live?: boolean;
+  /** Where the site keeps what already aired: record from now, or from the start. */
+  from?: { start: boolean; onChange: (start: boolean) => void };
 }) {
   const registry = useRegistry();
   const choices = useChoices((state) => state.choices);
@@ -50,7 +59,14 @@ export function PresetArea({
         onChange={chooseGroup}
         options={registry.groups.map((candidate) => {
           const Icon = iconFor(candidate.icon);
-          return { id: candidate.id, label: candidate.label, icon: <Icon />, hint: candidate.description };
+          const later = live && FINISHED_ONLY.has(candidate.id);
+          return {
+            id: candidate.id,
+            label: candidate.label,
+            icon: <Icon />,
+            hint: later ? `${candidate.label} becomes available on the finished recording.` : candidate.description,
+            disabled: later,
+          };
         })}
       />
 
@@ -88,6 +104,19 @@ export function PresetArea({
               summary={summary}
               playlist={playlist}
               disabled={disabled}
+            />
+          )}
+          {from && (
+            <Facet
+              label="From"
+              group="from"
+              value={from.start ? "start" : "now"}
+              onChange={(id) => from.onChange(id === "start")}
+              disabled={disabled}
+              options={[
+                { id: "now", label: "Now", detail: "As it airs" },
+                { id: "start", label: "The start", detail: "Catches up, then live" },
+              ]}
             />
           )}
           <SavedFacet choices={choices} disabled={disabled} />

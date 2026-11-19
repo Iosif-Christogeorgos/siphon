@@ -133,6 +133,12 @@ impl Flow {
         // proxy honours them itself when it picks the way to the site.
         cmd.env_remove("NO_PROXY").env_remove("no_proxy");
     }
+
+    /// Lets this download go first for up to `bytes_per_second` (a live
+    /// recording, which has to keep up with its stream). See `limiter`.
+    pub fn reserve(&self, bytes_per_second: u64) {
+        self.limiter.set_reserve(self.id, Some(bytes_per_second));
+    }
 }
 
 #[cfg(test)]

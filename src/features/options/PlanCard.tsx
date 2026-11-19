@@ -1,4 +1,4 @@
-import { Info, RefreshCw, Scissors, Shrink, SlidersHorizontal, TriangleAlert, Zap } from "lucide-react";
+import { Clock, Info, RefreshCw, Scissors, Shrink, SlidersHorizontal, TriangleAlert, Zap } from "lucide-react";
 import {
   AnimatePresence,
   motion,
@@ -13,7 +13,7 @@ import { Hint } from "@/components/ui/tooltip";
 import { formatBytes, formatBytesRange } from "@/lib/format";
 import { spring } from "@/lib/motion";
 import { cn } from "@/lib/utils";
-import type { Badge, PlanSummary } from "@/types";
+import type { Badge, LiveStatus, PlanSummary } from "@/types";
 
 const BADGES: Record<Badge, { icon: typeof Zap; label: string; accent: boolean }> = {
   lossless: { icon: Zap, label: "No quality loss", accent: true },
@@ -36,6 +36,7 @@ export function PlanCard({
   customizing,
   onCustomize,
   onTrim,
+  perHour = false,
 }: {
   plan: PlanSummary | undefined;
   clips: number;
@@ -44,6 +45,8 @@ export function PlanCard({
   onCustomize: () => void;
   /** Opens the trimmer; offered when the plan is blocked for being too long. */
   onTrim?: () => void;
+  /** A recording: sizes are for each hour of it. */
+  perHour?: boolean;
 }) {
   if (!plan) {
     return (
@@ -127,6 +130,7 @@ export function PlanCard({
                 </>
               )}
               {clips > 1 && <span className="text-xs font-normal text-muted-foreground"> each</span>}
+              {perHour && <span className="text-xs font-normal text-muted-foreground"> per hour</span>}
             </span>
           ) : (
             <span className="h-[22px]" />
@@ -164,7 +168,29 @@ export function PlanCard({
   );
 }
 
-function Note({ warning, children }: { warning: boolean; children: ReactNode }) {
+/**
+ * In place of the plan for a stream that hasn't started: what happens next.
+ * The quality is planned once it is on air, from what it offers then.
+ */
+export function LiveWaitCard({ status }: { status: Exclude<LiveStatus, "live"> }) {
+  return (
+    <div className="flex items-center gap-3 px-1 py-1.5">
+      <div className="grid size-9 shrink-0 place-items-center rounded-xl bg-secondary text-muted-foreground">
+        <Clock className="size-4" />
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="truncate font-medium">
+          {status === "upcoming" ? "Records once the stream starts" : "Records once the channel goes live"}
+        </p>
+        <p className="text-xs text-pretty text-muted-foreground">
+          Siphon keeps checking, starts recording by itself and lets you know. The quality is picked then.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+export function Note({ warning, children }: { warning: boolean; children: ReactNode }) {
   return (
     <motion.div
       initial={{ opacity: 0, height: 0 }}

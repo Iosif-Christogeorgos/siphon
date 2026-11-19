@@ -622,6 +622,7 @@ mod tests {
             extractor: None,
             formats: Vec::new(),
             with_account: false,
+            live: None,
         }))
     }
 

@@ -83,3 +83,22 @@ export function formatDay(ms: number): string {
     year: then.getFullYear() === new Date().getFullYear() ? undefined : "numeric",
   });
 }
+
+/** A stretch of time in plain words: 45 → "45 s", 750 → "12 min", 8040 → "2 h 14 min", 200000 → "2 days". */
+export function formatSpan(seconds: number): string {
+  const s = Math.max(0, Math.round(seconds));
+  if (s < 60) return `${s} s`;
+  const minutes = Math.round(s / 60);
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  if (hours >= 48) return `${Math.round(hours / 24)} days`;
+  const rest = minutes % 60;
+  return rest === 0 || hours >= 10 ? `${hours} h` : `${hours} h ${rest} min`;
+}
+
+/** Bits per second as a stream's rate: "5.4 Mbit/s", "850 kbit/s". */
+export function formatBitrate(bitsPerSecond: number | null | undefined): string {
+  if (bitsPerSecond == null || !Number.isFinite(bitsPerSecond) || bitsPerSecond <= 0) return "";
+  if (bitsPerSecond < 1_000_000) return `${Math.round(bitsPerSecond / 1000)} kbit/s`;
+  return `${(bitsPerSecond / 1_000_000).toFixed(1)} Mbit/s`;
+}

@@ -10,6 +10,7 @@ import type {
   Media,
   PlanSummary,
   Preview,
+  Recovered,
   Registry,
   Settings,
   SettingsView,
@@ -36,14 +37,21 @@ export const ipc = {
   setChoices: (choices: Choices) => invoke<Choices>("set_choices", { choices }),
   /** Hands over what an older version kept in the webview's storage; only used once. */
   importLegacyChoices: (old: unknown) => invoke<Choices>("import_legacy_choices", { old }),
-  planDownload: (url: string, choice: Choice, trim: Trim | null) =>
-    invoke<PlanSummary>("plan_download", { url, choice, trim }),
+  /** For a live stream, what recording it does (`fromStart`: from the start), sized per hour. */
+  planDownload: (url: string, choice: Choice, trim: Trim | null, fromStart = false) =>
+    invoke<PlanSummary>("plan_download", { url, choice, trim, fromStart }),
+  /** Whether a live stream can be recorded from its start (a lookup of a few seconds). */
+  liveFromStart: (url: string) => invoke<boolean>("live_from_start", { url }),
   /** Bytes, looking the video up first if needed (for playlist totals). */
   estimateDownload: (url: string, choice: Choice) => invoke<number | null>("estimate_download", { url, choice }),
   previewSource: (url: string, level: number) => invoke<Preview>("preview_source", { url, level }),
   startDownload: (request: DownloadRequest) => invoke<void>("start_download", { request }),
   cancelDownload: (id: string) => invoke<void>("cancel_download", { id }),
   pauseDownload: (id: string) => invoke<void>("pause_download", { id }),
+  /** Ends a recording there, and makes it into its file. */
+  stopRecording: (id: string) => invoke<void>("stop_recording", { id }),
+  /** Finishes recordings Siphon's closing cut short; once, at launch. */
+  recoverRecordings: () => invoke<Recovered[]>("recover_recordings"),
   forgetOtherDownloads: (ids: string[]) => invoke<void>("forget_other_downloads", { ids }),
   getSettings: () => invoke<SettingsView>("get_settings"),
   setSettings: (settings: Settings) => invoke<SettingsView>("set_settings", { settings }),

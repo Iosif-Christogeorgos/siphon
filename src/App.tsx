@@ -42,8 +42,10 @@ export function App() {
     ];
     // What was chosen last time (and, once, what an older version remembered).
     void useChoices.getState().load();
-    // The list came back from the last session; files of downloads it no longer has can go.
+    // The list came back from the last session; files of downloads it no longer has can go,
+    // and recordings Siphon's closing cut short are finished now.
     void ipc.forgetOtherDownloads(useDownloads.getState().order).catch(() => {});
+    void useDownloads.getState().recover();
     void useBinaries
       .getState()
       .sync()

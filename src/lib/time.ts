@@ -1,3 +1,5 @@
+import { useEffect, useState } from "react";
+
 /** 62.349 → "1:02.35"; 3725.5 → "1:02:05.50". Hundredths are enough to tell frames apart. */
 export function formatTimecode(totalSeconds: number): string {
   const hundredths = Math.max(0, Math.round(totalSeconds * 100));
@@ -33,4 +35,14 @@ export function formatLength(seconds: number): string {
   const minutes = Math.floor(seconds / 60);
   const rest = Math.round(seconds % 60);
   return rest === 0 ? `${minutes} min` : `${minutes} min ${rest} s`;
+}
+
+/** The time now in Unix seconds, kept current every `every` milliseconds (for "live for 2 h"). */
+export function useNow(every = 30_000): number {
+  const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Math.floor(Date.now() / 1000)), every);
+    return () => window.clearInterval(timer);
+  }, [every]);
+  return now;
 }

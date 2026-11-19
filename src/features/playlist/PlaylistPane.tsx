@@ -58,7 +58,8 @@ export function PlaylistPane({ playlist, onOpen }: { playlist: PlaylistInfo; onO
   const openPanel = useUi((state) => state.openPanel);
 
   const { entries } = playlist;
-  const videos = useMemo(() => entries.filter((entry) => !entry.is_playlist), [entries]);
+  // A stream on air or scheduled is opened to record, not queued with the rest.
+  const videos = useMemo(() => entries.filter((entry) => !opens(entry)), [entries]);
   const have = useHave(videos);
 
   // A channel starts with its first tab (Videos) selected, not its Live and Shorts too,
@@ -107,7 +108,7 @@ export function PlaylistPane({ playlist, onOpen }: { playlist: PlaylistInfo; onO
     const words = fold(query).split(/\s+/).filter(Boolean);
     return words.length === 0 ? entries : entries.filter((entry) => words.every((word) => fold(entry.title).includes(word)));
   }, [entries, query]);
-  const visibleVideos = visible.filter((entry) => !entry.is_playlist);
+  const visibleVideos = visible.filter((entry) => !opens(entry));
   // A video already in the queue can't be added again.
   const selectable = (entry: PlaylistEntry) => have.of.get(entry.url) !== "queued";
 
@@ -251,7 +252,7 @@ export function PlaylistPane({ playlist, onOpen }: { playlist: PlaylistInfo; onO
         )}
         <ul className="scrollbar-thin max-h-72 overflow-y-auto p-1.5 select-none">
           {sections.map((section, index) => {
-            const urls = section.entries.filter((entry) => !entry.is_playlist && selectable(entry)).map((entry) => entry.url);
+            const urls = section.entries.filter((entry) => !opens(entry) && selectable(entry)).map((entry) => entry.url);
             const on = urls.length > 0 && urls.every((url) => selected.has(url));
             return (
               <Fragment key={`${section.name}:${index}`}>
@@ -273,7 +274,7 @@ export function PlaylistPane({ playlist, onOpen }: { playlist: PlaylistInfo; onO
                 )}
                 {section.entries.map((entry) => (
                   <li key={entry.url}>
-                    {entry.is_playlist ? (
+                    {opens(entry) ? (
                       <LinkRow entry={entry} onOpen={() => onOpen(entry.url)} />
                     ) : (
                       <EntryRow
@@ -515,7 +516,13 @@ function EntryRow({
   );
 }
 
-/** A link to another playlist: opens it, to choose from its videos. */
+/** Entries that are opened rather than queued: another playlist, or a stream on air or scheduled. */
+const opens = (entry: PlaylistEntry) => entry.is_playlist || entry.live !== null;
+
+/**
+ * A link to another playlist, opened to choose from its videos; or a stream
+ * that is live or scheduled, opened to record it.
+ */
 function LinkRow({ entry, onOpen }: { entry: PlaylistEntry; onOpen: () => void }) {
   return (
     <button
@@ -523,12 +530,31 @@ function LinkRow({ entry, onOpen }: { entry: PlaylistEntry; onOpen: () => void }
       onClick={onOpen}
       className="group flex w-full items-center gap-3 rounded-xl px-2 py-1.5 text-left transition-colors hover:bg-accent"
     >
-      <ListVideo className="size-4.5 shrink-0 text-primary" />
+      {entry.live ? (
+        <span className="grid size-4.5 shrink-0 place-items-center">
+          <span
+            aria-hidden
+            className={cn("size-2.5 rounded-full", entry.live === "live" ? "bg-live" : "border-2 border-live")}
+          />
+        </span>
+      ) : (
+        <ListVideo className="size-4.5 shrink-0 text-primary" />
+      )}
       <span className="w-6 shrink-0" />
       <Thumb src={entry.thumbnail} />
       <span className="min-w-0 flex-1 truncate text-[13px]">{entry.title}</span>
+      {entry.live && (
+        <span
+          className={cn(
+            "shrink-0 rounded-md px-1.5 py-0.5 text-[11px] font-semibold tracking-wide",
+            entry.live === "live" ? "bg-live-soft text-live" : "bg-secondary text-muted-foreground",
+          )}
+        >
+          {entry.live === "live" ? "LIVE" : "UPCOMING"}
+        </span>
+      )}
       <span className="flex shrink-0 items-center gap-0.5 text-xs text-muted-foreground group-hover:text-foreground">
-        Open <ChevronRight className="size-3.5" />
+        {entry.live ? "Record" : "Open"} <ChevronRight className="size-3.5" />
       </span>
     </button>
   );

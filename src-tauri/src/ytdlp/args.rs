@@ -211,3 +211,90 @@ fn audio_format(codec: AudioCodec) -> &'static str {
         AudioCodec::Aac | AudioCodec::Ac3 | AudioCodec::Other => "m4a",
     }
 }
+
+/// The arguments for recording a live stream with `recipe` (see
+/// `downloads::live`). What it records is kept as it comes, in a file that a
+/// crash, a power cut or a stopped recording leaves playable up to that
+/// moment; making it into the finished file is Siphon's own step afterwards.
+pub fn record_args(recipe: &Recipe, from_start: bool) -> Vec<String> {
+    let mut args: Vec<String> = vec!["--format".into(), recipe.format_selector()];
+    let mut push = |values: &[&str]| args.extend(values.iter().map(|value| value.to_string()));
+    push(&[
+        // MPEG-TS has no index to write at the end: every second recorded
+        // stays playable whatever happens to the process. (yt-dlp's default
+        // for a live stream already; said here so it stays that way.)
+        "--hls-use-mpegts",
+        // No fix-ups: the recording is made into its file afterwards.
+        "--fixup",
+        "never",
+        // Written under its own name from the first byte, so it is known
+        // where it is if Siphon closes or crashes.
+        "--no-part",
+        // ffmpeg would otherwise print a status line several times a second,
+        // all of it kept in memory for the whole recording.
+        "--downloader-args",
+        "ffmpeg:-nostats -loglevel warning",
+        // A connection that drops is picked up again, within one try.
+        "--retries",
+        "10",
+        "--fragment-retries",
+        "10",
+        "--retry-sleep",
+        "http:exp=1:8",
+        "--retry-sleep",
+        "fragment:exp=1:8",
+    ]);
+    if from_start {
+        // What already aired comes in pieces, and four at once catch up sooner.
+        // The site's video and audio arrive as two files, joined at the end.
+        push(&[
+            "--live-from-start",
+            "--concurrent-fragments",
+            "4",
+            "--merge-output-format",
+            "mkv",
+        ]);
+    }
+    args
+}
+
+/// The output template for part `part` of a recording: the user's naming
+/// style, the download's own marker, and which part it is. Recorded from now
+/// on, it is one MPEG-TS file; from the start, yt-dlp names the video and
+/// audio files it joins at the end itself.
+pub fn recording_template(name: &str, own: &str, part: usize, from_start: bool) -> String {
+    let ext = if from_start { "%(ext)s" } else { "ts" };
+    format!("{name}{own}{RECORDING_MARKER}{part}.{ext}")
+}
+
+/// What a recording's files carry in their names after the download's own
+/// marker: `Title.siphon-1a2b3c4d.rec1.ts`, `….rec2.ts` after a reconnect.
+const RECORDING_MARKER: &str = ".rec";
+
+/// A recording file's name without what Siphon added: the part, the format
+/// yt-dlp added (`.f137`), and the download's marker.
+/// `Title.siphon-1a2b3c4d.rec1.f137` → `Title`.
+pub fn recording_stem(stem: &str) -> &str {
+    let stem = match stem.rfind(RECORDING_MARKER) {
+        Some(at) if stem[at..].len() > RECORDING_MARKER.len() => &stem[..at],
+        _ => stem,
+    };
+    finished_stem(stem)
+}
+
+#[cfg(test)]
+mod recording_tests {
+    use super::*;
+
+    #[test]
+    fn names_each_part_of_a_recording_and_finds_the_title_again() {
+        let own = own_marker("1a2b3c4d-5e6f");
+        let first = recording_template("Lofi radio", &own, 1, false);
+        assert_eq!(first, "Lofi radio.siphon-1a2b3c4d.rec1.ts");
+        assert_eq!(recording_stem("Lofi radio.siphon-1a2b3c4d.rec1"), "Lofi radio");
+        assert_eq!(recording_stem("Lofi radio.siphon-1a2b3c4d.rec2.f137"), "Lofi radio");
+        assert_eq!(recording_template("A", &own, 1, true), "A.siphon-1a2b3c4d.rec1.%(ext)s");
+        // A title that happens to contain the marker keeps it.
+        assert_eq!(recording_stem("Notes on .records.siphon-ab.rec1"), "Notes on .records");
+    }
+}

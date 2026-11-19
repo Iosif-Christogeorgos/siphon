@@ -161,6 +161,19 @@ export interface VideoInfo {
   formats: Format[];
   /** Found with the site's sign-in, because the video needed it (or the user asked). */
   with_account: boolean;
+  /** A stream live now, scheduled, or a channel that's offline: recorded rather than downloaded. */
+  live: Live | null;
+}
+
+/** Where a live stream stands (`metadata::LiveStatus`). */
+export type LiveStatus = "live" | "upcoming" | "offline";
+
+export interface Live {
+  status: LiveStatus;
+  /** Unix seconds: when it went on air (live), or is to (upcoming), if the site says. */
+  since: number | null;
+  /** How many are watching, if the site says. */
+  viewers: number | null;
 }
 
 export interface PlaylistEntry {
@@ -174,6 +187,8 @@ export interface PlaylistEntry {
   is_playlist: boolean;
   /** The part of a channel it was listed under ("Videos", "Live", "Shorts"); null for a plain playlist. */
   section: string | null;
+  /** A stream live now or scheduled: opened to record, rather than queued. */
+  live: Exclude<LiveStatus, "offline"> | null;
 }
 
 export interface PlaylistInfo {
@@ -397,7 +412,15 @@ export type Stage =
   | "downloading"
   | "merging"
   | "converting"
-  | "finishing";
+  | "finishing"
+  /** A recording waits for its stream to start. */
+  | "waiting_live"
+  /** A recording is under way (or, from the start, catching up). */
+  | "recording"
+  /** The stream stopped sending; the recording waits a few minutes for it to come back. */
+  | "reconnecting"
+  /** The recording ended and is being made into its file. */
+  | "finalizing";
 
 export interface Progress {
   stage: Stage;
@@ -407,6 +430,24 @@ export interface Progress {
   speed: number | null;
   /** Seconds. */
   eta: number | null;
+  /** A recording's own readings, in place of a fraction and time left. */
+  live?: LiveProgress;
+}
+
+/** How a recording is going (`tracker::LiveProgress`). */
+export interface LiveProgress {
+  /** Seconds since recording began. */
+  elapsed: number;
+  /** Bytes recorded so far. */
+  bytes: number;
+  /** Bits per second, lately. */
+  bitrate: number | null;
+  /** From the start: seconds behind live, until it catches up. */
+  behind: number | null;
+  /** Waiting: when the stream is scheduled to start (Unix seconds). */
+  starts_at: number | null;
+  /** Seconds of recording the disk still has room for, when that's getting short. */
+  disk_left: number | null;
 }
 
 /** The total download speed (`speed://total`), measured as the bytes pass through Siphon. */
@@ -422,6 +463,21 @@ export interface DownloadRequest {
   place: Place | null;
   /** Use the site's sign-in from the start. */
   account: boolean;
+  /** Record a live stream instead, waiting for it to start if it hasn't. */
+  record: RecordRequest | null;
+}
+
+export interface RecordRequest {
+  /** Record what already aired too (where the site keeps it). */
+  from_start: boolean;
+}
+
+/** A recording cut short by Siphon closing, finished when it started again (`live::Recovered`). */
+export interface Recovered {
+  id: string;
+  url: string;
+  title: string;
+  thumbnail: string | null;
 }
 
 /** Where a playlist video goes: a folder inside the download folder, and a number in front of its name. */
@@ -434,7 +490,16 @@ export interface Place {
 
 export type DownloadEvent =
   | ({ type: "progress"; id: string } & Progress)
-  | { type: "finished"; id: string; path: string; size: number | null }
+  | {
+      type: "finished";
+      id: string;
+      path: string;
+      size: number | null;
+      /** Something worth saying about the file: a recording kept as recorded, and why. */
+      note?: string;
+      /** A recording Siphon's closing cut short, finished once it started again. */
+      recovered?: boolean;
+    }
   | { type: "failed"; id: string; error: AppError }
   | { type: "paused"; id: string }
   | { type: "cancelled"; id: string };

@@ -12,8 +12,21 @@ export const STAGE_LABELS: Record<Stage, string> = {
   merging: "Merging",
   converting: "Converting",
   finishing: "Finishing up",
+  waiting_live: "Waiting for the stream to start",
+  recording: "Recording",
+  reconnecting: "Stream paused, waiting for it",
+  finalizing: "Finishing the recording",
 };
 
 /** Stages with no measurable progress yet: shown without a percentage. */
 export const isIndeterminate = (stage: Stage) =>
-  stage === "queued" || stage === "updating" || stage === "retrying" || stage === "preparing";
+  stage === "queued" ||
+  stage === "updating" ||
+  stage === "retrying" ||
+  stage === "preparing" ||
+  stage === "waiting_live" ||
+  stage === "recording" ||
+  stage === "reconnecting";
+
+/** Stages of a recording that is on air or waiting for it: there is nothing to pause. */
+export const isLive = (stage: Stage) => stage === "waiting_live" || stage === "recording" || stage === "reconnecting";

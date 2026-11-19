@@ -1,16 +1,17 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Pause } from "lucide-react";
+import { Circle, Pause } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { AlertDialog } from "radix-ui";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { spring } from "@/lib/motion";
-import { saveDownloadsNow, selectActiveCount, useDownloads } from "@/stores/downloads";
+import { isActive, saveDownloadsNow, selectActiveCount, useDownloads } from "@/stores/downloads";
 
 /**
  * Asks before the window closes while downloads run or wait (title-bar
  * button, Alt+F4 or the taskbar alike). Closing pauses them, and they carry
- * on next time, so this is a heads-up rather than a warning.
+ * on next time, so this is a heads-up rather than a warning. A recording
+ * can't pause: it stops, and what it recorded is finished next time.
  */
 export function CloseGuard() {
   const [asking, setAsking] = useState(false);
@@ -36,7 +37,20 @@ export function CloseGuard() {
   };
 
   const running = useDownloads((state) => state.order.some((id) => state.byId[id]?.status === "running"));
-  const what = `${active} ${active === 1 ? "download is" : "downloads are"} still ${running ? "running" : "waiting"}`;
+  const recordings = useDownloads((state) =>
+    state.order.reduce((count, id) => {
+      const download = state.byId[id];
+      return count + (download?.record && isActive(download) ? 1 : 0);
+    }, 0),
+  );
+  const downloads = active - recordings;
+  const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
+  const description =
+    recordings === 0
+      ? `${plural(active, "download is", "downloads are")} still ${running ? "running" : "waiting"}. ${active === 1 ? "It’ll" : "They’ll"} pause and carry on where ${active === 1 ? "it" : "they"} stopped when you open Siphon again.`
+      : downloads === 0
+        ? `${plural(recordings, "recording is", "recordings are")} running. Closing stops ${recordings === 1 ? "it" : "them"} here, and what was recorded is saved when you open Siphon again.`
+        : `${plural(recordings, "recording", "recordings")} and ${plural(downloads, "download", "downloads")} are running. Recordings stop here and are saved when you open Siphon again; downloads pause and carry on.`;
 
   return (
     <AlertDialog.Root open={asking} onOpenChange={setAsking}>
@@ -61,26 +75,31 @@ export function CloseGuard() {
                 transition={spring}
               >
                 <div className="flex gap-3.5">
-                  <div className="grid size-9 shrink-0 place-items-center rounded-xl bg-primary-soft text-primary">
-                    <Pause className="size-4 fill-current" />
+                  <div
+                    className={
+                      recordings > 0
+                        ? "grid size-9 shrink-0 place-items-center rounded-xl bg-live-soft text-live"
+                        : "grid size-9 shrink-0 place-items-center rounded-xl bg-primary-soft text-primary"
+                    }
+                  >
+                    {recordings > 0 ? <Circle className="size-3.5 fill-current" /> : <Pause className="size-4 fill-current" />}
                   </div>
                   <div className="min-w-0">
                     <AlertDialog.Title className="text-[15px] font-semibold tracking-tight">Close Siphon?</AlertDialog.Title>
                     <AlertDialog.Description className="mt-1 text-[13px] text-pretty text-muted-foreground">
-                      {what}. {active === 1 ? "It’ll" : "They’ll"} pause and carry on where{" "}
-                      {active === 1 ? "it" : "they"} stopped when you open Siphon again.
+                      {description}
                     </AlertDialog.Description>
                   </div>
                 </div>
                 <div className="mt-5 flex justify-end gap-2">
                   <AlertDialog.Cancel asChild>
                     <Button variant="secondary" size="sm" autoFocus>
-                      Keep downloading
+                      {recordings > 0 ? "Keep recording" : "Keep downloading"}
                     </Button>
                   </AlertDialog.Cancel>
                   <AlertDialog.Action asChild>
                     <Button size="sm" onClick={close}>
-                      Close and pause
+                      {recordings > 0 ? "Close and stop" : "Close and pause"}
                     </Button>
                   </AlertDialog.Action>
                 </div>

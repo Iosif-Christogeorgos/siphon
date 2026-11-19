@@ -2,11 +2,12 @@ import { ImageOff, LogIn } from "lucide-react";
 import { motion } from "motion/react";
 import { type ReactNode, useState } from "react";
 import { Hint } from "@/components/ui/tooltip";
-import { formatCount, formatDuration } from "@/lib/format";
+import { formatCount, formatDuration, formatSpan } from "@/lib/format";
 import { bestVideoFormat, resolutionLabel } from "@/lib/formats";
+import { useNow } from "@/lib/time";
 import { displayHost } from "@/lib/url";
 import { cn } from "@/lib/utils";
-import type { VideoInfo } from "@/types";
+import type { Live, VideoInfo } from "@/types";
 
 export function VideoCard({ video, action }: { video: VideoInfo; action?: ReactNode }) {
   const best = bestVideoFormat(video.formats);
@@ -15,7 +16,7 @@ export function VideoCard({ video, action }: { video: VideoInfo; action?: ReactN
 
   return (
     <article className="group/card flex gap-4 rounded-[1.25rem] border bg-card p-3 shadow-card">
-      <Thumbnail src={video.thumbnail} duration={video.duration} />
+      <Thumbnail src={video.thumbnail} duration={video.duration} live={video.live} />
       <div className="flex min-w-0 flex-1 flex-col py-1 pr-2">
         <h2
           data-selectable
@@ -25,9 +26,10 @@ export function VideoCard({ video, action }: { video: VideoInfo; action?: ReactN
         </h2>
         <p className="mt-1 truncate text-[13px] text-muted-foreground">{byline}</p>
         <div className="mt-auto flex flex-wrap items-center gap-1.5 pt-3">
+          {video.live && <LiveBadges live={video.live} />}
           {quality && <Badge accent>Up to {quality}</Badge>}
           {best?.dynamic_range && best.dynamic_range !== "SDR" && <Badge>{best.dynamic_range}</Badge>}
-          {video.view_count != null && <Badge>{formatCount(video.view_count)} views</Badge>}
+          {video.view_count != null && !video.live && <Badge>{formatCount(video.view_count)} views</Badge>}
           {video.with_account && (
             <Hint
               label={`Found with your ${displayHost(video.url)} sign-in, because this video needs one. It downloads with it too.`}
@@ -48,7 +50,24 @@ export function VideoCard({ video, action }: { video: VideoInfo; action?: ReactN
   );
 }
 
-function Thumbnail({ src, duration }: { src: string | null; duration: number | null }) {
+/** How long it has been on air and how many watch; when it starts; or that the channel is offline. */
+function LiveBadges({ live }: { live: Live }) {
+  const now = useNow();
+  if (live.status === "offline") return <Badge>Not live right now</Badge>;
+  if (live.status === "upcoming") {
+    if (live.since == null) return <Badge>Scheduled</Badge>;
+    const left = live.since - now;
+    return <Badge>{left > 60 ? `Starts in ${formatSpan(left)}` : "Starting soon"}</Badge>;
+  }
+  return (
+    <>
+      {live.since != null && now > live.since && <Badge live>Live for {formatSpan(now - live.since)}</Badge>}
+      {live.viewers != null && <Badge>{formatCount(live.viewers)} watching</Badge>}
+    </>
+  );
+}
+
+function Thumbnail({ src, duration, live }: { src: string | null; duration: number | null; live: Live | null }) {
   const [state, setState] = useState<"loading" | "loaded" | "failed">(src ? "loading" : "failed");
 
   return (
@@ -76,21 +95,32 @@ function Thumbnail({ src, duration }: { src: string | null; duration: number | n
           />
         </>
       )}
-      {duration != null && (
+      {duration != null && !live && (
         <span className="absolute right-1.5 bottom-1.5 rounded-md bg-black/70 px-1.5 py-0.5 text-[11px] leading-none font-medium text-white tabular-nums backdrop-blur-sm">
           {formatDuration(duration)}
+        </span>
+      )}
+      {live && (
+        <span
+          className={cn(
+            "absolute top-1.5 left-1.5 flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] leading-none font-semibold tracking-wide text-white",
+            live.status === "live" ? "bg-live" : "bg-black/70 backdrop-blur-sm",
+          )}
+        >
+          {live.status === "live" && <span aria-hidden className="size-1.5 rounded-full bg-white" />}
+          {live.status === "live" ? "LIVE" : live.status === "upcoming" ? "UPCOMING" : "OFFLINE"}
         </span>
       )}
     </div>
   );
 }
 
-function Badge({ accent, children }: { accent?: boolean; children: ReactNode }) {
+function Badge({ accent, live, children }: { accent?: boolean; live?: boolean; children: ReactNode }) {
   return (
     <span
       className={cn(
-        "rounded-md px-1.5 py-0.5 text-xs font-medium",
-        accent ? "bg-primary-soft text-primary" : "bg-secondary text-muted-foreground",
+        "rounded-md px-1.5 py-0.5 text-xs font-medium tabular-nums",
+        live ? "bg-live-soft text-live" : accent ? "bg-primary-soft text-primary" : "bg-secondary text-muted-foreground",
       )}
     >
       {children}

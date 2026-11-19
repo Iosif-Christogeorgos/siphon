@@ -2,13 +2,16 @@ import {
   Check,
   CircleAlert,
   FolderOpen,
+  HardDrive,
   ImageOff,
   Inbox,
+  Info,
   LogIn,
   Pause,
   Play,
   RotateCw,
   Scissors,
+  Square,
   Trash2,
   X,
 } from "lucide-react";
@@ -17,10 +20,10 @@ import { type ReactNode, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Sheet } from "@/components/ui/sheet";
 import { Hint } from "@/components/ui/tooltip";
-import { formatBytes, formatEta, formatSpeed } from "@/lib/format";
+import { formatBitrate, formatBytes, formatDuration, formatEta, formatSpan, formatSpeed } from "@/lib/format";
 import { ipc } from "@/lib/ipc";
 import { spring } from "@/lib/motion";
-import { isIndeterminate, STAGE_LABELS } from "@/lib/stages";
+import { isIndeterminate, isLive, STAGE_LABELS } from "@/lib/stages";
 import { formatShortTimecode, formatTimecode } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { type Download, useDownloads } from "@/stores/downloads";
@@ -104,10 +107,13 @@ export function QueueSheet() {
 }
 
 function QueueItem({ download }: { download: Download }) {
-  const { pause, resume, remove } = useDownloads.getState();
+  const { pause, resume, remove, stop } = useDownloads.getState();
   const { status, progress } = download;
   const active = status === "queued" || status === "running";
   const text = useRef<HTMLDivElement>(null);
+  // A recording has no Pause: on air it has Stop, which keeps what it recorded.
+  const onAir = download.record && active && (progress.stage === "recording" || progress.stage === "reconnecting");
+  const finishing = download.record && active && progress.stage === "finalizing";
 
   return (
     <div className="group relative flex gap-3 rounded-xl px-2 py-2.5 transition-colors hover:bg-accent">
@@ -159,8 +165,8 @@ function QueueItem({ download }: { download: Download }) {
               ))}
             </p>
           )}
-          {/* Hairline progress; it parks where it stopped when paused. */}
-          {(active || status === "paused") && (
+          {/* Hairline progress; it parks where it stopped when paused. A recording on air has nothing to fill. */}
+          {(active || status === "paused") && !(download.record && isLive(progress.stage)) && (
             <div className="mt-1.5 h-0.5 overflow-hidden rounded-full bg-border-strong">
               <motion.div
                 className={cn("h-full origin-left", status === "paused" ? "bg-subtle-foreground" : "bg-primary")}
@@ -174,7 +180,12 @@ function QueueItem({ download }: { download: Download }) {
       </Hint>
 
       <div className="flex shrink-0 items-start">
-        {active && (
+        {onAir && (
+          <Action label="Stop and save the recording" onClick={() => stop(download.id)}>
+            <Square />
+          </Action>
+        )}
+        {active && !download.record && (
           <Action label="Pause" onClick={() => pause(download.id)}>
             <Pause />
           </Action>
@@ -195,12 +206,25 @@ function QueueItem({ download }: { download: Download }) {
             </Action>
           </>
         )}
-        <Action
-          label={active ? "Cancel" : status === "paused" ? "Cancel and delete what was downloaded" : "Remove from the list"}
-          onClick={() => remove(download.id)}
-        >
-          {active || status === "paused" ? <X /> : <Trash2 />}
-        </Action>
+        {/* Neither on air (Stop keeps it) nor being finished: cancelling either would throw a recording away. */}
+        {!onAir && !finishing && (
+          <Action
+            label={
+              active
+                ? download.record
+                  ? "Stop waiting"
+                  : "Cancel"
+                : status === "paused"
+                  ? download.record
+                    ? "Remove from the list"
+                    : "Cancel and delete what was downloaded"
+                  : "Remove from the list"
+            }
+            onClick={() => remove(download.id)}
+          >
+            {active || status === "paused" ? <X /> : <Trash2 />}
+          </Action>
+        )}
       </div>
     </div>
   );
@@ -248,10 +272,54 @@ const SHORT_STAGES: Record<Stage, string | null> = {
   merging: "Merging",
   converting: "Converting",
   finishing: "Finishing",
+  waiting_live: "Waiting to go live",
+  recording: null,
+  reconnecting: "Stream paused",
+  finalizing: "Finishing",
 };
 
 const percent = (download: Download) =>
   isIndeterminate(download.progress.stage) ? null : `${Math.floor(download.progress.fraction * 100)}%`;
+
+/** A recording's status line: REC and how long, how much, and how fast; or what it waits for. */
+function recordingPieces(download: Download): ({ key: string; node: ReactNode } | "" | false | null | undefined)[] {
+  const { progress } = download;
+  const live = progress.live;
+  if (progress.stage === "waiting_live") {
+    const startsIn = live?.starts_at != null ? live.starts_at - Date.now() / 1000 : null;
+    return [
+      { key: "stage", node: "Waiting to go live" },
+      startsIn != null && startsIn > 60 && { key: "starts", node: `starts in ${formatSpan(startsIn)}` },
+    ];
+  }
+  return [
+    {
+      key: "rec",
+      node:
+        progress.stage === "reconnecting" ? (
+          "Stream paused"
+        ) : live?.behind != null ? (
+          <span className="text-live">Catching up · {formatSpan(live.behind)} behind</span>
+        ) : (
+          <>
+            <span aria-hidden className="size-1.5 animate-rec rounded-full bg-live motion-reduce:animate-none" />
+            <span className="font-medium text-live">REC</span> {formatDuration(live?.elapsed ?? 0)}
+          </>
+        ),
+    },
+    live && { key: "size", node: formatBytes(live.bytes) },
+    live?.disk_left != null && {
+      key: "disk",
+      node: (
+        <span className="text-destructive">
+          <HardDrive className="mr-0.5 inline align-[-1.5px]" />
+          full in {formatSpan(live.disk_left)}
+        </span>
+      ),
+    },
+    progress.stage === "recording" && formatBitrate(live?.bitrate) && { key: "rate", node: formatBitrate(live?.bitrate) },
+  ];
+}
 
 /** The status line's pieces, most important first: the ones at the end go first when the row is narrow. */
 function statusPieces(download: Download): { key: string; node: ReactNode }[] {
@@ -277,19 +345,31 @@ function statusPieces(download: Download): { key: string; node: ReactNode }[] {
               </>
             ),
           },
+          download.recovered && { key: "recovered", node: "Recovered" },
+          download.note && {
+            key: "note",
+            node: (
+              <>
+                <Info />
+                Saved as .ts
+              </>
+            ),
+          },
           clip,
         ]
       : status === "paused"
-        ? [{ key: "paused", node: `Paused ${Math.floor(progress.fraction * 100)}%` }, clip]
-        : [
+        ? [{ key: "paused", node: download.record ? "Stopped waiting" : `Paused ${Math.floor(progress.fraction * 100)}%` }, clip]
+        : download.record && isLive(progress.stage)
+          ? recordingPieces(download)
+          : [
             {
               key: "stage",
               node: [SHORT_STAGES[progress.stage], percent(download)].filter(Boolean).join(" ") || "Downloading",
             },
             clip,
-            formatEta(progress.eta) && { key: "eta", node: formatEta(progress.eta) },
-            formatSpeed(progress.speed) && { key: "speed", node: formatSpeed(progress.speed) },
-          ];
+              formatEta(progress.eta) && { key: "eta", node: formatEta(progress.eta) },
+              formatSpeed(progress.speed) && { key: "speed", node: formatSpeed(progress.speed) },
+            ];
   return pieces.filter((piece): piece is { key: string; node: ReactNode } => Boolean(piece));
 }
 
@@ -297,15 +377,31 @@ function statusPieces(download: Download): { key: string; node: ReactNode }[] {
 function fullStatus(download: Download): string {
   const { status, progress, trim } = download;
   const clip = trim && `Clip ${formatTimecode(trim.start)} – ${formatTimecode(trim.end)}`;
+  const live = progress.live;
   const parts =
     status === "finished"
-      ? ["Done", download.size != null && formatBytes(download.size), clip]
+      ? [
+          download.recovered ? "Recovered recording" : "Done",
+          download.size != null && formatBytes(download.size),
+          clip,
+          download.note,
+        ]
       : status === "failed"
         ? [download.error?.message ?? "Failed"]
         : status === "paused"
-          ? ["Paused", percent(download), clip]
-          : [STAGE_LABELS[progress.stage], percent(download), formatSpeed(progress.speed), formatEta(progress.eta), clip];
+          ? [download.record ? "Stopped waiting for the stream" : "Paused", !download.record && percent(download), clip]
+          : download.record && isLive(progress.stage)
+            ? [
+                STAGE_LABELS[progress.stage],
+                live && progress.stage !== "waiting_live" && formatDuration(live.elapsed),
+                live && progress.stage !== "waiting_live" && formatBytes(live.bytes),
+                live?.behind != null && `${formatSpan(live.behind)} behind live`,
+                formatBitrate(live?.bitrate),
+                live?.disk_left != null && `the disk is full in ${formatSpan(live.disk_left)}`,
+              ]
+            : [STAGE_LABELS[progress.stage], percent(download), formatSpeed(progress.speed), formatEta(progress.eta), clip];
   return parts.filter(Boolean).join(" · ");
+
 }
 
 /** Whether a row's text left anything out: a clamped title or error, or a status piece that didn't fit. */

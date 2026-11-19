@@ -6,22 +6,49 @@ import { ErrorCard } from "@/components/ErrorCard";
 import { Button } from "@/components/ui/button";
 import { DownloadPanel } from "@/features/download/DownloadPanel";
 import { ManualPanel } from "@/features/options/ManualPanel";
-import { PlanCard } from "@/features/options/PlanCard";
+import { LiveWaitCard, Note, PlanCard } from "@/features/options/PlanCard";
 import { PresetArea } from "@/features/presets/PresetArea";
 import { TrimPanel } from "@/features/trim/TrimPanel";
 import { ipc, toAppError } from "@/lib/ipc";
 import { spring } from "@/lib/motion";
 import { useChoice, useChoices } from "@/stores/choices";
-import { useDownloadGroup, useDownloads } from "@/stores/downloads";
+import { isActive, useDownloadGroup, useDownloads } from "@/stores/downloads";
 import { useTrim } from "@/stores/trim";
 import type { Trim, VideoInfo } from "@/types";
 import { AlreadyDownloaded } from "./AlreadyDownloaded";
 import { VideoCard } from "./VideoCard";
 
+/** Several recordings at once are fine; past this many, the sites may start to wonder. */
+const MANY_RECORDINGS = 3;
+
 /** Everything shown for a loaded video: the card, the trimmer, the choices, the plan and the button. */
 export function VideoPane({ video }: { video: VideoInfo }) {
   const choice = useChoice();
   const customizing = useChoices((state) => state.choices !== null && state.choices.active.kind !== "preset");
+
+  // A live stream is recorded: as it airs, or once it starts.
+  const live = video.live;
+  const onAir = live?.status === "live";
+  const waitsForStart = live !== null && !onAir;
+  const [fromStart, setFromStart] = useState(false);
+  const fromStartOffered = useQuery({
+    queryKey: ["from-start", video.url],
+    queryFn: () => ipc.liveFromStart(video.url),
+    enabled: onAir,
+    staleTime: Number.POSITIVE_INFINITY,
+  });
+  const recordFromStart = fromStart && fromStartOffered.data === true;
+  const recordings = useDownloads((state) =>
+    state.order.reduce((count, id) => {
+      const download = state.byId[id];
+      return count + (download?.record && isActive(download) ? 1 : 0);
+    }, 0),
+  );
+  // Share and Edit make a file from the whole video: a stream as it airs gets Max quality instead.
+  const group = useChoices((state) => state.choices?.group);
+  useEffect(() => {
+    if (live && (group === "share" || group === "edit") && !customizing) useChoices.getState().chooseGroup("max");
+  }, [live, group, customizing]);
 
   const trimOpen = useTrim((state) => state.open);
   const segments = useTrim((state) => state.segments);
@@ -54,7 +81,7 @@ export function VideoPane({ video }: { video: VideoInfo }) {
   const shownTrim = trims[Math.min(activeIndex, trims.length - 1)] ?? null;
 
   // Changing a choice after a download finished (or failed) brings back the Download button.
-  const choices = JSON.stringify([choice, trims]);
+  const choices = JSON.stringify([choice, trims, recordFromStart]);
   useEffect(() => {
     setDownloadIds((ids) =>
       ids.some((id) => {
@@ -67,21 +94,25 @@ export function VideoPane({ video }: { video: VideoInfo }) {
   }, [choices]);
 
   const plan = useQuery({
-    queryKey: ["plan", video.url, choice, shownTrim],
-    queryFn: () => (choice ? ipc.planDownload(video.url, choice, shownTrim) : Promise.reject(new Error("no choice"))),
-    enabled: choice !== null,
+    queryKey: ["plan", video.url, choice, shownTrim, recordFromStart],
+    queryFn: () =>
+      choice ? ipc.planDownload(video.url, choice, shownTrim, recordFromStart) : Promise.reject(new Error("no choice")),
+    // A stream that hasn't started has nothing to plan yet: that happens when it starts.
+    enabled: choice !== null && !waitsForStart,
     // Keep showing the last plan while the next one is computed, so the layout doesn't jump.
     placeholderData: keepPreviousData,
   });
   const openTrim = () => useTrim.getState().openFor(video.duration ?? 0);
   const blocked = plan.data?.blocked ?? null;
+  const canTrim = video.duration && !trimOpen && !live;
+  const record = live ? { from_start: recordFromStart } : null;
 
   return (
     <>
       <VideoCard
         video={video}
         action={
-          video.duration && !trimOpen ? (
+          canTrim ? (
             <Button variant="outline" size="sm" disabled={running} onClick={openTrim}>
               <Scissors /> Trim
             </Button>
@@ -89,7 +120,8 @@ export function VideoPane({ video }: { video: VideoInfo }) {
         }
       />
 
-      <AlreadyDownloaded url={video.url} exclude={downloadIds} />
+      {/* A channel's link is the same for every stream it records. */}
+      {!live && <AlreadyDownloaded url={video.url} exclude={downloadIds} />}
 
       <AnimatePresence initial={false}>
         {trimOpen && video.duration && (
@@ -107,7 +139,12 @@ export function VideoPane({ video }: { video: VideoInfo }) {
 
       {/* Extra room below: the choices end here and the summary of the result begins. */}
       <div className="space-y-2 pt-1 pb-2">
-        <PresetArea summary={plan.data} disabled={running} />
+        <PresetArea
+          summary={plan.data}
+          disabled={running}
+          live={live !== null}
+          from={fromStartOffered.data ? { start: fromStart, onChange: setFromStart } : undefined}
+        />
         <AnimatePresence initial={false}>
           {customizing && (
             <motion.div
@@ -123,7 +160,9 @@ export function VideoPane({ video }: { video: VideoInfo }) {
         </AnimatePresence>
       </div>
 
-      {plan.isError ? (
+      {live && live.status !== "live" ? (
+        <LiveWaitCard status={live.status} />
+      ) : plan.isError ? (
         <ErrorCard error={toAppError(plan.error)} />
       ) : (
         <PlanCard
@@ -133,22 +172,37 @@ export function VideoPane({ video }: { video: VideoInfo }) {
           onCustomize={() =>
             customizing ? useChoices.getState().chooseGroup(useChoices.getState().choices?.group ?? "") : useChoices.getState().customize()
           }
-          onTrim={video.duration && !trimOpen ? openTrim : undefined}
+          onTrim={canTrim ? openTrim : undefined}
+          perHour={live !== null}
         />
       )}
 
+      <AnimatePresence initial={false}>
+        {live && !running && recordings >= MANY_RECORDINGS && (
+          <Note key="many" warning={false}>
+            {recordings} recordings are running already. Each more makes sites likelier to ask whether you’re a
+            bot, and each needs its share of your connection.
+          </Note>
+        )}
+      </AnimatePresence>
+
       <DownloadPanel
         download={download}
-        onStart={() => choice && setDownloadIds(trims.map((trim) => start(video, choice, trim)))}
-        disabled={!plan.isSuccess || blocked !== null}
+        onStart={() => choice && setDownloadIds(trims.map((trim) => start(video, choice, trim, null, record)))}
+        disabled={waitsForStart ? choice === null : !plan.isSuccess || blocked !== null}
+        record={live !== null}
         label={
-          blocked
-            ? "Too long for this limit"
-            : trims.length > 1
-              ? `Download ${trims.length} clips`
-              : shownTrim
-                ? "Download clip"
-                : "Download"
+          waitsForStart
+            ? "Record when it starts"
+            : live
+              ? "Record"
+              : blocked
+                ? "Too long for this limit"
+                : trims.length > 1
+                  ? `Download ${trims.length} clips`
+                  : shownTrim
+                    ? "Download clip"
+                    : "Download"
         }
       />
     </>

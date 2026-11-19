@@ -46,6 +46,11 @@ async fn keep_tools_updated(app: tauri::AppHandle) {
 }
 
 fn main() {
+    // Siphon's own executable doubles as the helper that stops a live
+    // recording gently (see `process::interrupt_tree`): it does that and exits.
+    if let Some(group) = process::interrupt_request() {
+        std::process::exit(if process::send_break(group) { 0 } else { 1 });
+    }
     let mut context = tauri::generate_context!();
     if cfg!(debug_assertions) {
         context.config_mut().identifier.push_str(DEV_SUFFIX);
@@ -112,6 +117,9 @@ fn main() {
             commands::start_download,
             commands::cancel_download,
             commands::pause_download,
+            commands::stop_recording,
+            commands::recover_recordings,
+            commands::live_from_start,
             commands::forget_other_downloads,
             commands::get_settings,
             commands::set_settings,

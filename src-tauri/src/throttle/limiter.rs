@@ -6,6 +6,12 @@
 //! bytes goes next, so each gets an equal share however many connections it
 //! opens (yt-dlp fetches four pieces of a stream at once). A flow that wants
 //! less than its share leaves the rest to the others.
+//!
+//! A flow can also reserve a rate: a live recording has to keep up with the
+//! stream, or it falls behind and fails. It earns credit at that rate, and
+//! while it has credit for what it asks, it goes first. Everything it is given
+//! is paid from its credit, so a reserve below its fair share changes nothing,
+//! and one above it takes only what it needs from the others.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -25,6 +31,11 @@ pub const CHUNK: usize = 16 * 1024;
 /// How long the bucket may save up for: after a pause, a burst of at most
 /// this much of a second's worth goes out at once.
 const BURST: f64 = 0.05;
+
+/// How many seconds of its reserve a flow may save up. A live stream arrives
+/// in segments a few seconds apart, and each has to come through at once:
+/// the credit earned between them pays for that.
+const RESERVE_SAVINGS: f64 = 10.0;
 
 pub struct Limiter {
     state: Mutex<State>,
@@ -50,6 +61,17 @@ struct Flow {
     /// Bytes granted so far, on the shared clock.
     served: u64,
     waiting: VecDeque<Request>,
+    /// Bytes per second this flow goes first for, if any.
+    reserve: Option<u64>,
+    /// Bytes it may still be given ahead of the others.
+    credit: f64,
+}
+
+impl Flow {
+    /// Whether the request at the front can be paid from the reserve.
+    fn first_in_line(&self, bytes: u64) -> bool {
+        self.reserve.is_some() && self.credit >= bytes as f64
+    }
 }
 
 struct Request {
@@ -111,6 +133,18 @@ impl Limiter {
         let _ = granted.await;
     }
 
+    /// Lets `flow` go first for up to `rate` bytes per second (see the module
+    /// notes); `None` makes it an ordinary flow again.
+    pub fn set_reserve(&self, flow: FlowId, rate: Option<u64>) {
+        let mut state = self.state.lock().unwrap();
+        state.refill(Instant::now());
+        let entry = state.flows.entry(flow).or_default();
+        entry.reserve = rate.filter(|rate| *rate > 0);
+        entry.credit = 0.0;
+        drop(state);
+        self.changed.notify_one();
+    }
+
     /// Forgets a flow whose download has ended.
     pub fn forget(&self, flow: FlowId) {
         self.state.lock().unwrap().flows.remove(&flow);
@@ -137,7 +171,8 @@ impl Limiter {
         let mut state = self.state.lock().unwrap();
         state.refill(Instant::now());
         loop {
-            // The waiting flow that has been given the least (ties: the oldest id).
+            // A flow with credit for its reserve first; otherwise the waiting flow
+            // that has been given the least (ties: the oldest id).
             let next = state
                 .flows
                 .iter_mut()
@@ -146,10 +181,11 @@ impl Limiter {
                     while flow.waiting.front().is_some_and(|request| request.grant.is_closed()) {
                         flow.waiting.pop_front();
                     }
-                    flow.waiting.front().map(|request| (flow.served, *id, request.bytes))
+                    let bytes = flow.waiting.front()?.bytes;
+                    Some((!flow.first_in_line(bytes), flow.served, *id, bytes))
                 })
                 .min();
-            let (served, id, bytes) = next?;
+            let (_, served, id, bytes) = next?;
             if let Some(rate) = state.rate {
                 let missing = bytes as f64 - state.tokens;
                 if missing > 0.0 {
@@ -157,9 +193,21 @@ impl Limiter {
                 }
                 state.tokens -= bytes as f64;
             }
-            state.clock = served;
+            // A reserved flow served ahead of its turn doesn't move the others' clock.
+            state.clock = state.clock.max(
+                served.min(
+                    state
+                        .flows
+                        .values()
+                        .filter(|flow| !flow.waiting.is_empty())
+                        .map(|flow| flow.served)
+                        .min()
+                        .unwrap_or(served),
+                ),
+            );
             let flow = state.flows.get_mut(&id).expect("just found");
             flow.served += bytes;
+            flow.credit = (flow.credit - bytes as f64).max(0.0);
             if let Some(request) = flow.waiting.pop_front() {
                 let _ = request.grant.send(());
             }
@@ -179,6 +227,12 @@ impl State {
         self.refilled = now;
         if let Some(rate) = self.rate {
             self.tokens = (self.tokens + elapsed * rate as f64).min(self.capacity());
+        }
+        for flow in self.flows.values_mut() {
+            if let Some(reserve) = flow.reserve {
+                let reserve = reserve as f64;
+                flow.credit = (flow.credit + elapsed * reserve).min(reserve * RESERVE_SAVINGS);
+            }
         }
     }
 }
@@ -305,6 +359,61 @@ mod tests {
         }
         assert_eq!(Instant::now(), lifted);
         assert!(read(&count) > held + 100 * CHUNK as u64);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_recording_gets_its_reserve_ahead_of_the_others() {
+        let limiter = limiter(Some(4 * MB));
+        limiter.set_reserve(1, Some(3 * MB));
+        let live = reader(&limiter, 1, None);
+        let other = reader(&limiter, 2, None);
+        tokio::time::sleep(Duration::from_secs(4)).await;
+
+        // A fair share would be 2 MB/s each; the recording needs 3.
+        assert_near(read(&live), 12 * MB, MB / 2);
+        assert_near(read(&other), 4 * MB, MB / 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_reserve_below_the_fair_share_changes_nothing() {
+        let limiter = limiter(Some(4 * MB));
+        limiter.set_reserve(1, Some(MB));
+        let live = reader(&limiter, 1, None);
+        let other = reader(&limiter, 2, None);
+        tokio::time::sleep(Duration::from_secs(4)).await;
+
+        assert_near(read(&live), 8 * MB, MB / 2);
+        assert_near(read(&other), 8 * MB, MB / 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_reserve_above_the_limit_takes_all_of_it() {
+        let limiter = limiter(Some(2 * MB));
+        limiter.set_reserve(1, Some(5 * MB));
+        let live = reader(&limiter, 1, None);
+        let other = reader(&limiter, 2, None);
+        tokio::time::sleep(Duration::from_secs(4)).await;
+
+        assert_near(read(&live), 8 * MB, MB / 4);
+        assert!(read(&other) < MB / 4, "the other download got {}", read(&other));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_recording_saves_up_for_the_segments_it_fetches_in_bursts() {
+        let limiter = limiter(Some(4 * MB));
+        limiter.set_reserve(1, Some(MB));
+        let other = reader(&limiter, 2, None);
+        // Idle for 4 s while the other download takes everything …
+        tokio::time::sleep(Duration::from_secs(4)).await;
+        let before = read(&other);
+        // … then a 4 MB segment arrives: it goes first, at the whole limit.
+        let started = Instant::now();
+        for _ in 0..(4 * MB / CHUNK as u64) {
+            limiter.acquire(1, CHUNK).await;
+        }
+        let took = started.elapsed();
+        assert!(took < Duration::from_millis(1100), "the segment took {took:?}");
+        assert!(read(&other) - before < MB / 2);
     }
 
     #[tokio::test(start_paused = true)]
