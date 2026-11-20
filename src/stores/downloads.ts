@@ -189,7 +189,8 @@ export const useDownloads = create<DownloadsState>((set, get) => {
     recover: async () => {
       endedWhileRecovering = [];
       const recovered = await ipc.recoverRecordings().catch(() => []);
-      const ended = endedWhileRecovering;
+      // A second call while this one waited (React runs effects twice in development) has taken the list already.
+      const ended = endedWhileRecovering ?? [];
       endedWhileRecovering = null;
       for (const recording of recovered) {
         const progress: Progress = { stage: "finalizing", fraction: 0, speed: null, eta: null };
