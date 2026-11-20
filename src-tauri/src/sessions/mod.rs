@@ -421,9 +421,12 @@ impl Sessions {
     }
 }
 
-/// A site name made safe as a file name (it already is, coming from a host name).
+/// A site name made safe as a file name (it already is, coming from a host
+/// name). A name of dots alone, or none, would be the folder itself or the
+/// one above it, and signing out would delete that: it gets a `_` in front.
 fn file_name(site: &str) -> String {
-    site.chars()
+    let name: String = site
+        .chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || matches!(c, '.' | '-') {
                 c
@@ -431,7 +434,12 @@ fn file_name(site: &str) -> String {
                 '_'
             }
         })
-        .collect()
+        .collect();
+    if name.chars().all(|c| c == '.') {
+        format!("_{name}")
+    } else {
+        name
+    }
 }
 
 /// A temporary `cookies.txt` for one yt-dlp run. Dropping it, which happens
@@ -768,6 +776,25 @@ mod tests {
         assert!(!sessions.jar_path("youtube.com").exists());
         assert!(!sessions.profile_dir("youtube.com").exists());
         assert!(sessions.cookie_file("https://youtu.be/abc").is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn signing_out_of_a_name_of_dots_deletes_nothing_else() {
+        let dir = scratch("dots");
+        let sessions = Arc::new(Sessions::at(dir.clone()));
+        sessions
+            .save("youtube.com", vec![cookie("youtube.com", "SID", "1")], Method::Window)
+            .unwrap();
+        std::fs::create_dir_all(sessions.profile_dir("youtube.com")).unwrap();
+        for name in ["..", ".", ""] {
+            assert!(sessions.profile_dir(name).starts_with(dir.join("profiles")));
+            assert_ne!(sessions.profile_dir(name), dir.join("profiles"));
+            sessions.sign_out(name);
+        }
+        assert!(sessions.jar_path("youtube.com").exists());
+        assert!(sessions.profile_dir("youtube.com").exists());
+        assert_eq!(sessions.list().len(), 1);
         let _ = std::fs::remove_dir_all(dir);
     }
 
