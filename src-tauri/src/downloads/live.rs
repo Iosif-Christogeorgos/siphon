@@ -108,6 +108,17 @@ impl Recording {
     fn bytes(&self) -> u64 {
         self.files().map(|file| file_size(file)).sum()
     }
+
+    /// The name its file gets, without the extension: the recorded files'
+    /// name without what Siphon added (see `args::recording_stem`).
+    fn stem(&self) -> String {
+        self.files()
+            .next()
+            .and_then(|file| file.file_stem())
+            .and_then(|stem| stem.to_str())
+            .map(|stem| args::recording_stem(stem).to_string())
+            .unwrap_or_else(|| "Recording".to_string())
+    }
 }
 
 /// A recording finished after Siphon started again, for the frontend's list.
@@ -598,23 +609,75 @@ impl DownloadManager {
 
     /// Makes a recording into its file: joins its parts, copies or converts
     /// them as its recipe says, checks the result, and only then removes what
-    /// was recorded. If there's no room to make it, or it doesn't pass its
-    /// checks, the recording is kept as it was recorded.
+    /// was recorded. If there's no room to make it, it doesn't pass its
+    /// checks, or anything else goes wrong, the recording is kept as it was
+    /// recorded. Only Siphon closing leaves it to be finished next time.
     async fn finalize(&self, job: &JobContext<'_>, recording: &Recording) -> Result<Done> {
         report(job, Stage::Finalizing, 0.0, LiveProgress::default());
-        let work = work_dir(job.app, job.id)?;
-        tokio::fs::create_dir_all(&work).await?;
-        let result = self.finalize_in(job, recording, &work).await;
-        let _ = tokio::fs::remove_dir_all(&work).await;
-        match (&result, self.stop_of(job.id)) {
-            (Ok(_), _) => self.forget_recording(job.id, false).await,
+        let result = match work_dir(job.app, job.id) {
+            Ok(work) => {
+                let result = match tokio::fs::create_dir_all(&work).await {
+                    Ok(()) => self.finalize_in(job, recording, &work).await,
+                    Err(error) => Err(error.into()),
+                };
+                let _ = tokio::fs::remove_dir_all(&work).await;
+                result
+            }
+            Err(error) => Err(error),
+        };
+        match (result, self.stop_of(job.id)) {
+            (Ok(done), _) => {
+                self.forget_recording(job.id, false).await;
+                Ok(done)
+            }
             // Cancelled: thrown away, as while recording.
-            (Err(_), Some(Stop::Cancel)) => self.forget_recording(job.id, true).await,
+            (Err(error), Some(Stop::Cancel)) => {
+                self.forget_recording(job.id, true).await;
+                Err(error)
+            }
             // Siphon is closing: the recording stays as it was recorded, and
             // is finished when Siphon starts again.
-            _ => {}
+            (Err(error), Some(_)) => Err(error),
+            // A step failed in a way that would fail again (joining a recording
+            // from the start, the disk): the recording is kept as it was
+            // recorded, rather than tried again at every start.
+            (Err(error), None) => self.keep_after_failure(job, recording, error).await,
         }
-        result
+    }
+
+    /// Keeps a recording whose finishing failed as it was recorded, file by
+    /// file. If even that fails, it is forgotten (its files stay where they
+    /// are), so it isn't tried again at every start.
+    async fn keep_after_failure(&self, job: &JobContext<'_>, recording: &Recording, error: AppError) -> Result<Done> {
+        log::line(
+            job.app,
+            &format!(
+                "record {}: couldn't be finished ({}); keeping it as recorded",
+                recording.title,
+                error.details.as_deref().unwrap_or(&error.message)
+            ),
+        );
+        let files: Vec<PathBuf> = recording.files().filter(|file| file_size(file) > 0).cloned().collect();
+        if files.is_empty() {
+            self.forget_recording(job.id, true).await;
+            return Err(error);
+        }
+        match self
+            .keep_as_recorded(
+                job,
+                recording,
+                &recording.stem(),
+                &files,
+                "Making it into its file didn't work out.",
+            )
+            .await
+        {
+            Ok(done) => Ok(done),
+            Err(_) => {
+                self.forget_recording(job.id, false).await;
+                Err(error)
+            }
+        }
     }
 
     async fn finalize_in(&self, job: &JobContext<'_>, recording: &Recording, work: &Path) -> Result<Done> {
@@ -652,14 +715,7 @@ impl DownloadManager {
                 .unwrap_or(0.0);
         }
         let raw_bytes: u64 = inputs.iter().map(|input| file_size(input)).sum();
-        let stem = recording
-            .files()
-            .next()
-            .or(Some(first))
-            .and_then(|file| file.file_stem())
-            .and_then(|stem| stem.to_str())
-            .map(|stem| args::recording_stem(stem).to_string())
-            .unwrap_or_else(|| "Recording".to_string());
+        let stem = recording.stem();
         let mut recipe = recording.recipe.clone();
         recipe.duration = Some(recorded);
 
@@ -803,6 +859,14 @@ impl DownloadManager {
         why: &str,
     ) -> Result<Done> {
         let mut kept = Vec::new();
+        // One file for each stretch of the stream, or (when even joining a
+        // recording from the start failed) its picture and sound apart.
+        let stretches = recording
+            .parts
+            .iter()
+            .filter(|part| part.iter().any(|file| file_size(file) > 0))
+            .count();
+        let one_per_stretch = inputs.len() == stretches;
         // MPEG-TS as recorded from now on; Matroska for video and audio a recording from the start joined.
         let ext_of = |input: &PathBuf| {
             input
@@ -825,10 +889,10 @@ impl DownloadManager {
         // Whatever is left (a video and audio pair that was joined) has a joined copy now.
         remove_recorded(recording).await;
         self.forget_recording(job.id, false).await;
-        let parts = if kept.len() > 1 {
-            format!(" in {} parts, one for each stretch of the stream", kept.len())
-        } else {
-            String::new()
+        let parts = match kept.len() {
+            1 => String::new(),
+            count if one_per_stretch => format!(" in {count} parts, one for each stretch of the stream"),
+            count => format!(" in {count} files"),
         };
         let first = kept.remove(0);
         let ext = ext_of(&first);
