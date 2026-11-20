@@ -147,8 +147,13 @@ impl Planner<'_> {
                     recipe.hints.push(info(note));
                 }
                 if recipe.encodes_audio() {
-                    let source = recipe.audio.as_ref().map_or("this", |audio| audio.source.label());
-                    recipe.reason = Some(format!("{} can’t play {source} audio in this file type", target.name));
+                    recipe.reason = Some(match recipe.audio.as_ref().map(|audio| audio.source) {
+                        // TED and others don't say: "can't play audio audio" said nothing.
+                        Some(AudioCodec::Other) | None => "the site doesn’t say what kind it is".to_string(),
+                        Some(source) => {
+                            format!("{} can’t play {} audio in this file type", target.name, source.label())
+                        }
+                    });
                 }
                 // Apple's players are strict about streams whose encoder
                 // settings change partway, as a smart cut's do at its joins,

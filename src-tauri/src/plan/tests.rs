@@ -1177,3 +1177,30 @@ fn a_subtitle_track_goes_in_as_the_file_type_holds_it() {
     assert!(windows.contains("-c:s srt -metadata:s:s:0 language=gre"), "{windows}");
     assert!(windows.contains("-metadata:s:s:0 title=Greek"), "{windows}");
 }
+
+#[test]
+fn audio_of_an_unnamed_kind_is_called_what_it_is() {
+    // TED (2026-11-20): H.264 video, audio whose codec the site doesn't name.
+    let mut sound = audio("hls-audio", "none", 128.0);
+    sound.acodec = None;
+    sound.ext = "mp4".into();
+    let video = info(vec![video("hls-1080", "avc1.640028", 480, 30.0, 1500.0), sound], 60.0);
+    let recipe = plan_for(&video, TargetId::Windows);
+    assert!(recipe.encodes_audio());
+    assert_eq!(recipe.reason.as_deref(), Some("the site doesn’t say what kind it is"));
+    let summary = explain::summarize(
+        &video,
+        &Choice::Preset(preset(TargetId::Windows)),
+        None,
+        &Capabilities::BASIC,
+    )
+    .unwrap();
+    assert!(
+        summary
+            .detail
+            .contains("only the audio is converted to AAC because the site doesn’t say"),
+        "{}",
+        summary.detail
+    );
+    assert!(!summary.detail.contains("audio audio"));
+}

@@ -218,10 +218,11 @@ fn streams_detail(recipe: &Recipe) -> String {
         VideoAction::Copy if recipe.encodes_audio() => {
             let audio = recipe.audio.as_ref().expect("encodes_audio implies audio");
             let target = recipe.audio_codec().map(AudioCodec::label).unwrap_or("AAC");
-            format!(
-                "{promise}. The video is untouched; only the audio is converted from {} to {target}{reason}.{cut}",
-                audio.source.label()
-            )
+            let from = match audio.source {
+                AudioCodec::Other => String::new(),
+                source => format!(" from {}", source.label()),
+            };
+            format!("{promise}. The video is untouched; only the audio is converted{from} to {target}{reason}.{cut}")
         }
         VideoAction::Copy if recipe.smart_cut() => format!("{promise}. Original streams.{cut}"),
         VideoAction::Copy => format!("{promise}. Original streams, no re-encoding."),
