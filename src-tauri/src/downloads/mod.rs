@@ -89,8 +89,11 @@ pub struct DownloadRequest {
 /// How a job ended well: the finished file, and anything worth saying about it.
 pub struct Done {
     pub path: PathBuf,
-    /// "Saved as it was recorded (.ts): …", when the file isn't what was asked for.
+    /// Something worth saying about the file: why it was kept as recorded,
+    /// or that the disk filled up.
     pub note: Option<String>,
+    /// A recording kept as it was recorded, rather than made into the preset's file.
+    pub as_recorded: bool,
 }
 
 /// A playlist video's folder and number. Sent again, unchanged, on every
@@ -164,6 +167,9 @@ pub enum DownloadEvent {
         /// Anything worth saying about the file (a recording kept as it was recorded, and why).
         #[serde(skip_serializing_if = "Option::is_none")]
         note: Option<String>,
+        /// A recording kept as it was recorded (see `note`), not made into the preset's file.
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        as_recorded: bool,
         /// A recording that was cut short by Siphon closing or crashing, finished after it started again.
         #[serde(skip_serializing_if = "std::ops::Not::not")]
         recovered: bool,
@@ -442,7 +448,11 @@ impl DownloadManager {
                     Ok(flow) => {
                         manager.attach_flow(&id, flow);
                         let run = manager.run(&job(), &url, &request.choice, request.trim, account).await;
-                        run.map(|path| Done { path, note: None })
+                        run.map(|path| Done {
+                            path,
+                            note: None,
+                            as_recorded: false,
+                        })
                     }
                     Err(error) => Err(error),
                 };
@@ -478,6 +488,7 @@ impl DownloadManager {
             size: std::fs::metadata(&done.path).ok().map(|meta| meta.len()),
             path: done.path.to_string_lossy().into_owned(),
             note: done.note,
+            as_recorded: done.as_recorded,
             recovered,
             id,
         }

@@ -495,8 +495,10 @@ export type DownloadEvent =
       id: string;
       path: string;
       size: number | null;
-      /** Something worth saying about the file: a recording kept as recorded, and why. */
+      /** Something worth saying about the file: why a recording was kept as recorded, or that the disk filled up. */
       note?: string;
+      /** A recording kept as it was recorded, not made into the preset's file. */
+      as_recorded?: boolean;
       /** A recording Siphon's closing cut short, finished once it started again. */
       recovered?: boolean;
     }

@@ -34,8 +34,10 @@ export interface Download extends DownloadSource {
   account?: boolean;
   /** A live recording: records the stream (waiting for it to start) instead of downloading a file. */
   record?: RecordRequest | null;
-  /** Something worth saying about the finished file (a recording kept as recorded, and why). */
+  /** Something worth saying about the finished file (why a recording was kept as recorded, or that the disk filled up). */
   note?: string;
+  /** A recording kept as it was recorded, not made into the preset's file. Missing on recordings finished before 0.13.1. */
+  asRecorded?: boolean;
   /** A recording Siphon's closing cut short, finished once it started again. */
   recovered?: boolean;
 }
@@ -273,6 +275,7 @@ export const useDownloads = create<DownloadsState>((set, get) => {
             path: event.path,
             size: event.size,
             note: event.note,
+            asRecorded: event.as_recorded === true,
             recovered: event.recovered || get().byId[event.id]?.recovered,
             finishedAt: Date.now(),
             progress: { stage: "finishing", fraction: 1, speed: null, eta: null },

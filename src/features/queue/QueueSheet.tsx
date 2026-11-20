@@ -351,7 +351,11 @@ function statusPieces(download: Download): { key: string; node: ReactNode }[] {
             node: (
               <>
                 <Info />
-                Saved as recorded
+                {/* The other note says the disk filled up and the recording stopped there. Rows
+                    from before 0.13.1 have no flag, but their note says which it is. */}
+                {(download.asRecorded ?? download.note.includes("saved as it was recorded"))
+                  ? "Saved as recorded"
+                  : "Stopped early"}
               </>
             ),
           },
