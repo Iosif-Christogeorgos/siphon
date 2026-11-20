@@ -310,7 +310,7 @@ export function PlaylistPane({ playlist, onOpen }: { playlist: PlaylistInfo; onO
           </div>
 
           <div className="pt-1">
-            <PresetArea summary={undefined} disabled={false} playlist />
+            <PresetArea summary={undefined} disabled={false} playlist subtitles="playlist" />
           </div>
           <p className="px-1 text-[13px] text-pretty text-muted-foreground">
             The best streams and format for each video are worked out from what it offers when its turn comes.

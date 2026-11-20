@@ -10,6 +10,7 @@ import { LiveWaitCard, Note, PlanCard } from "@/features/options/PlanCard";
 import { PresetArea } from "@/features/presets/PresetArea";
 import { TrimPanel } from "@/features/trim/TrimPanel";
 import { ipc, toAppError } from "@/lib/ipc";
+import { languageName, subtitleLanguages } from "@/lib/languages";
 import { spring } from "@/lib/motion";
 import { useChoice, useChoices } from "@/stores/choices";
 import { isActive, useDownloadGroup, useDownloads } from "@/stores/downloads";
@@ -20,6 +21,18 @@ import { VideoCard } from "./VideoCard";
 
 /** Several recordings at once are fine; past this many, the sites may start to wonder. */
 const MANY_RECORDINGS = 3;
+
+/** "No Greek subtitles for this video. It has English and German." */
+function missingSubtitles(wanted: string, video: VideoInfo): string {
+  const others = subtitleLanguages(video.subtitles).map((language) => language.name);
+  const has =
+    others.length === 0
+      ? "It has none."
+      : others.length > 3
+        ? `It has ${others.length} other languages.`
+        : `It has ${others.slice(0, -1).join(", ")}${others.length > 1 ? " and " : ""}${others.at(-1)}.`;
+  return `No ${languageName(wanted)} subtitles for this video. ${has}`;
+}
 
 /** Everything shown for a loaded video: the card, the trimmer, the choices, the plan and the button. */
 export function VideoPane({ video }: { video: VideoInfo }) {
@@ -102,6 +115,14 @@ export function VideoPane({ video }: { video: VideoInfo }) {
     // Keep showing the last plan while the next one is computed, so the layout doesn't jump.
     placeholderData: keepPreviousData,
   });
+  // What the plan does with subtitles, and whether the language asked for is missing here.
+  const wantedSubtitles = useChoices((state) => state.choices?.subtitles ?? null);
+  const subtitleTrack = video.subtitles.find((track) => track.key === plan.data?.subtitle_track);
+  const subtitleLabel = subtitleTrack
+    ? `${subtitleTrack.name ?? languageName(subtitleTrack.lang)} subtitles${plan.data?.subtitle_delivery === "file" ? " as an SRT file" : ""}`
+    : null;
+  const subtitlesMissing =
+    !live && wantedSubtitles !== null && plan.data?.subtitle_delivery != null && plan.data.subtitle_track === null;
   const openTrim = () => useTrim.getState().openFor(video.duration ?? 0);
   const blocked = plan.data?.blocked ?? null;
   const canTrim = video.duration && !trimOpen && !live;
@@ -144,6 +165,7 @@ export function VideoPane({ video }: { video: VideoInfo }) {
           disabled={running}
           live={live !== null}
           from={fromStartOffered.data ? { start: fromStart, onChange: setFromStart } : undefined}
+          subtitles={live ? undefined : video.subtitles}
         />
         <AnimatePresence initial={false}>
           {customizing && (
@@ -174,8 +196,17 @@ export function VideoPane({ video }: { video: VideoInfo }) {
           }
           onTrim={canTrim ? openTrim : undefined}
           perHour={live !== null}
+          subtitles={subtitleLabel}
         />
       )}
+
+      <AnimatePresence initial={false}>
+        {subtitlesMissing && (
+          <Note key="no-subtitles" warning={false}>
+            {missingSubtitles(wantedSubtitles, video)}
+          </Note>
+        )}
+      </AnimatePresence>
 
       <AnimatePresence initial={false}>
         {live && !running && recordings >= MANY_RECORDINGS && (

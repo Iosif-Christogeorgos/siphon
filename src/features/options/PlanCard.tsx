@@ -37,6 +37,7 @@ export function PlanCard({
   onCustomize,
   onTrim,
   perHour = false,
+  subtitles,
 }: {
   plan: PlanSummary | undefined;
   clips: number;
@@ -47,6 +48,8 @@ export function PlanCard({
   onTrim?: () => void;
   /** A recording: sizes are for each hour of it. */
   perHour?: boolean;
+  /** What the plan does with subtitles, in a few words: "English subtitles". */
+  subtitles?: string | null;
 }) {
   if (!plan) {
     return (
@@ -112,6 +115,7 @@ export function PlanCard({
           <p className="text-xs text-muted-foreground">
             <span className={cn(badge.accent && "text-primary")}>{badge.label}</span>
             {time && ` · ${time}`}
+            {subtitles && ` · ${subtitles}`}
           </p>
         </div>
 

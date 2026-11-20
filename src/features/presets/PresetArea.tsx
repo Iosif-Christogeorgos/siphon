@@ -7,7 +7,8 @@ import { formatBytes, formatBytesRange } from "@/lib/format";
 import { iconFor } from "@/lib/icons";
 import { spring } from "@/lib/motion";
 import { currentTarget, useChoices, useRegistry } from "@/stores/choices";
-import type { Choices, PlanSummary, QualityOption, Registry, Target } from "@/types";
+import type { Choices, PlanSummary, QualityOption, Registry, SubtitleTrack, Target } from "@/types";
+import { SubtitlesFacet } from "./SubtitlesFacet";
 
 /** Resolutions offered for a playlist, where no single video's formats are known. */
 const PLAYLIST_LADDER = [2160, 1440, 1080, 720, 480, 360];
@@ -27,6 +28,7 @@ export function PresetArea({
   playlist = false,
   live = false,
   from,
+  subtitles,
 }: {
   /** The plan for the current choice; gives the quality facet its options and sizes. */
   summary: PlanSummary | undefined;
@@ -37,6 +39,8 @@ export function PresetArea({
   live?: boolean;
   /** Where the site keeps what already aired: record from now, or from the start. */
   from?: { start: boolean; onChange: (start: boolean) => void };
+  /** The video's subtitle tracks, or "playlist" for videos that each have their own; none for a stream as it airs. */
+  subtitles?: SubtitleTrack[] | "playlist";
 }) {
   const registry = useRegistry();
   const choices = useChoices((state) => state.choices);
@@ -47,6 +51,16 @@ export function PresetArea({
   const group = registry.groups.find((candidate) => candidate.id === choices.group) ?? registry.groups[0];
   const target = currentTarget(registry, choices);
   if (!group || !target) return null;
+  // Subtitles: for a video that has some, or a playlist; never for a sound-only preset.
+  const hasSubtitles = subtitles === "playlist" || (subtitles !== undefined && subtitles.length > 0);
+  const showSubtitles = hasSubtitles && !(presetActive && group.id === "audio");
+  const audioOnly = !presetActive && (choices.active.kind === "custom" ? choices.custom.content === "audio_only" : false);
+  const noSubtitles =
+    presetActive && group.id === "share"
+      ? "Discord, WhatsApp and short-video apps don't show subtitle tracks."
+      : summary?.subtitle_delivery === null || (summary === undefined && audioOnly)
+        ? "Audio files can't hold subtitles."
+        : undefined;
 
   return (
     // No margin class here: it would cancel the parent's `space-y`, and Tailwind's base styles already zero it.
@@ -117,6 +131,13 @@ export function PresetArea({
                 { id: "now", label: "Now", detail: "As it airs" },
                 { id: "start", label: "The start", detail: "Catches up, then live" },
               ]}
+            />
+          )}
+          {showSubtitles && (
+            <SubtitlesFacet
+              tracks={subtitles === "playlist" ? null : (subtitles ?? null)}
+              disabled={disabled}
+              unavailable={noSubtitles}
             />
           )}
           <SavedFacet choices={choices} disabled={disabled} />

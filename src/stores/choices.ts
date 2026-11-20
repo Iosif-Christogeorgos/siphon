@@ -22,6 +22,8 @@ interface ChoicesState {
   setTier: (target: TargetId, tier: TierId) => void;
   setMusicFormat: (format: MusicFormat) => void;
   setSmoothEditing: (smooth: boolean) => void;
+  /** The language subtitles are wanted in, for every video that has it; null is none. */
+  setSubtitles: (language: string | null) => void;
   /** Opens the custom settings, starting from the ones last used. */
   customize: () => void;
   setCustom: (changes: Partial<ManualOptions>) => void;
@@ -77,6 +79,7 @@ export const useChoices = create<ChoicesState>((set, get) => {
     setTier: (target, tier) => change((choices) => ({ tiers: { ...choices.tiers, [target]: tier } })),
     setMusicFormat: (music_format) => change(() => ({ music_format })),
     setSmoothEditing: (smooth_editing) => change(() => ({ smooth_editing })),
+    setSubtitles: (subtitles) => change(() => ({ subtitles })),
 
     customize: () =>
       change((choices) => {
