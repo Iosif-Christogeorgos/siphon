@@ -1168,7 +1168,7 @@ fn a_subtitle_track_goes_in_as_the_file_type_holds_it() {
     let apple = args(TargetId::Apple);
     assert!(apple.contains("-i subtitles.srt"), "{apple}");
     assert!(
-        apple.contains("-map 1:0 -c:s mov_text -metadata:s:s:0 language=ell"),
+        apple.contains("-map 1:0 -c:s mov_text -tag:s tx3g -metadata:s:s:0 language=ell"),
         "{apple}"
     );
     assert!(apple.contains("-disposition:s:0 default"), "{apple}");

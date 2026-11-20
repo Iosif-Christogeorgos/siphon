@@ -209,6 +209,12 @@ fn subtitle_codec_args(step: &SubtitleStep, container: Container) -> Vec<String>
         _ => "srt",
     };
     let mut args: Vec<String> = vec!["-c:s".into(), codec.into()];
+    if codec == "mov_text" {
+        // Apple's players show a subtitle track tagged "tx3g" (with the "sbtl"
+        // handler that tag brings), and ignore others. ffmpeg tags it so in
+        // MP4, but "text" in MOV unless told (checked 2026-11-20).
+        args.extend(["-tag:s".into(), "tx3g".into()]);
+    }
     // Matroska and WebM name languages the bibliographic way ("gre"), MP4 the other ("ell").
     let bibliographic = matches!(container, Container::Mkv | Container::Webm);
     if let Some(code) = iso639_2(&step.lang, bibliographic) {

@@ -1426,7 +1426,7 @@ mod tests {
         .collect::<Vec<_>>()
         .join(" ");
         assert!(
-            with.contains("-i audio.mka -i subtitles.srt -map 0:v:0 -map 1:a:0 -c copy -map 2:0 -c:s mov_text -metadata:s:s:0 language=ell"),
+            with.contains("-i audio.mka -i subtitles.srt -map 0:v:0 -map 1:a:0 -c copy -map 2:0 -c:s mov_text -tag:s tx3g -metadata:s:s:0 language=ell"),
             "{with}"
         );
         assert!(
