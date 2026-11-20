@@ -703,17 +703,25 @@ impl DownloadManager {
             return Err(AppError::new(ErrorKind::Unavailable, "Nothing was recorded."));
         };
 
-        // How long it is, for the check and the progress.
-        let mut recorded = 0.0;
+        let mut probes = Vec::new();
         for input in &inputs {
-            // What has picture and sound both: from the start, stopped while
-            // catching up, the sound may have run far ahead.
-            recorded += self
-                .probe(job, input)
-                .await
-                .and_then(|probed| probed.common_length())
-                .unwrap_or(0.0);
+            probes.push(self.probe(job, input).await);
         }
+        // How long it is, for the check and the progress: what has picture and
+        // sound both (from the start, stopped while catching up, the sound may
+        // have run far ahead). Several parts are each ended there (see
+        // `ffmpeg::concat_list`), which also says how long they are together.
+        let parts: Vec<(&Path, Option<&Probed>)> = inputs
+            .iter()
+            .zip(&probes)
+            .map(|(input, probed)| (input.as_path(), probed.as_ref()))
+            .collect();
+        let (list_text, joined_length) = ffmpeg::concat_list(&parts);
+        let recorded = if inputs.len() == 1 {
+            probes[0].as_ref().and_then(Probed::common_length).unwrap_or(0.0)
+        } else {
+            joined_length
+        };
         let raw_bytes: u64 = inputs.iter().map(|input| file_size(input)).sum();
         let stem = recording.stem();
         let mut recipe = recording.recipe.clone();
@@ -742,11 +750,7 @@ impl DownloadManager {
         let input = if inputs.len() == 1 {
             Recorded::File(first)
         } else {
-            let lines: String = inputs
-                .iter()
-                .map(|input| format!("file '{}'\n", input.to_string_lossy().replace('\'', r"'\''")))
-                .collect();
-            tokio::fs::write(&list, lines).await?;
+            tokio::fs::write(&list, list_text).await?;
             Recorded::List(&list)
         };
         let output = self.unique_output(

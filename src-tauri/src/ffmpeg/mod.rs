@@ -390,6 +390,30 @@ pub fn finalize_args(recipe: &Recipe, input: Recorded, output: &Path) -> Vec<OsS
     args
 }
 
+/// The concat demuxer's list for a recording in several parts (the stream
+/// dropped and came back), and how long the joined recording is.
+///
+/// The demuxer lays each part after the last at the part's full length,
+/// from its start to whichever track ends last, so a part whose sound ends
+/// before its picture would push everything after it later. Each part is
+/// ended where its picture and sound both end (`outpoint`), and its length
+/// counted from its start to there, which is how the demuxer counts it.
+/// A part that couldn't be read is listed whole and counts nothing; the
+/// finished file then fails its length check and is kept as recorded.
+pub fn concat_list(parts: &[(&Path, Option<&Probed>)]) -> (String, f64) {
+    let mut list = String::new();
+    let mut length = 0.0;
+    for (file, probed) in parts {
+        list.push_str(&format!("file '{}'\n", file.to_string_lossy().replace('\'', r"'\''")));
+        let span = probed.and_then(|probed| Some((probed.start?, probed.common_end()?)));
+        if let Some((start, end)) = span.filter(|(start, end)| end > start) {
+            list.push_str(&format!("outpoint {end:.6}\n"));
+            length += end - start;
+        }
+    }
+    (list, length)
+}
+
 /// The arguments that join the video and audio files a recording from the
 /// start left (stopped, or cut short, before yt-dlp joined them) into one
 /// Matroska file. Not MPEG-TS: YouTube's best video there is often VP9, which
@@ -416,7 +440,7 @@ pub fn probe_args(file: &Path) -> Vec<OsString> {
         "error",
         "-show_entries",
         // Matroska and WebM state no length per track, only a DURATION tag.
-        "format=duration:stream=codec_type,start_time,duration:stream_tags=DURATION",
+        "format=duration,start_time:stream=codec_type,start_time,duration:stream_tags=DURATION",
         "-of",
         "json",
     ]
@@ -447,6 +471,8 @@ pub fn decode_check_args(file: &Path, at_end: bool) -> Vec<OsString> {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Probed {
     pub duration: Option<f64>,
+    /// Where the file starts: the earliest of its tracks (data tracks too).
+    pub start: Option<f64>,
     /// Start and length of the first video track.
     pub video: Option<(f64, f64)>,
     pub audio: Option<(f64, f64)>,
@@ -467,6 +493,7 @@ impl Probed {
         };
         let mut probed = Probed {
             duration: number(&value["format"]["duration"]),
+            start: number(&value["format"]["start_time"]),
             ..Probed::default()
         };
         for stream in value["streams"].as_array()? {
@@ -492,6 +519,17 @@ impl Probed {
                 Some((end - video_start.max(audio_start)).max(0.0))
             }
             _ => self.duration,
+        }
+    }
+
+    /// Where the part of the file with picture and sound both ends, as a
+    /// timestamp in the file (with only one of them, where that ends).
+    pub fn common_end(&self) -> Option<f64> {
+        let end = |(start, length): (f64, f64)| start + length;
+        match (self.video, self.audio) {
+            (Some(video), Some(audio)) => Some(end(video).min(end(audio))),
+            (Some(track), None) | (None, Some(track)) => Some(end(track)),
+            (None, None) => Some(self.start? + self.duration?),
         }
     }
 
@@ -581,6 +619,7 @@ mod recording_tests {
             video: Some((0.0, 600.0)),
             audio: Some((0.0, 2860.0)),
             duration: Some(2860.0),
+            start: Some(0.0),
         };
         assert_eq!(ahead.common_length(), Some(600.0));
         // Matroska: lengths only in tags. A recording from the start that came
@@ -610,6 +649,35 @@ mod recording_tests {
             ..probed
         };
         assert!(late.matches(38.0, true, true).unwrap_err().contains("starts"));
+    }
+
+    #[test]
+    fn each_part_of_a_recording_ends_where_its_picture_and_sound_both_do() {
+        // Two parts whose sound ends before their picture (measured 2026-11-20).
+        let part = |video: f64, audio: f64| {
+            Probed::parse(&format!(
+                r#"{{"streams":[{{"codec_type":"video","start_time":"1.466667","duration":"{video}"}},
+                    {{"codec_type":"audio","start_time":"1.443444","duration":"{audio}"}}],
+                    "format":{{"start_time":"1.443444","duration":"{}"}}}}"#,
+                video + 0.023223
+            ))
+            .unwrap()
+        };
+        let (first, second) = (part(20.0, 17.902578), part(15.0, 13.026389));
+        let (list, length) = concat_list(&[
+            (Path::new(r"C:\rec\Show.rec1.ts"), Some(&first)),
+            (Path::new(r"C:\rec\Show's.rec2.ts"), Some(&second)),
+        ]);
+        assert_eq!(
+            list,
+            "file 'C:\\rec\\Show.rec1.ts'\noutpoint 19.346022\nfile 'C:\\rec\\Show'\\''s.rec2.ts'\noutpoint 14.469833\n"
+        );
+        // From each part's start to its outpoint, as the demuxer lays them out:
+        // not their full lengths (35.05 s), and not only what has both (30.88 s).
+        assert!((length - (17.902578 + 13.026389)).abs() < 1e-6);
+        // A part that can't be read is listed whole, and counts nothing.
+        let (list, length) = concat_list(&[(Path::new(r"C:\rec\x.ts"), None)]);
+        assert_eq!((list.as_str(), length), ("file 'C:\\rec\\x.ts'\n", 0.0));
     }
 
     #[test]
