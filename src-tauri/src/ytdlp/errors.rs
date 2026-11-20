@@ -287,11 +287,18 @@ pub fn is_offline(log: &str) -> bool {
 /// stream that stops sending ends ffmpeg without an error too, but leaves
 /// "HTTP error 404" and "Failed to reload playlist" in its log (seen
 /// 2026-11-19); that one may come back, and is waited for.
+/// Siphon's own progress lines are left out: recording from the start, yt-dlp
+/// prints them there, and they carry the file's path, so a title or folder
+/// with "error" or "connection" in it would read as a stream that dropped.
 pub fn stream_over(log: &str) -> bool {
-    let log = log.to_lowercase();
-    !["error", "failed", "timed out", "connection"]
-        .iter()
-        .any(|word| log.contains(word))
+    log.lines()
+        .filter(|line| !line.contains("SIPHON_"))
+        .map(str::to_lowercase)
+        .all(|line| {
+            !["error", "failed", "timed out", "connection"]
+                .iter()
+                .any(|word| line.contains(word))
+        })
 }
 
 /// Classifies a failed run. `log` is everything yt-dlp wrote to stderr.
@@ -332,6 +339,10 @@ mod tests {
         // From the start, yt-dlp's own progress lines are all there is.
         assert!(stream_over(
             "1: SIPHON_DL|downloading|1024|NA|NA|140|none|mp4a.40.2|C:\r.f140.mkv"
+        ));
+        // … whatever the stream is called, or the folder it goes to.
+        assert!(stream_over(
+            "1: SIPHON_DL|downloading|1024|NA|NA|140|none|mp4a.40.2|D:\\Errors\\Connection lost - failed run.siphon-ab.rec1.f140.mkv"
         ));
         // The server went away (2026-11-19).
         let dropped = "[http @ 0000027533a89b80] HTTP error 404 Not Found
