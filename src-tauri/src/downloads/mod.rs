@@ -53,6 +53,30 @@ const MAX_LOG_LINES: usize = 400;
 const RETRY_SOON: &[Duration] = &[Duration::from_secs(2), Duration::from_secs(10)];
 const RETRY_LATER: &[Duration] = &[Duration::from_secs(30)];
 
+/// How many further tries a download has had on each schedule. Each counts
+/// apart, so a refused request followed by a site that limits requests
+/// still gets the longer wait.
+#[derive(Debug, Default)]
+struct Retries {
+    soon: usize,
+    later: usize,
+}
+
+impl Retries {
+    /// How long to wait before trying again after an error that may pass,
+    /// or None once its schedule has had all its tries.
+    fn next(&mut self, retry: Retry) -> Option<Duration> {
+        let (schedule, used) = match retry {
+            Retry::No => return None,
+            Retry::Soon => (RETRY_SOON, &mut self.soon),
+            Retry::Later => (RETRY_LATER, &mut self.later),
+        };
+        let delay = schedule.get(*used).copied()?;
+        *used += 1;
+        Some(delay)
+    }
+}
+
 /// How long closing the app waits for running downloads to remove their files.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
 
@@ -688,7 +712,7 @@ impl DownloadManager {
         let output_dir = job.output_dir().await?;
 
         let mut updated = false;
-        let mut retries = 0;
+        let mut retries = Retries::default();
         let mut lookup = Lookup {
             refresh: false,
             account,
@@ -738,17 +762,11 @@ impl DownloadManager {
             // Sites refuse or drop a request now and then, and the same
             // request works a little later. Wait, then carry on from the
             // files this try left.
-            let delays = match error.retry {
-                Retry::No => return Err(error),
-                Retry::Soon => RETRY_SOON,
-                Retry::Later => RETRY_LATER,
-            };
-            let Some(delay) = delays.get(retries) else {
+            let Some(delay) = retries.next(error.retry) else {
                 return Err(error);
             };
-            retries += 1;
             job.emit(Tracker::retrying());
-            if !self.wait_unless_stopped(job.id, *delay).await {
+            if !self.wait_unless_stopped(job.id, delay).await {
                 return Err(error);
             }
             job.emit(Tracker::new(false).current());
@@ -1890,6 +1908,20 @@ mod naming_tests {
             folder_name(&"x".repeat(300)).map(|name| name.chars().count()),
             Some(100)
         );
+    }
+
+    #[test]
+    fn each_kind_of_passing_failure_gets_its_own_tries() {
+        let mut retries = Retries::default();
+        // A refused request (403), then a site limiting requests (429): the
+        // second still gets its longer wait.
+        assert_eq!(retries.next(Retry::Soon), Some(Duration::from_secs(2)));
+        assert_eq!(retries.next(Retry::Later), Some(Duration::from_secs(30)));
+        assert_eq!(retries.next(Retry::Soon), Some(Duration::from_secs(10)));
+        // Each schedule ends on its own, and what won't pass is never tried again.
+        assert_eq!(retries.next(Retry::Soon), None);
+        assert_eq!(retries.next(Retry::Later), None);
+        assert_eq!(Retries::default().next(Retry::No), None);
     }
 
     #[test]
