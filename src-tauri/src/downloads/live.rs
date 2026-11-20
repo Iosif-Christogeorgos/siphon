@@ -555,8 +555,15 @@ impl DownloadManager {
                 }
             })
             .await;
-        // A file that never got a byte isn't part of the recording.
         if let Some(current) = recording.parts.last_mut() {
+            // One last look: a file yt-dlp started since the last one (they are
+            // two seconds apart) would otherwise be left out, and left behind.
+            for file in recording_files(&output_dir, &needle) {
+                if !current.contains(&file) {
+                    current.push(file);
+                }
+            }
+            // A file that never got a byte isn't part of the recording.
             current.retain(|file| file_size(file) > 0);
         }
         self.keep_recording(job.id, recording);
