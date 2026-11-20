@@ -205,13 +205,14 @@ impl Sessions {
     /// Forgets a site: its cookies, its entry and its sign-in window's profile.
     pub fn sign_out(&self, site: &str) {
         {
+            // Under the jar's lock, so a download that ends now can't write
+            // its renewed cookies back in between (see `write_back`).
             let _jar = self.jar_lock.lock().unwrap();
             let _ = std::fs::remove_file(self.jar_path(site));
+            let mut index = self.index.lock().unwrap();
+            index.sites.remove(site);
+            self.save_index(&index);
         }
-        let mut index = self.index.lock().unwrap();
-        index.sites.remove(site);
-        self.save_index(&index);
-        drop(index);
         let _ = std::fs::remove_dir_all(self.profile_dir(site));
     }
 
@@ -371,6 +372,10 @@ impl Sessions {
             return;
         }
         let _jar = self.jar_lock.lock().unwrap();
+        // Signed out while the run went on: its cookies are gone, and stay so.
+        if !self.has(site) {
+            return;
+        }
         let mut jar = self.read_jar(site);
         cookies::apply(&mut jar, &changes, now() as i64);
         let _ = self.write_jar(site, &jar);
@@ -556,6 +561,23 @@ mod tests {
         let jar = sessions.read_jar("youtube.com");
         let names: Vec<_> = jar.iter().map(|c| (c.name.as_str(), c.value.as_str())).collect();
         assert_eq!(names, [("SID", "1"), ("PSIDTS", "new")]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_run_that_ends_after_signing_out_leaves_no_cookies_behind() {
+        let dir = scratch("signout-running");
+        let sessions = Arc::new(Sessions::at(dir.clone()));
+        sessions
+            .save("youtube.com", vec![cookie("youtube.com", "SID", "1")], Method::Window)
+            .unwrap();
+        let file = sessions.cookie_file("https://www.youtube.com/watch?v=abc").unwrap();
+        sessions.sign_out("youtube.com");
+        // The download was still running, and yt-dlp renewed a cookie.
+        std::fs::write(file.path(), cookies::write(&[cookie("youtube.com", "SID", "2")])).unwrap();
+        drop(file);
+        assert!(!sessions.jar_path("youtube.com").exists());
+        assert!(sessions.cookie_file("https://www.youtube.com/watch?v=abc").is_none());
         let _ = std::fs::remove_dir_all(dir);
     }
 
