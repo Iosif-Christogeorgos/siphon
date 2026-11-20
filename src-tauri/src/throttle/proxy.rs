@@ -125,8 +125,14 @@ async fn tunnel_to(host: &str, port: u16, upstream: Option<Upstream>) -> io::Res
         ));
     }
     ask.push_str("\r\n");
-    proxy.write_all(ask.as_bytes()).await?;
-    let (answer, _) = read_head(&mut proxy).await?;
+    // A proxy that takes the connection but never answers mustn't hold it forever.
+    let asked = async {
+        proxy.write_all(ask.as_bytes()).await?;
+        read_head(&mut proxy).await
+    };
+    let (answer, _) = tokio::time::timeout(CONNECT_TIMEOUT, asked)
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "the system proxy didn't answer"))??;
     let status = String::from_utf8_lossy(&answer);
     let status = status.lines().next().unwrap_or_default();
     let code = status.split_whitespace().nth(1).unwrap_or_default();
@@ -446,6 +452,28 @@ mod tests {
         let head = asked.await.unwrap();
         assert!(head.starts_with("CONNECT www.example.com:443 HTTP/1.1\r\n"));
         assert!(head.contains("Proxy-Authorization: Basic bWU6c2VjcmV0\r\n"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn gives_up_on_a_system_proxy_that_never_answers() {
+        // A system proxy that takes the connection and reads the request, but never answers.
+        let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_port = upstream.local_addr().unwrap().port();
+        let _silent = tokio::spawn(async move {
+            let (mut stream, _) = upstream.accept().await.unwrap();
+            let _ = read_head(&mut stream).await;
+            std::future::pending::<()>().await;
+        });
+        let via = Upstream {
+            kind: Kind::Http,
+            host: "127.0.0.1".into(),
+            port: upstream_port,
+            credentials: None,
+        };
+        let started = tokio::time::Instant::now();
+        let error = tunnel_to("www.example.com", 443, Some(via)).await.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(started.elapsed(), CONNECT_TIMEOUT);
     }
 
     /// A SOCKS5 proxy for one connection: grants it, then really connects to
