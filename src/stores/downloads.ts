@@ -123,6 +123,14 @@ function persist({ byId, order }: SavedList) {
 
 export const isActive = (download: Download) => download.status === "queued" || download.status === "running";
 
+/**
+ * How downloads ended while `recover` waited for the backend's answer. A
+ * recording with nothing in it fails at once, often before that answer
+ * arrives, and marking it as being finished afterwards would leave it so
+ * for good. They are applied again once the recovered rows are in place.
+ */
+let endedWhileRecovering: DownloadEvent[] | null = null;
+
 export const useDownloads = create<DownloadsState>((set, get) => {
   const patch = (id: string, changes: Partial<Download>) => {
     const current = get().byId[id];
@@ -175,7 +183,10 @@ export const useDownloads = create<DownloadsState>((set, get) => {
     stop: (id) => void ipc.stopRecording(id),
 
     recover: async () => {
+      endedWhileRecovering = [];
       const recovered = await ipc.recoverRecordings().catch(() => []);
+      const ended = endedWhileRecovering;
+      endedWhileRecovering = null;
       for (const recording of recovered) {
         const progress: Progress = { stage: "finalizing", fraction: 0, speed: null, eta: null };
         const known = get().byId[recording.id];
@@ -200,6 +211,10 @@ export const useDownloads = create<DownloadsState>((set, get) => {
           recovered: true,
         };
         set({ byId: { ...get().byId, [download.id]: download }, order: [...get().order, download.id] });
+      }
+      const ids = new Set(recovered.map((recording) => recording.id));
+      for (const event of ended) {
+        if (ids.has(event.id)) get().apply(event);
       }
     },
 
@@ -239,6 +254,7 @@ export const useDownloads = create<DownloadsState>((set, get) => {
     },
 
     apply: (event) => {
+      if (endedWhileRecovering && event.type !== "progress") endedWhileRecovering.push(event);
       switch (event.type) {
         case "progress": {
           const { type: _type, id, ...progress } = event;
