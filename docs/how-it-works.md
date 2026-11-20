@@ -1,6 +1,6 @@
 # How Siphon works
 
-What each part of Siphon does and why, in more depth than the [README](../README.md). The reasons behind the harder choices, with what was measured, are in [decisions.md](decisions.md); what each preset assumes, with sources, is in [presets.md](presets.md); signing in to sites is in [sign-in.md](sign-in.md). Building and releasing are in [development.md](development.md).
+What each part of Siphon does and why, in more depth than the [README](../README.md). The reasons behind the harder choices, with what was measured, are in [decisions.md](decisions.md); what each preset assumes, with sources, is in [presets.md](presets.md); signing in to sites is in [sign-in.md](sign-in.md); subtitles are in [subtitles.md](subtitles.md). Building and releasing are in [development.md](development.md).
 
 ## Managed binaries
 
@@ -66,6 +66,12 @@ Only the selected part is downloaded (`--download-sections`), and every clip sta
 - **When the video is converted anyway** (Edit, Share at a lower size, VP9 or AV1 kept as they are, or a clip for iPhone / iPad / Mac), the cut is made during that conversion.
 
 Every smart cut is checked before it is kept: every frame at its time, the sound in sync from start to end, and the joins decoding exactly like the original. If anything is off, the whole clip is re-encoded instead, so a clip never comes out broken. `siphon.log` (in `%LOCALAPPDATA%\app.siphon.desktop\logs`) records which way each cut was made. How it works, and what was measured, is in [decisions.md](decisions.md#trimming).
+
+## Subtitles
+
+**Subtitles** beside the other choices picks a language (or Off, where a new user starts), and Siphon remembers the language, so every video that has it gets it. The list has the video's languages, Windows' language first; typing jumps to one. People's subtitles come before speech recognition; YouTube's machine translations aren't offered, since YouTube refuses them. A video without the language is saved without subtitles and says so, never with another language in its place.
+
+Where they go depends on the preset: a track inside the file for Watch and Max quality (MKV for Windows, TVs and Max quality, because Windows' own players don't show subtitle tracks in MP4 or WebM; MP4 timed text for Apple and Android), an SRT file beside the video for Edit, and drawn into the picture for Share, since chat apps show no tracks. The track is fetched on its own after the video, so subtitles that can't be had never cost the video; a clip gets only the part inside it. How, why, and what was tested is in [subtitles.md](subtitles.md).
 
 ## Queue, playlists and settings
 
@@ -152,8 +158,9 @@ src/                     React + TypeScript frontend
   types.ts               Types mirrored from the Rust backend
 src-tauri/               Rust backend (Tauri 2)
   src/binaries/          Download, verify, install and update the managed tools
-  src/ytdlp/             Command building, metadata, progress parsing, error classification
-  src/plan/              The preset registry, codec rules and the planner (choice → recipe → summary)
+  src/ytdlp/             Command building, metadata, the subtitles a video offers, progress parsing, error classification
+  src/plan/              The preset registry, codec rules and the planner (choice → recipe → summary), and where subtitles go
+  src/srt.rs             Reading, cleaning, cutting and writing SubRip subtitles
   src/choices.rs         The remembered choice and saved presets (choices.json), and migrating old ones
   src/ffmpeg/            Hardware encoder detection and conversion arguments
   src/downloads/         The download queue, jobs (pause, resume, cancel), progress tracking, and live recording (live.rs)
@@ -171,6 +178,7 @@ docs/development.md      Building, checking and releasing
 docs/presets.md          What each preset does and assumes, with sources
 docs/sign-in.md          How signing in to sites works, what is kept where, and how to test it
 docs/live.md             Recording live streams: how, what was tested, and its limits
+docs/subtitles.md        Subtitles: which a download gets, where each preset puts them, what was tested
 docs/decisions.md        Why things work the way they do, and known issues
 docs/media/              The README's screenshots and demo
 app-icon.svg             Icon source; regenerate with `npx tauri icon app-icon.svg`

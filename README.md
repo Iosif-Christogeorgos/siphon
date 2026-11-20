@@ -57,6 +57,10 @@ Select one or more parts on a timeline, with a live preview and frame-by-frame k
 
 Combined with **Share**, each clip is made as sharp as it can be while still fitting the upload limit.
 
+### Subtitles in your language
+
+Pick a language once, and every video with subtitles in it gets them in the form its destination needs: a track you can turn on and off for watching, drawn into the picture for Discord or WhatsApp, or an SRT file beside the video for your editor. Subtitles written by people come before speech recognition, another language is never swapped in, and if a site won't send them the video is still saved, with a note saying why.
+
 ### A queue that keeps going
 
 <picture>
@@ -119,6 +123,7 @@ Press **Trim** on the video card to download only part of it. In the trim panel,
 | [Presets](docs/presets.md) | What each preset makes, what it assumes, and the sources behind it |
 | [Signing in](docs/sign-in.md) | How sign-in works, what is kept where, and what it can't do |
 | [Live recording](docs/live.md) | How recording works, what was tested, and its limits |
+| [Subtitles](docs/subtitles.md) | Which subtitles a download gets, where each preset puts them, and what was tested |
 | [Decisions](docs/decisions.md) | Why things work the way they do, what was measured, and known issues |
 | [Development](docs/development.md) | Running from source, checks, building an installer and releasing |
 

@@ -17,6 +17,8 @@ Two rules apply throughout:
 | Audio | Music · Best audio (original) | MP3 or M4A at a chosen bitrate, or the original track untouched |
 | Edit | Premiere Pro · DaVinci Resolve · CapCut · Vegas | Constant frame rate H.264 with 48 kHz audio, or ProRes ("Smoothest editing") |
 
+**Subtitles**, in a language the user picks, go where each group needs them: a track inside the file for Watch and Max quality (in MKV for Windows, TVs and Max quality, in MP4 for Apple and Android), drawn into the picture for Share, an SRT file beside the video for Edit, and nowhere for Audio. Which file type shows them where, with the tests and sources, is in [subtitles.md](subtitles.md#where-they-go).
+
 The quality choice offers **Best** and the resolutions the video really has (no tiny ones unless that is all there is). Like the other choices under the groups, it shows only its current value until pointed at, then unfolds; the estimated size of the resolution pointed at shows at its end. A lower resolution downloads the matching stream; nothing is upscaled. Max quality and Share have no quality row; Music offers bitrates instead.
 
 ## Watch
@@ -71,4 +73,5 @@ How a Share file is made (`share.rs`):
 3. The size and frame rate are chosen by **bits per pixel**: the largest picture (then the higher frame rate) that gets at least 0.07, so 720p30 wins over a blocky 1080p60. Never above the source or what the service shows. A generous limit isn't filled for nothing: 0.2 bits per pixel is the ceiling.
 4. H.264 + AAC in MP4 with the index at the front, so it plays in the chat. On the GPU, NVENC runs its two-pass mode in one go; on the CPU, x264 runs two passes.
 5. The finished file is checked against the limit. If it is over, it is encoded again at a proportionally lower bitrate (up to twice). An original that was copied but came out over is converted after all.
-6. If even the smallest picture would get under 0.03 bits per pixel, the plan is **blocked**: the summary suggests trimming (with a Trim button) or a larger tier, instead of making a pixelated file.
+6. With subtitles, they are drawn into the picture during the encode, so an original that would fit is encoded anyway (to the same budget).
+7. If even the smallest picture would get under 0.03 bits per pixel, the plan is **blocked**: the summary suggests trimming (with a Trim button) or a larger tier, instead of making a pixelated file.
