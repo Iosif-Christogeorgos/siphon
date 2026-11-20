@@ -15,12 +15,15 @@ import { spring } from "@/lib/motion";
 import { useChoice, useChoices } from "@/stores/choices";
 import { isActive, useDownloadGroup, useDownloads } from "@/stores/downloads";
 import { useTrim } from "@/stores/trim";
-import type { Trim, VideoInfo } from "@/types";
+import type { SubtitleDelivery, Trim, VideoInfo } from "@/types";
 import { AlreadyDownloaded } from "./AlreadyDownloaded";
 import { VideoCard } from "./VideoCard";
 
 /** Several recordings at once are fine; past this many, the sites may start to wonder. */
 const MANY_RECORDINGS = 3;
+
+/** Where the plan's subtitles go, after "English subtitles": a track inside the file says nothing more. */
+const SUBTITLE_PLACES: Record<SubtitleDelivery, string> = { embed: "", file: " as an SRT file", burn: " in the picture" };
 
 /** "No Greek subtitles for this video. It has English and German." */
 function missingSubtitles(wanted: string, video: VideoInfo): string {
@@ -119,7 +122,7 @@ export function VideoPane({ video }: { video: VideoInfo }) {
   const wantedSubtitles = useChoices((state) => state.choices?.subtitles ?? null);
   const subtitleTrack = video.subtitles.find((track) => track.key === plan.data?.subtitle_track);
   const subtitleLabel = subtitleTrack
-    ? `${subtitleTrack.name ?? languageName(subtitleTrack.lang)} subtitles${plan.data?.subtitle_delivery === "file" ? " as an SRT file" : ""}`
+    ? `${subtitleTrack.name ?? languageName(subtitleTrack.lang)} subtitles${SUBTITLE_PLACES[plan.data?.subtitle_delivery ?? "embed"]}`
     : null;
   const subtitlesMissing =
     !live && wantedSubtitles !== null && plan.data?.subtitle_delivery != null && plan.data.subtitle_track === null;

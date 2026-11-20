@@ -345,14 +345,14 @@ export interface PlanSummary {
   ext: string;
   /** Why Download isn't offered (Share: too long to look decent). */
   blocked: string | null;
-  /** How subtitles would reach the file with this choice, in any language; null when it can take none. */
+  /** How subtitles would reach the file with this choice, in any language; null for audio, which can take none. */
   subtitle_delivery: SubtitleDelivery | null;
   /** The subtitle track the plan adds (its key), if any. */
   subtitle_track: string | null;
 }
 
-/** Inside the file as a track, or an SRT file beside it (`plan/subtitles.rs`). */
-export type SubtitleDelivery = "embed" | "file";
+/** Inside the file as a track, an SRT file beside it, or drawn into the picture (`plan/subtitles.rs`). */
+export type SubtitleDelivery = "embed" | "file" | "burn";
 
 // ── choices.rs ─────────────────────────────────────────────────────────
 

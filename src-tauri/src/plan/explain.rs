@@ -175,16 +175,17 @@ fn headline(recipe: &Recipe, is_share: bool) -> String {
 fn detail(recipe: &Recipe) -> String {
     let streams = streams_detail(recipe);
     match &recipe.subtitles {
-        Some(step) if step.delivery == Delivery::Embed => {
-            format!(
+        Some(step) => match step.delivery {
+            Delivery::Embed => format!(
                 "{streams} {} subtitles are inside the file, as a track you can turn on and off.",
                 step.title
-            )
-        }
-        Some(step) => format!(
-            "{streams} {} subtitles come as an SRT file beside the video, to import as captions.",
-            step.title
-        ),
+            ),
+            Delivery::File => format!(
+                "{streams} {} subtitles come as an SRT file beside the video, to import as captions.",
+                step.title
+            ),
+            Delivery::BurnIn => format!("{streams} {} subtitles are drawn into the picture.", step.title),
+        },
         None => streams,
     }
 }

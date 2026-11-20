@@ -12,7 +12,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use crate::plan::codecs::{AudioCodec, Container, VideoCodec};
-use crate::plan::subtitles::SubtitleStep;
+use crate::plan::subtitles::{Delivery, SubtitleStep};
 use crate::plan::{AudioAction, Recipe, Trim, VideoAction, VideoEncode, VideoStep};
 use crate::process;
 use crate::ytdlp::subtitles::iso639_2;
@@ -56,7 +56,9 @@ pub fn convert_args(recipe: &Recipe, input: &Path, output: &Path, pass: Pass) ->
 /// ever passed through a shell. For a cut, `audio_shift` moves the audio
 /// that many seconds onto the video's clock (see `smart_cut::clock_shift`).
 /// `subtitles` is the recipe's subtitle file, prepared on the video's own
-/// clock (see `crate::srt`): a cut shifts it with the picture.
+/// clock (see `crate::srt`): a cut shifts it with the picture. A file to be
+/// drawn into the picture is read from the folder ffmpeg runs in, by its
+/// name: a filter's arguments would need a Windows path escaped twice over.
 pub fn convert_args_shifted(
     recipe: &Recipe,
     input: &Path,
@@ -87,11 +89,18 @@ pub fn convert_args_shifted(
         args.push(input.into());
     }
     let first_pass = matches!(pass, Pass::First { .. });
-    // The subtitle file: the input after the source (and its shifted audio).
+    // The subtitle file: the input after the source (and its shifted audio),
+    // or drawn into the picture by name.
     let subtitle_track = match (subtitles, &recipe.subtitles) {
-        (Some(file), Some(step)) if !first_pass => {
+        (Some(file), Some(step)) if !first_pass && step.delivery == Delivery::Embed => {
             args.extend(["-i".into(), file.into()]);
             Some((step, 1 + usize::from(audio_shift.is_some())))
+        }
+        _ => None,
+    };
+    let burn = match (subtitles, &recipe.subtitles) {
+        (Some(file), Some(step)) if step.delivery == Delivery::BurnIn => {
+            file.file_name().map(|name| name.to_string_lossy().into_owned())
         }
         _ => None,
     };
@@ -117,7 +126,7 @@ pub fn convert_args_shifted(
                 }
             }
             VideoAction::Encode(encode) => {
-                for arg in video_encode_args(video, encode, cut, pass) {
+                for arg in video_encode_args(video, encode, cut, pass, burn.as_deref()) {
                     push(&[&arg]);
                 }
             }
@@ -237,15 +246,29 @@ pub fn rewrap_args(
     args
 }
 
-fn video_encode_args(video: &VideoStep, encode: &VideoEncode, cut: Option<Trim>, pass: Pass) -> Vec<String> {
+/// `burn`: the name of a subtitle file in ffmpeg's folder to draw into the
+/// picture, on the video's own clock like the frames it is drawn on.
+fn video_encode_args(
+    video: &VideoStep,
+    encode: &VideoEncode,
+    cut: Option<Trim>,
+    pass: Pass,
+    burn: Option<&str>,
+) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
     let mut push = |values: &[&str]| args.extend(values.iter().map(|value| value.to_string()));
 
-    // Filters: downscale (never up) and cap the frame rate.
+    // Filters: draw in the subtitles, downscale (never up) and cap the frame rate.
     let mut filters: Vec<String> = Vec::new();
     if let Some(cut) = cut {
         // Keep exactly the frames inside the selection (times are absolute, thanks to -copyts).
         filters.push(format!("trim=start={}:end={}", cut.start, cut.end));
+    }
+    if let Some(file) = burn {
+        // Before the scaling and frame-rate filters, while each frame still
+        // has its own time. Fonts come from Windows (DirectWrite), with its
+        // fallbacks for scripts Arial lacks (Japanese came out in Yu Gothic UI).
+        filters.push(format!("subtitles=filename={file}"));
     }
     if let Some(lines) = encode.scale_lines.filter(|lines| *lines < video.lines) {
         // The short side becomes `lines`; -2 keeps the aspect ratio with an even size.
@@ -423,7 +446,7 @@ pub fn finalize_args(recipe: &Recipe, input: Recorded, output: &Path) -> Vec<OsS
                     }
                 }
                 VideoAction::Encode(encode) => {
-                    for arg in video_encode_args(video, encode, None, Pass::Only) {
+                    for arg in video_encode_args(video, encode, None, Pass::Only, None) {
                         push(&[&arg]);
                     }
                 }

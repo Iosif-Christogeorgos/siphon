@@ -22,6 +22,10 @@ pub enum Delivery {
     Embed,
     /// A SubRip file beside the video, named after it: editors import captions from one.
     File,
+    /// Drawn into the picture, for Share: chat apps show no subtitle tracks.
+    /// It can't be turned off, and the video has to be encoded for it.
+    #[serde(rename = "burn")]
+    BurnIn,
 }
 
 /// The subtitle track a recipe adds, and how.
@@ -38,8 +42,9 @@ pub struct SubtitleStep {
     pub kind: SubtitleKind,
     pub delivery: Delivery,
     /// Kept as SubStation Alpha, with its fonts, colours and placement, rather
-    /// than made into SubRip: only into Matroska, which holds it, and only for
-    /// the whole video, since a cut works on SubRip.
+    /// than made into SubRip: into Matroska, which holds it, or drawn into the
+    /// picture, which libass does styling and all; and only for the whole
+    /// video, since a cut works on SubRip.
     pub styled: bool,
 }
 
@@ -55,14 +60,14 @@ impl Choice {
 }
 
 /// How subtitles would reach the file `recipe` makes for `choice`, whatever
-/// the language. None when it can take none: audio, or a Share file (players
-/// in chat apps show no subtitle tracks).
+/// the language. None for audio, which can take none.
 pub fn delivery(choice: &Choice, recipe: &Recipe) -> Option<Delivery> {
     recipe.video.as_ref()?;
     match choice {
         Choice::Preset(preset) => match preset.target.group() {
             Group::Edit => Some(Delivery::File),
-            Group::Share | Group::Audio => None,
+            Group::Share => Some(Delivery::BurnIn),
+            Group::Audio => None,
             Group::Watch | Group::Max => Some(Delivery::Embed),
         },
         Choice::Custom(_) => Some(Delivery::Embed),
@@ -89,17 +94,45 @@ pub fn attach(recipe: &mut Recipe, tracks: &[SubtitleTrack], choice: &Choice) {
     let Some(track) = pick(tracks, wanted) else {
         return;
     };
-    if delivery == Delivery::Embed {
-        place_track(recipe, choice);
+    match delivery {
+        Delivery::Embed => place_track(recipe, choice),
+        Delivery::BurnIn if !recipe.encodes_video() => {
+            // Drawing them in means encoding the picture: Share's own encode,
+            // the one it keeps for an original that turns out too large.
+            let Some(encode) = recipe.fallback.take() else {
+                recipe.hints.push(info(
+                    "No subtitles: drawing them in needs the video's length, which the site didn't say.",
+                ));
+                return;
+            };
+            *recipe = *encode;
+            recipe.reason = Some("the subtitles are drawn into the picture".into());
+        }
+        Delivery::BurnIn | Delivery::File => {}
+    }
+    if delivery == Delivery::BurnIn {
+        let app = match choice {
+            Choice::Preset(preset) => preset.target.info().name,
+            Choice::Custom(_) => "the app",
+        };
+        recipe.hints.push(info(format!(
+            "The subtitles are drawn into the picture, since {app} shows no subtitle tracks. They can't be turned off."
+        )));
     }
     let has_styling = track.offers("ass") || track.offers("ssa");
     let whole = recipe.trim.is_none();
-    let styled = has_styling && whole && delivery == Delivery::Embed && recipe.container == Container::Mkv;
+    let styled = has_styling
+        && whole
+        && match delivery {
+            Delivery::Embed => recipe.container == Container::Mkv,
+            Delivery::BurnIn => true,
+            Delivery::File => false,
+        };
     if has_styling && !styled {
         let into = match delivery {
             Delivery::File => "an SRT file".to_string(),
-            Delivery::Embed if !whole => "a clip".to_string(),
-            Delivery::Embed => format!("an {} file", recipe.container.label()),
+            _ if !whole => "a clip".to_string(),
+            Delivery::Embed | Delivery::BurnIn => format!("an {} file", recipe.container.label()),
         };
         recipe.hints.push(info(format!(
             "The subtitles' fonts, colours and placement can't go in {into}; their words and timings do."

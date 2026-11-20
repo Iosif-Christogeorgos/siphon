@@ -1012,8 +1012,8 @@ fn subtitles_go_inside_a_file_to_watch_and_beside_one_to_edit() {
     let edit = plan_with(&video, wanting(TargetId::Premiere, "en"), &Capabilities::BASIC);
     assert_eq!(edit.subtitles.as_ref().map(|step| step.delivery), Some(Delivery::File));
 
-    // Nothing for a file that can't show them, nor in a language the video lacks.
-    for target in [TargetId::Discord, TargetId::Music, TargetId::Original] {
+    // Nothing for a sound file, nor in a language the video lacks.
+    for target in [TargetId::Music, TargetId::Original] {
         assert_eq!(
             plan_with(&video, wanting(target, "en"), &Capabilities::BASIC).subtitles,
             None
@@ -1095,4 +1095,85 @@ fn a_stream_as_it_airs_gets_no_subtitles() {
         plan_with(&video, wanting(TargetId::Windows, "en"), &Capabilities::BASIC).subtitles,
         None
     );
+}
+
+#[test]
+fn share_draws_subtitles_into_the_picture_even_when_the_original_fits() {
+    use crate::ytdlp::subtitles::SubtitleKind::*;
+    use subtitles::Delivery;
+    // The 480p original fits Discord's 20 MB as it is …
+    let video = with_subtitles(
+        info(vec![muxed("http-832", 480, 200.0)], 60.0),
+        &[("en", Uploaded, &["srt"])],
+    );
+    let plain = plan_with(&video, preset(TargetId::Discord), &Capabilities::BASIC);
+    assert!(copied(&plain) && plain.fallback.is_some());
+
+    // … but drawing subtitles in needs the picture encoded: Share's own encode, still sized to fit.
+    let burned = plan_with(&video, wanting(TargetId::Discord, "en"), &Capabilities::BASIC);
+    assert_eq!(
+        burned.subtitles.as_ref().map(|step| step.delivery),
+        Some(Delivery::BurnIn)
+    );
+    assert!(burned.encodes_video());
+    assert_eq!(burned.size_limit, Some(20_000_000));
+    assert_eq!(burned.badge, Badge::SizeOptimized);
+    assert_eq!(burned.fallback, None);
+    assert!(burned.reason.as_deref().unwrap().contains("drawn into the picture"));
+    assert!(burned
+        .hints
+        .iter()
+        .any(|hint| hint.text.contains("Discord shows no subtitle tracks")));
+
+    // The encode draws them, by the file's name, in both passes of a CPU encode.
+    let args = strings(ffmpeg::convert_args_shifted(
+        &burned,
+        Path::new("in.mkv"),
+        Path::new("out.mp4"),
+        Pass::Only,
+        None,
+        Some(Path::new(r"C:\work\abc\subtitles.srt")),
+    ));
+    let filters = &args[args.iter().position(|arg| arg == "-vf").unwrap() + 1];
+    assert!(filters.starts_with("subtitles=filename=subtitles.srt"), "{filters}");
+    // No subtitle track: it's in the picture.
+    assert!(!args.iter().any(|arg| arg == "-c:s"));
+
+    // Styled subtitles are drawn with their styling.
+    let styled = with_subtitles(
+        info(vec![muxed("http-832", 480, 200.0)], 60.0),
+        &[("ja", Uploaded, &["ass"])],
+    );
+    let styled = plan_with(&styled, wanting(TargetId::Discord, "ja"), &Capabilities::BASIC);
+    assert!(styled.subtitles.as_ref().unwrap().styled);
+}
+
+#[test]
+fn a_subtitle_track_goes_in_as_the_file_type_holds_it() {
+    use crate::ytdlp::subtitles::SubtitleKind::*;
+    let video = with_subtitles(x_4k(), &[("el", Uploaded, &["srt"])]);
+    let args = |target| {
+        let recipe = plan_with(&video, wanting(target, "el"), &Capabilities::BASIC);
+        strings(ffmpeg::convert_args_shifted(
+            &recipe,
+            Path::new("in.mkv"),
+            Path::new("out"),
+            Pass::Only,
+            None,
+            Some(Path::new("subtitles.srt")),
+        ))
+        .join(" ")
+    };
+    // MP4 (Apple): its own timed text, named the MP4 way.
+    let apple = args(TargetId::Apple);
+    assert!(apple.contains("-i subtitles.srt"), "{apple}");
+    assert!(
+        apple.contains("-map 1:0 -c:s mov_text -metadata:s:s:0 language=ell"),
+        "{apple}"
+    );
+    assert!(apple.contains("-disposition:s:0 default"), "{apple}");
+    // Matroska (Windows): SubRip, named the Matroska way.
+    let windows = args(TargetId::Windows);
+    assert!(windows.contains("-c:s srt -metadata:s:s:0 language=gre"), "{windows}");
+    assert!(windows.contains("-metadata:s:s:0 title=Greek"), "{windows}");
 }

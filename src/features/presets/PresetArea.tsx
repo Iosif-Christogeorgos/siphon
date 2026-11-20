@@ -56,11 +56,9 @@ export function PresetArea({
   const showSubtitles = hasSubtitles && !(presetActive && group.id === "audio");
   const audioOnly = !presetActive && (choices.active.kind === "custom" ? choices.custom.content === "audio_only" : false);
   const noSubtitles =
-    presetActive && group.id === "share"
-      ? "Discord, WhatsApp and short-video apps don't show subtitle tracks."
-      : summary?.subtitle_delivery === null || (summary === undefined && audioOnly)
-        ? "Audio files can't hold subtitles."
-        : undefined;
+    summary?.subtitle_delivery === null || (summary === undefined && audioOnly)
+      ? "Audio files can't hold subtitles."
+      : undefined;
 
   return (
     // No margin class here: it would cancel the parent's `space-y`, and Tailwind's base styles already zero it.

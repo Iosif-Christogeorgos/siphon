@@ -957,7 +957,7 @@ impl DownloadManager {
             Err(err) => return Ok((None, without(format!("Couldn't read them: {err}.")))),
         };
         if step.styled {
-            // SubStation Alpha goes into Matroska as it came, styling and all.
+            // SubStation Alpha goes into Matroska, or into the picture, as it came, styling and all.
             let cues = text.lines().filter(|line| line.starts_with("Dialogue:")).count();
             let prepared = Prepared {
                 track: Some(raw),
@@ -987,7 +987,7 @@ impl DownloadManager {
                 cues: cues.len(),
                 beside: Some(text),
             },
-            Delivery::Embed => {
+            Delivery::Embed | Delivery::BurnIn => {
                 let track = work.join("subtitles.srt");
                 if let Err(err) = tokio::fs::write(&track, text).await {
                     return Ok((None, without(format!("Couldn't write them: {err}."))));
@@ -1794,6 +1794,8 @@ impl DownloadManager {
         let audio_shift = self.audio_shift(job, recipe, input).await?;
         for (index, pass) in passes.into_iter().enumerate() {
             let mut cmd = process::command(&ffmpeg);
+            // Subtitles drawn into the picture are read from here, by name.
+            cmd.current_dir(work);
             cmd.args(ffmpeg::convert_args_shifted(
                 recipe,
                 input,
