@@ -221,12 +221,18 @@ pub fn first_times_args(input: &Path, stream: &str) -> Vec<OsString> {
 
 /// How far to move the audio of a downloaded part onto its video's clock,
 /// from the times of each stream's first packets, when the two disagree.
+/// `cut` is where the selected part starts, on the video's clock.
 ///
-/// Both start at the key frame the part was cut from, a fraction of a second
-/// apart at most. Some containers (AVI) keep the video on the source's clock
-/// and restart the audio at zero; cutting both at the same times would then
-/// put the sound in the wrong place.
-pub fn clock_shift(video: &[f64], audio: &[f64]) -> Option<f64> {
+/// On the same clock, the video starts at the key frame before the cut,
+/// which may be seconds earlier, and the audio, which can be cut anywhere,
+/// at the cut or with the video. Some containers (AVI) keep the video on the
+/// source's clock and restart the audio at zero; cutting both at the same
+/// times would then put the sound in the wrong place. Until 0.14.0 audio that
+/// started more than 2 s after the video counted as on another clock, so a
+/// part whose key frame came more than 2 s before the cut had its sound moved
+/// that far early: out of step, and short by as much at the end (a YouTube
+/// part cut at 4 s, its key frame at 0, came out with 5 s of sound in 8).
+pub fn clock_shift(video: &[f64], audio: &[f64], cut: f64) -> Option<f64> {
     // The earliest time, ignoring a stray packet far before the rest (AVI
     // starts its video with one at zero).
     let start = |times: &[f64]| -> Option<f64> {
@@ -235,8 +241,9 @@ pub fn clock_shift(video: &[f64], audio: &[f64]) -> Option<f64> {
         let middle = *sorted.get(sorted.len() / 2)?;
         sorted.into_iter().find(|t| middle - t < 1.0)
     };
-    let shift = start(video)? - start(audio)?;
-    (shift.abs() > 2.0).then_some(shift)
+    let (video, audio) = (start(video)?, start(audio)?);
+    let same_clock = (audio - video).abs() <= 2.0 || (audio - cut).abs() <= 2.0;
+    (!same_clock).then_some(video - audio)
 }
 
 /// ffmpeg arguments that trace the NAL units of every key frame (into the
@@ -1104,14 +1111,21 @@ mod tests {
     fn moves_audio_onto_the_videos_clock_only_when_they_disagree() {
         // A normal part: both start at the key frame, a few milliseconds apart.
         assert_eq!(
-            clock_shift(&[3590.466, 3590.516, 3590.483], &[3590.485, 3590.506]),
+            clock_shift(&[3590.466, 3590.516, 3590.483], &[3590.485, 3590.506], 3600.5),
             None
         );
+        // A YouTube part cut at 4 s (2026-11-20): the video from its key frame
+        // at 0, the audio from the cut. Same clock: nothing to move.
+        assert_eq!(clock_shift(&[0.0, 0.067, 0.133], &[3.994, 4.017, 4.04], 4.0), None);
         // An AVI part: the video keeps the source's clock (after a stray packet
         // at zero), the audio starts again at zero.
-        let shift = clock_shift(&[0.0, 56.12491, 56.166577, 56.208243, 56.25], &[0.0, 0.032, 0.064]);
+        let shift = clock_shift(
+            &[0.0, 56.12491, 56.166577, 56.208243, 56.25],
+            &[0.0, 0.032, 0.064],
+            60.0,
+        );
         assert!(shift.is_some_and(|s| (s - 56.12491).abs() < 1e-6), "{shift:?}");
-        assert_eq!(clock_shift(&[], &[0.0]), None);
+        assert_eq!(clock_shift(&[], &[0.0], 0.0), None);
     }
 
     #[test]

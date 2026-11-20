@@ -1420,9 +1420,9 @@ impl DownloadManager {
     /// For a cut: how far the downloaded part's audio has to move onto its
     /// video's clock, when the two disagree (see `smart_cut::clock_shift`).
     async fn audio_shift(&self, job: &JobContext<'_>, recipe: &Recipe, input: &Path) -> Result<Option<f64>> {
-        if recipe.cut().is_none() || recipe.audio_codec().is_none() {
+        let (Some(cut), Some(_)) = (recipe.cut(), recipe.audio_codec()) else {
             return Ok(None);
-        }
+        };
         let mut times = Vec::new();
         for stream in ["v:0", "a:0"] {
             let args = smart_cut::first_times_args(input, stream);
@@ -1437,7 +1437,7 @@ impl DownloadManager {
                     .collect::<Vec<_>>(),
             );
         }
-        let shift = smart_cut::clock_shift(&times[0], &times[1]);
+        let shift = smart_cut::clock_shift(&times[0], &times[1], cut.start);
         if let Some(shift) = shift {
             let name = input.file_name().unwrap_or_default().to_string_lossy();
             log::line(
