@@ -21,23 +21,23 @@ pub async fn install(manager: &BinaryManager, tool: Tool, release: &Release) -> 
     let staging = sibling(&current, "staging");
     let previous = sibling(&current, "previous");
 
+    // Swapping needs the tool to itself. If a download is using it, give up
+    // for now (the caller tries again later) instead of making it wait, and
+    // before downloading it: FFmpeg is 91 MB, and the hourly retries while
+    // downloads went on fetched it every time, only to throw it away.
+    if manager.use_gate.try_write().is_err() {
+        return Err(busy(tool));
+    }
     let result = stage(manager, tool, release, &staging).await;
     if result.is_err() {
         let _ = tokio::fs::remove_dir_all(&staging).await;
     }
     result?;
 
-    // Swapping needs the tool to itself. If a download is using it, give up
-    // for now (the caller tries again later) instead of making it wait.
+    // A download may have started while this one ran.
     let Ok(_exclusive) = manager.use_gate.try_write() else {
         let _ = tokio::fs::remove_dir_all(&staging).await;
-        return Err(AppError::new(
-            ErrorKind::Busy,
-            format!(
-                "{} will be updated once the current downloads have finished.",
-                tool.label()
-            ),
-        ));
+        return Err(busy(tool));
     };
     swap_in(&current, &staging, &previous).await?;
 
@@ -52,6 +52,17 @@ pub async fn install(manager: &BinaryManager, tool: Tool, release: &Release) -> 
         let _ = tokio::fs::remove_dir_all(&previous).await;
     }
     Ok(())
+}
+
+/// Why `tool` wasn't swapped in: a download is using the tools.
+fn busy(tool: Tool) -> AppError {
+    AppError::new(
+        ErrorKind::Busy,
+        format!(
+            "{} will be updated once the current downloads have finished.",
+            tool.label()
+        ),
+    )
 }
 
 /// `bin/yt-dlp` → `bin/yt-dlp.staging`
