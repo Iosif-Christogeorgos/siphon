@@ -8,6 +8,7 @@ use std::time::Duration;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
+use super::subtitles::{self, SubtitleTrack};
 use super::{command, errors, validate_url};
 use crate::binaries::BinaryManager;
 use crate::error::{AppError, ErrorKind, Result};
@@ -47,6 +48,8 @@ pub struct VideoInfo {
     /// A stream that is live now, scheduled, or a channel that is offline:
     /// recorded rather than downloaded (see `downloads::live`).
     pub live: Option<Live>,
+    /// The subtitle tracks it offers, people's first (see `ytdlp::subtitles`).
+    pub subtitles: Vec<SubtitleTrack>,
 }
 
 /// Where a live stream stands.
@@ -203,6 +206,11 @@ struct RawInfo {
     concurrent_view_count: Option<f64>,
     #[serde(default)]
     formats: Option<Vec<RawFormat>>,
+    /// Subtitles by language, as `{"en": [{"ext": "vtt", "url": …}, …]}`; read in `ytdlp::subtitles`.
+    #[serde(default)]
+    subtitles: Option<Value>,
+    #[serde(default)]
+    automatic_captions: Option<Value>,
     /// Unavailable playlist items come through as `null`.
     #[serde(default)]
     entries: Option<Vec<Option<RawInfo>>>,
@@ -403,6 +411,7 @@ fn offline(url: &str) -> VideoInfo {
             viewers: None,
             from_start: None,
         }),
+        subtitles: Vec::new(),
     }
 }
 
@@ -469,6 +478,7 @@ fn video(raw: RawInfo, requested_url: &str) -> Result<VideoInfo> {
         formats,
         with_account: false,
         live,
+        subtitles: subtitles::read(raw.subtitles.as_ref(), raw.automatic_captions.as_ref()),
     })
 }
 

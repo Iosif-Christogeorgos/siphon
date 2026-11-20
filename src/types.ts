@@ -163,6 +163,21 @@ export interface VideoInfo {
   with_account: boolean;
   /** A stream live now, scheduled, or a channel that's offline: recorded rather than downloaded. */
   live: Live | null;
+  /** The subtitle tracks it offers, people's first (`ytdlp/subtitles.rs`). */
+  subtitles: SubtitleTrack[];
+}
+
+/** Who made a subtitle track: people, or speech recognition. */
+export type SubtitleKind = "uploaded" | "automatic";
+
+export interface SubtitleTrack {
+  /** yt-dlp's name for it: "en", "de-DE", "en-orig". */
+  key: string;
+  /** Its language as a lowercase tag: "en", "de-de", "pt-br". */
+  lang: string;
+  /** The site's name for it, if it gives one. */
+  name: string | null;
+  kind: SubtitleKind;
 }
 
 /** Where a live stream stands (`metadata::LiveStatus`). */
@@ -284,8 +299,10 @@ export type Choice =
       tier: TierId | null;
       music_format: MusicFormat;
       smooth_editing: boolean;
+      /** The language subtitles are wanted in ("en", "pt-br"); null is none. */
+      subtitles: string | null;
     }
-  | ({ mode: "custom" } & ManualOptions);
+  | ({ mode: "custom"; subtitles: string | null } & ManualOptions);
 
 /** The part of the video to keep, in seconds. Always cut on the exact frames. */
 export interface Trim {
@@ -328,7 +345,14 @@ export interface PlanSummary {
   ext: string;
   /** Why Download isn't offered (Share: too long to look decent). */
   blocked: string | null;
+  /** How subtitles would reach the file with this choice, in any language; null when it can take none. */
+  subtitle_delivery: SubtitleDelivery | null;
+  /** The subtitle track the plan adds (its key), if any. */
+  subtitle_track: string | null;
 }
+
+/** Inside the file as a track, or an SRT file beside it (`plan/subtitles.rs`). */
+export type SubtitleDelivery = "embed" | "file";
 
 // ── choices.rs ─────────────────────────────────────────────────────────
 
@@ -354,6 +378,8 @@ export interface Choices {
   smooth_editing: boolean;
   custom: ManualOptions;
   saved: SavedPreset[];
+  /** The language subtitles are wanted in, for every video that has it; null is none. */
+  subtitles: string | null;
 }
 
 // ── settings.rs ────────────────────────────────────────────────────────
@@ -412,6 +438,8 @@ export type Stage =
   | "downloading"
   | "merging"
   | "converting"
+  /** Fetching subtitles after the video, or adding them to copied streams. */
+  | "subtitles"
   | "finishing"
   /** A recording waits for its stream to start. */
   | "waiting_live"
@@ -499,6 +527,8 @@ export type DownloadEvent =
       note?: string;
       /** A recording kept as it was recorded, not made into the preset's file. */
       as_recorded?: boolean;
+      /** `note` in a word or two, for the download list ("No subtitles"). */
+      note_label?: string;
       /** A recording Siphon's closing cut short, finished once it started again. */
       recovered?: boolean;
     }

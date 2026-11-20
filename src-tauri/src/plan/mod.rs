@@ -23,6 +23,7 @@ pub mod explain;
 pub mod live;
 pub mod registry;
 mod share;
+pub mod subtitles;
 mod watch;
 
 use std::cmp::Ordering;
@@ -59,6 +60,10 @@ pub struct PresetChoice {
     /// Edit targets: an intermediate codec instead of H.264.
     #[serde(default)]
     pub smooth_editing: bool,
+    /// The language subtitles are wanted in ("en", "pt-br"); `None` is none.
+    /// See [`subtitles`].
+    #[serde(default)]
+    pub subtitles: Option<String>,
 }
 
 /// The part of the video to keep, in seconds from its start. Cuts are
@@ -95,6 +100,8 @@ pub struct ManualOptions {
     pub container: Option<Container>,
     pub video_codec: Option<VideoCodec>,
     pub audio_codec: Option<AudioCodec>,
+    /// The language subtitles are wanted in, as for presets.
+    pub subtitles: Option<String>,
 }
 
 // ── What this machine can do ────────────────────────────────────────────
@@ -187,6 +194,9 @@ pub struct Recipe {
     /// are re-encoded, and how the whole part is should the smart cut not
     /// pass its checks (see `ffmpeg::smart_cut`).
     pub cut_encode: Option<VideoEncode>,
+    /// The subtitle track to add, and how (see [`subtitles`]).
+    #[serde(default)]
+    pub subtitles: Option<subtitles::SubtitleStep>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -326,8 +336,28 @@ impl Recipe {
 
     /// True when Siphon runs its own ffmpeg pass after the download.
     /// (Audio-only conversions are left to yt-dlp's extractor instead.)
+    /// Subtitles inside the file are added in that pass, even to streams
+    /// that are only copied.
     pub fn needs_ffmpeg_pass(&self) -> bool {
-        self.video.is_some() && (self.encodes_video() || self.encodes_audio() || self.strip_audio || self.smart_cut())
+        self.video.is_some()
+            && (self.encodes_video()
+                || self.encodes_audio()
+                || self.strip_audio
+                || self.smart_cut()
+                || self.embeds_subtitles())
+    }
+
+    /// True when Siphon's ffmpeg pass only adds a subtitle track to streams it copies.
+    pub fn adds_only_subtitles(&self) -> bool {
+        self.embeds_subtitles()
+            && !(self.encodes_video() || self.encodes_audio() || self.strip_audio || self.smart_cut())
+    }
+
+    /// True when a subtitle track goes inside the file.
+    pub fn embeds_subtitles(&self) -> bool {
+        self.subtitles
+            .as_ref()
+            .is_some_and(|step| step.delivery == subtitles::Delivery::Embed)
     }
 
     /// True when the video is copied and cut on the exact frames by
@@ -695,6 +725,10 @@ pub fn plan(video: &VideoInfo, choice: &Choice, trim: Option<Trim>, caps: &Capab
         Choice::Custom(manual) => planner.custom(manual)?,
         Choice::Preset(preset) => planner.preset(preset),
     };
+    // Subtitles go with a file, not with a stream as it airs.
+    if video.live.is_none() {
+        subtitles::attach(&mut recipe, &video.subtitles, choice);
+    }
     // A copied stream that is cut keeps its codec: only the frames at the
     // cuts are re-encoded (the planner only copies codecs that can be).
     if recipe.cut().is_some() {
@@ -889,6 +923,7 @@ impl<'a> Planner<'a> {
             section_request_size: None,
             fallback: None,
             cut_encode: None,
+            subtitles: None,
         }
     }
 

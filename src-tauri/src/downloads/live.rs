@@ -792,6 +792,7 @@ impl DownloadManager {
                     path: output,
                     note: None,
                     as_recorded: false,
+                    note_label: None,
                 })
             }
             Err(why) => {
@@ -916,6 +917,7 @@ impl DownloadManager {
         Ok(Done {
             path: first,
             as_recorded: true,
+            note_label: None,
             note: Some(format!(
                 "{why} It's saved as it was recorded (.{ext}){parts}, which plays in {players}."
             )),

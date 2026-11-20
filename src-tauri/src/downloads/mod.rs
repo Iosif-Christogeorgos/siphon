@@ -28,16 +28,19 @@ use crate::error::{AppError, Chance, ErrorKind, Result, Retry};
 use crate::ffmpeg::smart_cut::{self, AudioPiece, Fallback};
 use crate::ffmpeg::{self, encoders::Hardware, Pass};
 use crate::log;
-use crate::plan::codecs::VideoCodec;
+use crate::plan::codecs::{Container, VideoCodec};
+use crate::plan::subtitles::{Delivery, SubtitleStep};
 use crate::plan::{self, AudioAction, Choice, Recipe, Trim};
 use crate::process;
 use crate::sessions::{Account, CookieFile, Sessions};
 use crate::settings::{Settings, SettingsStore};
+use crate::srt;
 use crate::state::{CapabilityCache, MediaCache};
 use crate::throttle::{self, Throttle};
 use crate::ytdlp::metadata::{Media, VideoInfo};
+use crate::ytdlp::subtitles::language_name;
 use crate::ytdlp::{self, args, errors, progress};
-use tracker::{Progress, Tracker};
+use tracker::{Progress, Stage, Tracker};
 
 /// Event carrying a [`DownloadEvent`].
 pub const EVENT: &str = "download://event";
@@ -118,6 +121,47 @@ pub struct Done {
     pub note: Option<String>,
     /// A recording kept as it was recorded, rather than made into the preset's file.
     pub as_recorded: bool,
+    /// What the download list says of `note`, in a word or two ("No subtitles").
+    /// None for a recording's notes, which the list names from `as_recorded`.
+    pub note_label: Option<&'static str>,
+}
+
+impl Done {
+    /// A finished download, and anything worth saying about it.
+    fn file(path: PathBuf, note: Option<Note>) -> Self {
+        Done {
+            path,
+            note_label: note.as_ref().map(|note| note.label),
+            note: note.map(|note| note.text),
+            as_recorded: false,
+        }
+    }
+}
+
+/// Something worth saying about a finished download.
+struct Note {
+    text: String,
+    /// The same, in a word or two, for the download list.
+    label: &'static str,
+}
+
+impl Note {
+    fn subtitles(text: String) -> Self {
+        Note {
+            text,
+            label: "No subtitles",
+        }
+    }
+}
+
+/// Subtitles ready to go into the file, or beside it.
+struct Prepared {
+    /// The file for the ffmpeg pass, in the work folder, on the video's own clock.
+    track: Option<PathBuf>,
+    /// How many cues it has: they take room in a smart cut's index.
+    cues: usize,
+    /// SubRip for a file beside the video, from zero.
+    beside: Option<String>,
 }
 
 /// A playlist video's folder and number. Sent again, unchanged, on every
@@ -194,6 +238,9 @@ pub enum DownloadEvent {
         /// A recording kept as it was recorded (see `note`), not made into the preset's file.
         #[serde(skip_serializing_if = "std::ops::Not::not")]
         as_recorded: bool,
+        /// `note` in a word or two, for the download list.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        note_label: Option<&'static str>,
         /// A recording that was cut short by Siphon closing or crashing, finished after it started again.
         #[serde(skip_serializing_if = "std::ops::Not::not")]
         recovered: bool,
@@ -471,12 +518,7 @@ impl DownloadManager {
                 let outcome = match app.state::<Arc<Throttle>>().flow().await {
                     Ok(flow) => {
                         manager.attach_flow(&id, flow);
-                        let run = manager.run(&job(), &url, &request.choice, request.trim, account).await;
-                        run.map(|path| Done {
-                            path,
-                            note: None,
-                            as_recorded: false,
-                        })
+                        manager.run(&job(), &url, &request.choice, request.trim, account).await
                     }
                     Err(error) => Err(error),
                 };
@@ -513,6 +555,7 @@ impl DownloadManager {
             path: done.path.to_string_lossy().into_owned(),
             note: done.note,
             as_recorded: done.as_recorded,
+            note_label: done.note_label,
             recovered,
             id,
         }
@@ -699,7 +742,7 @@ impl DownloadManager {
         self.jobs.lock().unwrap().get(id).and_then(|job| job.stop)
     }
 
-    /// Runs the whole job and returns the path of the finished file.
+    /// Runs the whole job and returns the finished file.
     async fn run(
         &self,
         job: &JobContext<'_>,
@@ -707,7 +750,7 @@ impl DownloadManager {
         choice: &Choice,
         trim: Option<Trim>,
         account: Account,
-    ) -> Result<PathBuf> {
+    ) -> Result<Done> {
         job.emit(Tracker::new(false).current());
         let output_dir = job.output_dir().await?;
 
@@ -719,7 +762,7 @@ impl DownloadManager {
         };
         loop {
             let error = match self.attempt(job, url, choice, trim, &output_dir, lookup).await {
-                Ok(path) => return Ok(path),
+                Ok(done) => return Ok(done),
                 Err(error) => error,
             };
             if self.stop_of(job.id).is_some() {
@@ -791,7 +834,7 @@ impl DownloadManager {
         }
     }
 
-    /// One pass through the job's steps: look up, download, convert.
+    /// One pass through the job's steps: look up, download, add subtitles, convert.
     async fn attempt(
         &self,
         job: &JobContext<'_>,
@@ -800,14 +843,20 @@ impl DownloadManager {
         trim: Option<Trim>,
         output_dir: &Path,
         lookup: Lookup,
-    ) -> Result<PathBuf> {
+    ) -> Result<Done> {
         let video = self.video_info(job, url, lookup).await?;
         let caps = job.app.state::<CapabilityCache>().get(job.bins).await;
         let recipe = plan::plan(&video, choice, trim, &caps)?;
         if let Some(reason) = &recipe.blocked {
             return Err(AppError::new(ErrorKind::TooLong, reason.clone()));
         }
-        let mut tracker = Tracker::new(recipe.needs_ffmpeg_pass());
+        // A pass that only adds a subtitle track to copied streams is quick:
+        // the download is nearly all of the work, and the bar says so.
+        let only_subtitles = recipe.adds_only_subtitles();
+        let mut tracker = Tracker::new(recipe.needs_ffmpeg_pass() && !only_subtitles);
+        if only_subtitles {
+            tracker.set_pass_stage(Stage::Subtitles);
+        }
 
         // A source that is converted afterwards goes to the download's own work
         // folder, and stays there until the finished file is written and checked.
@@ -816,6 +865,11 @@ impl DownloadManager {
         tokio::fs::create_dir_all(fetch_dir).await?;
         let downloaded = self
             .fetch_streams(job, &video.url, video.with_account, &recipe, fetch_dir, &mut tracker)
+            .await?;
+        // On their own, after the video: subtitles that can't be had are
+        // said, never a reason for the video to fail.
+        let (subtitles, mut note) = self
+            .subtitles(job, &video, choice, &recipe, &work, &mut tracker)
             .await?;
 
         let (recipe, source) = if recipe.needs_ffmpeg_pass() {
@@ -831,15 +885,17 @@ impl DownloadManager {
                     (fallback.clone(), source)
                 }
                 _ => {
+                    let path = self.publish(&downloaded, job.id).await?;
                     let _ = tokio::fs::remove_dir_all(&work).await;
-                    return self.publish(&downloaded, job.id).await;
+                    let beside = write_beside(&path, &recipe, subtitles.as_ref()).await;
+                    return Ok(Done::file(path, note.or(beside)));
                 }
             }
         };
 
         let output = self.unique_output(converted_path(&source, &recipe, output_dir), job.id);
         let result = self
-            .convert_checked(job, &recipe, &source, &output, &work, &mut tracker)
+            .convert_checked(job, &recipe, &source, &output, &work, &mut tracker, subtitles.as_ref())
             .await;
         match (&result, self.stop_of(job.id)) {
             (Ok(()), _) | (Err(_), Some(Stop::Cancel)) => {
@@ -855,13 +911,152 @@ impl DownloadManager {
                 },
             ),
         }
-        result.map(|()| output)
+        result?;
+        note = note.or(write_beside(&output, &recipe, subtitles.as_ref()).await);
+        Ok(Done::file(output, note))
+    }
+
+    /// The recipe's subtitles, fetched and made ready to add, or why there
+    /// are none: the track couldn't be had, or the video has none in the
+    /// language asked for (a playlist's videos differ). The note says so.
+    async fn subtitles(
+        &self,
+        job: &JobContext<'_>,
+        video: &VideoInfo,
+        choice: &Choice,
+        recipe: &Recipe,
+        work: &Path,
+        tracker: &mut Tracker,
+    ) -> Result<(Option<Prepared>, Option<Note>)> {
+        let Some(step) = &recipe.subtitles else {
+            let missing = choice
+                .subtitles()
+                .filter(|_| video.live.is_none() && plan::subtitles::delivery(choice, recipe).is_some());
+            let note = missing.map(|wanted| {
+                let language = language_name(wanted).unwrap_or(wanted);
+                Note::subtitles(format!("This video has no {language} subtitles."))
+            });
+            return Ok((None, note));
+        };
+        job.emit(tracker.on_subtitles());
+        let without = |why: String| {
+            Some(Note::subtitles(format!(
+                "Saved without {} subtitles. {why}",
+                step.title
+            )))
+        };
+        if let Err(err) = tokio::fs::create_dir_all(work).await {
+            return Ok((None, without(format!("Couldn't write them: {err}."))));
+        }
+        let raw = match self.fetch_subtitles(job, &video.url, step, work).await? {
+            Ok(raw) => raw,
+            Err(why) => return Ok((None, without(why))),
+        };
+        let text = match tokio::fs::read(&raw).await {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+            Err(err) => return Ok((None, without(format!("Couldn't read them: {err}.")))),
+        };
+        if step.styled {
+            // SubStation Alpha goes into Matroska as it came, styling and all.
+            let cues = text.lines().filter(|line| line.starts_with("Dialogue:")).count();
+            let prepared = Prepared {
+                track: Some(raw),
+                cues,
+                beside: None,
+            };
+            return Ok((Some(prepared), None));
+        }
+        let span = recipe.trim.map(|trim| srt::Span {
+            start: trim.start,
+            end: trim.end,
+            from_zero: step.delivery == Delivery::File,
+        });
+        let cues = srt::prepare(srt::parse(&text), span);
+        if cues.is_empty() {
+            let why = if recipe.trim.is_some() {
+                "They have nothing in this part."
+            } else {
+                "The site's file was empty."
+            };
+            return Ok((None, without(why.into())));
+        }
+        let text = srt::write(&cues);
+        let prepared = match step.delivery {
+            Delivery::File => Prepared {
+                track: None,
+                cues: cues.len(),
+                beside: Some(text),
+            },
+            Delivery::Embed => {
+                let track = work.join("subtitles.srt");
+                if let Err(err) = tokio::fs::write(&track, text).await {
+                    return Ok((None, without(format!("Couldn't write them: {err}."))));
+                }
+                Prepared {
+                    track: Some(track),
+                    cues: cues.len(),
+                    beside: None,
+                }
+            }
+        };
+        Ok((Some(prepared), None))
+    }
+
+    /// Fetches one subtitle track into `work`, and says where it is, or why
+    /// it isn't there. A refusal that may pass (HTTP 429, a dropped
+    /// connection) is tried once more after a pause.
+    /// What an earlier try at the download fetched is used again.
+    async fn fetch_subtitles(
+        &self,
+        job: &JobContext<'_>,
+        url: &str,
+        step: &SubtitleStep,
+        work: &Path,
+    ) -> Result<std::result::Result<PathBuf, String>> {
+        if let Some(found) = fetched_subtitles(work).await {
+            return Ok(Ok(found));
+        }
+        let Some(subtitle_args) = args::subtitle_args(step) else {
+            return Ok(Err("The site names them in a way Siphon can't ask for.".into()));
+        };
+        for try_number in 0..2 {
+            let mut cmd = ytdlp::command(job.bins);
+            cmd.args(&subtitle_args);
+            self.route(job.id, &mut cmd)?;
+            // The way the video was fetched: with the site's sign-in if it had one.
+            self.add_cookies(job.id, &mut cmd);
+            cmd.arg("--paths")
+                .arg(work)
+                .args(["--output", &format!("{}.%(ext)s", args::SUBTITLE_SOURCE), "--"])
+                .arg(url);
+            match self.run_child(job.bins, job.id, cmd, |_| {}).await {
+                Ok(_) => {
+                    return Ok(fetched_subtitles(work)
+                        .await
+                        .ok_or_else(|| "The site didn't send them.".to_string()))
+                }
+                Err(Failure::Stopped(_)) => return Err(AppError::cancelled()),
+                Err(Failure::Spawn(error)) => return Ok(Err(error.message)),
+                Err(Failure::Exited(log)) => {
+                    let error = errors::classify(&log);
+                    if try_number == 0 && error.retry != Retry::No {
+                        if !self.wait_unless_stopped(job.id, SUBTITLE_RETRY).await {
+                            return Err(AppError::cancelled());
+                        }
+                        continue;
+                    }
+                    return Ok(Err(error.message));
+                }
+            }
+        }
+        Ok(Err("The site didn't send them.".into()))
     }
 
     /// Step 3, checked: converts (on the CPU if the hardware encoder refuses),
     /// then makes sure a Share file is under its limit, encoding again a
     /// little smaller if it isn't. The file only gets its final name once it
     /// passes; until then it is written beside it under a temporary one.
+    #[allow(clippy::too_many_arguments)]
     async fn convert_checked(
         &self,
         job: &JobContext<'_>,
@@ -870,6 +1065,7 @@ impl DownloadManager {
         output: &Path,
         work: &Path,
         tracker: &mut Tracker,
+        subtitles: Option<&Prepared>,
     ) -> Result<()> {
         let partial = partial_path(output);
         let mut recipe = recipe.clone();
@@ -878,7 +1074,27 @@ impl DownloadManager {
         // Anything the smart cut isn't sure of is re-encoded in full instead.
         if recipe.smart_cut() {
             let started = Instant::now();
-            match self.smart_cut(job, &recipe, source, &partial, work, tracker).await? {
+            // Joined and checked as MP4 (the checks read decode times, which
+            // Matroska doesn't keep), then copied into the file type asked for.
+            let rewrap = !matches!(recipe.container, Container::Mp4 | Container::Mov);
+            let (cut_recipe, cut_file) = if rewrap {
+                let mut as_mp4 = recipe.clone();
+                as_mp4.container = Container::Mp4;
+                (as_mp4, work.join(SMART_CUT_FILE))
+            } else {
+                (recipe.clone(), partial.clone())
+            };
+            let mut result = self
+                .smart_cut(job, &cut_recipe, source, &cut_file, work, tracker, subtitles)
+                .await?;
+            if rewrap && result.is_ok() {
+                let args = ffmpeg::rewrap_args(&cut_file, &partial, recipe.subtitles.as_ref(), recipe.container);
+                if let Err(fallback) = self.tool(job, &job.bins.ffmpeg(), args, None).await? {
+                    result = Err(fallback);
+                }
+                let _ = tokio::fs::remove_file(&cut_file).await;
+            }
+            match result {
                 Ok(note) => {
                     log::line(
                         job.app,
@@ -914,7 +1130,8 @@ impl DownloadManager {
         }
         let mut shrinks = 0;
         loop {
-            let mut result = self.convert(job, &recipe, source, &partial, work, tracker).await;
+            let track = subtitles.and_then(|prepared| prepared.track.as_deref());
+            let mut result = self.convert(job, &recipe, source, &partial, work, tracker, track).await;
             // A hardware encoder can refuse a job it passed the probe for (driver
             // limits, too many sessions). The CPU encoders always work.
             let on_hardware = recipe
@@ -922,7 +1139,7 @@ impl DownloadManager {
                 .is_some_and(|encode| encode.hardware != Hardware::Software);
             if result.is_err() && on_hardware && self.stop_of(job.id).is_none() {
                 recipe = recipe.on_software();
-                result = self.convert(job, &recipe, source, &partial, work, tracker).await;
+                result = self.convert(job, &recipe, source, &partial, work, tracker, track).await;
             }
             if let Err(error) = result {
                 let _ = tokio::fs::remove_file(&partial).await;
@@ -958,6 +1175,7 @@ impl DownloadManager {
     /// at the cuts (see `ffmpeg::smart_cut`), and checks the result. The
     /// inner error says why it couldn't be used; the outer one is for a
     /// stopped download.
+    #[allow(clippy::too_many_arguments)]
     async fn smart_cut(
         &self,
         job: &JobContext<'_>,
@@ -966,16 +1184,20 @@ impl DownloadManager {
         output: &Path,
         work: &Path,
         tracker: &mut Tracker,
+        subtitles: Option<&Prepared>,
     ) -> Result<std::result::Result<String, Fallback>> {
         let pieces = work.join("cut");
         let _ = tokio::fs::remove_dir_all(&pieces).await;
         tokio::fs::create_dir_all(&pieces).await?;
-        let result = self.smart_cut_in(job, recipe, source, output, &pieces, tracker).await;
+        let result = self
+            .smart_cut_in(job, recipe, source, output, &pieces, tracker, subtitles)
+            .await;
         // The pieces are as large as the part itself: don't keep them.
         let _ = tokio::fs::remove_dir_all(&pieces).await;
         result
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn smart_cut_in(
         &self,
         job: &JobContext<'_>,
@@ -984,6 +1206,7 @@ impl DownloadManager {
         output: &Path,
         pieces: &Path,
         tracker: &mut Tracker,
+        subtitles: Option<&Prepared>,
     ) -> Result<std::result::Result<String, Fallback>> {
         macro_rules! step {
             ($result:expr) => {
@@ -1100,16 +1323,20 @@ impl DownloadManager {
         let audio_packets = audio
             .as_ref()
             .map_or(0, |_| ((plan.end() - plan.first()) * 100.0).ceil() as usize);
+        // The subtitle track, shifted with the pieces; each cue is a packet in the index.
+        let track = subtitles.and_then(|prepared| prepared.track.as_deref().zip(recipe.subtitles.as_ref()));
+        let other_packets = audio_packets + subtitles.map_or(0, |prepared| prepared.cues * 2);
         let mut joined = Err(Fallback::NoFrames);
         // Room for the index at the front first; if it turns out too small,
         // write it at the end and move it.
         for index in [
-            smart_cut::Index::room_for(plan.frames.len(), audio_packets),
+            smart_cut::Index::room_for(plan.frames.len(), other_packets),
             smart_cut::Index::Rewrite,
         ] {
             let args = smart_cut::join_args(
                 &names,
                 audio.as_ref().map(|_| "audio.mka"),
+                track,
                 plan.first(),
                 codec,
                 recipe.container,
@@ -1539,9 +1766,11 @@ impl DownloadManager {
         Ok(output)
     }
 
-    /// Step 3: Siphon's ffmpeg pass, for recipes that convert video or audio.
+    /// Step 3: Siphon's ffmpeg pass, for recipes that convert video or audio
+    /// or add a subtitle track (`subtitles`, the prepared file).
     /// A size-targeted encode on the CPU runs twice; its first pass writes
     /// what it measured to the work folder.
+    #[allow(clippy::too_many_arguments)]
     async fn convert(
         &self,
         job: &JobContext<'_>,
@@ -1550,6 +1779,7 @@ impl DownloadManager {
         output: &Path,
         work: &Path,
         tracker: &mut Tracker,
+        subtitles: Option<&Path>,
     ) -> Result<()> {
         let ffmpeg = job.bins.ffmpeg();
         let log = work.join("passlog");
@@ -1564,7 +1794,14 @@ impl DownloadManager {
         let audio_shift = self.audio_shift(job, recipe, input).await?;
         for (index, pass) in passes.into_iter().enumerate() {
             let mut cmd = process::command(&ffmpeg);
-            cmd.args(ffmpeg::convert_args_shifted(recipe, input, output, pass, audio_shift));
+            cmd.args(ffmpeg::convert_args_shifted(
+                recipe,
+                input,
+                output,
+                pass,
+                audio_shift,
+                subtitles,
+            ));
             let result = self
                 .run_child(job.bins, job.id, cmd, |event| {
                     if let ChildEvent::Line(line) = event {
@@ -1698,6 +1935,59 @@ fn interrupt(pid: u32) -> tokio::task::JoinHandle<()> {
             Err(_) => process::kill_tree(pid).await,
         }
     })
+}
+
+/// Where a smart cut is joined as MP4 before it is put in another file type.
+const SMART_CUT_FILE: &str = "smart-cut.mp4";
+
+/// How long to wait before asking for a subtitle track a second time.
+const SUBTITLE_RETRY: Duration = Duration::from_secs(5);
+
+/// The subtitle file yt-dlp fetched into `work`, if there is one:
+/// `subtitles-source.<key>.srt`, or `.ass` kept styled.
+async fn fetched_subtitles(work: &Path) -> Option<PathBuf> {
+    let mut entries = tokio::fs::read_dir(work).await.ok()?;
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let ours = name.starts_with(&format!("{}.", args::SUBTITLE_SOURCE));
+        if ours && [".srt", ".ass", ".ssa"].iter().any(|ext| name.ends_with(ext)) {
+            return Some(entry.path());
+        }
+    }
+    None
+}
+
+/// Writes the subtitles for a file beside it (Edit), named the way players
+/// and editors look for them: `Title [id].en.srt`, numbered if that name is
+/// taken, since nothing already in the folder is ever replaced. Says so if
+/// it couldn't be written.
+async fn write_beside(video_file: &Path, recipe: &Recipe, subtitles: Option<&Prepared>) -> Option<Note> {
+    let (Some(step), Some(text)) = (
+        recipe.subtitles.as_ref(),
+        subtitles.and_then(|prepared| prepared.beside.as_deref()),
+    ) else {
+        return None;
+    };
+    let target = beside_name(video_file, &step.lang, |candidate| candidate.exists());
+    match tokio::fs::write(&target, text).await {
+        Ok(()) => None,
+        Err(err) => Some(Note::subtitles(format!(
+            "Saved without the {} subtitle file: {err}.",
+            step.title
+        ))),
+    }
+}
+
+/// `Title [id].mp4` → `Title [id].en.srt`, or `Title [id].en (2).srt` if `taken`.
+fn beside_name(video_file: &Path, lang: &str, taken: impl Fn(&Path) -> bool) -> PathBuf {
+    let stem = video_file.file_stem().and_then(|stem| stem.to_str()).unwrap_or("video");
+    let mut target = video_file.with_file_name(format!("{stem}.{lang}.srt"));
+    let mut copy = 2;
+    while taken(&target) {
+        target = video_file.with_file_name(format!("{stem}.{lang} ({copy}).srt"));
+        copy += 1;
+    }
+    target
 }
 
 /// Bytes free for the current user on the disk `dir` is on.
@@ -1856,6 +2146,7 @@ mod tests {
             section_request_size: None,
             fallback: None,
             cut_encode: None,
+            subtitles: None,
         }
     }
 
@@ -1922,6 +2213,17 @@ mod naming_tests {
         assert_eq!(retries.next(Retry::Soon), None);
         assert_eq!(retries.next(Retry::Later), None);
         assert_eq!(Retries::default().next(Retry::No), None);
+    }
+
+    #[test]
+    fn a_subtitle_file_beside_the_video_is_named_after_it() {
+        let video = Path::new(r"C:\Videos\Talk [abc] (2).mp4");
+        assert_eq!(
+            beside_name(video, "pt-br", |_| false),
+            Path::new(r"C:\Videos\Talk [abc] (2).pt-br.srt")
+        );
+        let taken = beside_name(video, "en", |path| path.to_string_lossy().ends_with(".en.srt"));
+        assert_eq!(taken, Path::new(r"C:\Videos\Talk [abc] (2).en (2).srt"));
     }
 
     #[test]

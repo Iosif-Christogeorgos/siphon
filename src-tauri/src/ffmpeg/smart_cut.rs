@@ -25,6 +25,7 @@ use std::path::Path;
 
 use crate::ffmpeg::encoders::Hardware;
 use crate::plan::codecs::{Container, VideoCodec};
+use crate::plan::subtitles::SubtitleStep;
 use crate::plan::Trim;
 
 /// Two timestamps closer than this are the same frame. Containers store
@@ -669,9 +670,14 @@ impl Index {
     }
 }
 
+///
+/// `subtitles` is the subtitle file and its step, on the video's own clock
+/// like the pieces: the join shifts it with them.
+#[allow(clippy::too_many_arguments)]
 pub fn join_args(
     pieces: &[&str],
     audio: Option<&str>,
+    subtitles: Option<(&Path, &SubtitleStep)>,
     start: f64,
     codec: VideoCodec,
     container: Container,
@@ -684,11 +690,24 @@ pub fn join_args(
     if let Some(audio) = audio {
         args.extend(os(&["-i", audio]));
     }
+    if let Some((file, _)) = subtitles {
+        args.push("-i".into());
+        args.push(file.into());
+    }
     args.extend(os(&["-map", "0:v:0"]));
     if audio.is_some() {
         args.extend(os(&["-map", "1:a:0"]));
     }
-    args.extend(os(&["-c", "copy", "-output_ts_offset", &format!("-{start}")]));
+    args.extend(os(&["-c", "copy"]));
+    if let Some((_, step)) = subtitles {
+        let input = 1 + usize::from(audio.is_some());
+        args.extend(
+            super::subtitle_track_args(step, container, input)
+                .into_iter()
+                .map(OsString::from),
+        );
+    }
+    args.extend(os(&["-output_ts_offset", &format!("-{start}")]));
     if matches!(container, Container::Mp4 | Container::Mov) {
         if codec == VideoCodec::Hevc {
             // The pieces carry their own parameter sets in the stream, which
@@ -1355,6 +1374,7 @@ mod tests {
         let join = join_args(
             &["head.ts", "mid.ts", "tail.ts"],
             Some("audio.mka"),
+            None,
             3600.5,
             VideoCodec::H264,
             Container::Mp4,
@@ -1371,6 +1391,7 @@ mod tests {
         let hevc = join_args(
             &["mid.ts", "tail.ts"],
             None,
+            None,
             1.0,
             VideoCodec::Hevc,
             Container::Mp4,
@@ -1379,5 +1400,38 @@ mod tests {
         );
         assert!(hevc.windows(2).any(|w| w[0] == "-tag:v" && w[1] == "hev1"));
         assert!(hevc.windows(2).any(|w| w[0] == "-movflags" && w[1] == "+faststart"));
+
+        // Subtitles come in after the audio, and are shifted with the pieces.
+        let step = crate::plan::subtitles::SubtitleStep {
+            key: "el".into(),
+            automatic: false,
+            lang: "el".into(),
+            title: "Greek".into(),
+            kind: crate::ytdlp::subtitles::SubtitleKind::Uploaded,
+            delivery: crate::plan::subtitles::Delivery::Embed,
+            styled: false,
+        };
+        let with = join_args(
+            &["mid.ts"],
+            Some("audio.mka"),
+            Some((Path::new("subtitles.srt"), &step)),
+            3600.5,
+            VideoCodec::H264,
+            Container::Mp4,
+            Index::Rewrite,
+            Path::new("out.mp4"),
+        )
+        .iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join(" ");
+        assert!(
+            with.contains("-i audio.mka -i subtitles.srt -map 0:v:0 -map 1:a:0 -c copy -map 2:0 -c:s mov_text -metadata:s:s:0 language=ell"),
+            "{with}"
+        );
+        assert!(
+            with.contains("-disposition:s:0 default -output_ts_offset -3600.5"),
+            "{with}"
+        );
     }
 }

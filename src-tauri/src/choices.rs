@@ -13,6 +13,7 @@ use tauri::{AppHandle, Manager};
 use crate::error::{AppError, Result};
 use crate::plan::registry::{Group, MusicFormat, TargetId, TierId};
 use crate::plan::{Content, ManualOptions};
+use crate::ytdlp::subtitles::language_tag;
 
 /// Which kind of choice is active.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -52,6 +53,9 @@ pub struct Choices {
     pub smooth_editing: bool,
     pub custom: ManualOptions,
     pub saved: Vec<SavedPreset>,
+    /// The language subtitles are wanted in, for every video that has it
+    /// ("en", "pt-br"); `None` is none, which is where a new user starts.
+    pub subtitles: Option<String>,
 }
 
 impl Default for Choices {
@@ -68,12 +72,16 @@ impl Default for Choices {
             smooth_editing: false,
             custom: ManualOptions::default(),
             saved: Vec::new(),
+            subtitles: None,
         }
     }
 }
 
 /// The longest name a saved preset may have.
 const MAX_NAME: usize = 40;
+
+/// The longest language tag kept ("zh-hant-tw" is ten).
+const MAX_LANGUAGE: usize = 20;
 
 impl Choices {
     /// Drops anything that no longer makes sense: a target remembered for the
@@ -85,11 +93,17 @@ impl Choices {
         // Stream ids belong to one video, not to what is remembered.
         self.custom.video_format = None;
         self.custom.audio_format = None;
+        // The subtitle language is remembered once, for every kind of download.
+        self.custom.subtitles = None;
+        self.subtitles = self.subtitles.as_deref().map(language_tag).filter(|tag| {
+            !tag.is_empty() && tag.len() <= MAX_LANGUAGE && tag.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        });
         for preset in &mut self.saved {
             preset.name = preset.name.trim().chars().take(MAX_NAME).collect();
             // Stream ids belong to one video, not to a preset.
             preset.options.video_format = None;
             preset.options.audio_format = None;
+            preset.options.subtitles = None;
         }
         if self.saved.iter().any(|preset| preset.name.is_empty()) {
             return Err(AppError::internal("A saved preset needs a name."));
@@ -173,6 +187,7 @@ pub fn from_legacy(old: &Value) -> Choices {
             // The old custom mode offered no codec the new one lacks.
             video_codec: field(manual, "video_codec"),
             audio_codec: field(manual, "audio_codec"),
+            subtitles: None,
         };
     }
 
@@ -308,6 +323,28 @@ mod tests {
     fn choices_files_from_older_versions_fill_in_new_fields() {
         let choices: Choices = serde_json::from_str(r#"{"group": "share"}"#).unwrap();
         assert_eq!(choices.group, Group::Share);
+    }
+
+    #[test]
+    fn the_subtitle_language_is_kept_once_and_cleaned() {
+        let mut choices = Choices {
+            subtitles: Some("pt_BR".into()),
+            ..Choices::default()
+        };
+        choices.custom.subtitles = Some("en".into());
+        let choices = choices.sanitized().unwrap();
+        assert_eq!(choices.subtitles.as_deref(), Some("pt-br"));
+        assert_eq!(choices.custom.subtitles, None);
+        // Nothing that isn't a language tag.
+        for odd in ["", "en; rm -rf", "a-very-long-language-tag-indeed"] {
+            let choices = Choices {
+                subtitles: Some(odd.into()),
+                ..Choices::default()
+            };
+            assert_eq!(choices.sanitized().unwrap().subtitles, None, "{odd}");
+        }
+        // A new user has none.
+        assert_eq!(Choices::default().subtitles, None);
     }
 
     #[test]

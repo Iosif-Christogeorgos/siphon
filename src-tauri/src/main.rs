@@ -14,6 +14,7 @@ mod preview;
 mod process;
 mod sessions;
 mod settings;
+mod srt;
 mod state;
 mod throttle;
 mod ytdlp;

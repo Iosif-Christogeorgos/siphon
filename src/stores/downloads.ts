@@ -38,6 +38,8 @@ export interface Download extends DownloadSource {
   note?: string;
   /** A recording kept as it was recorded, not made into the preset's file. Missing on recordings finished before 0.13.1. */
   asRecorded?: boolean;
+  /** `note` in a word or two, for the list ("No subtitles"); a recording's notes go by `asRecorded`. */
+  noteLabel?: string;
   /** A recording Siphon's closing cut short, finished once it started again. */
   recovered?: boolean;
 }
@@ -202,7 +204,15 @@ export const useDownloads = create<DownloadsState>((set, get) => {
           url: recording.url,
           title: recording.title,
           thumbnail: recording.thumbnail,
-          choice: { mode: "preset", target: "max", quality: null, tier: null, music_format: "mp3", smooth_editing: false },
+          choice: {
+            mode: "preset",
+            target: "max",
+            quality: null,
+            tier: null,
+            music_format: "mp3",
+            smooth_editing: false,
+            subtitles: null,
+          },
           trim: null,
           record: { from_start: false },
           status: "running",
@@ -275,6 +285,7 @@ export const useDownloads = create<DownloadsState>((set, get) => {
             path: event.path,
             size: event.size,
             note: event.note,
+            noteLabel: event.note_label,
             asRecorded: event.as_recorded === true,
             recovered: event.recovered || get().byId[event.id]?.recovered,
             finishedAt: Date.now(),

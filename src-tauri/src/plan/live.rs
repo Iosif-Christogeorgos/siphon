@@ -295,6 +295,7 @@ mod tests {
                 viewers: Some(4298),
                 from_start: None,
             }),
+            subtitles: Vec::new(),
         }
     }
 
@@ -305,6 +306,7 @@ mod tests {
             tier: None,
             music_format: Default::default(),
             smooth_editing: false,
+            subtitles: None,
         })
     }
 

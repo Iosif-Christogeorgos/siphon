@@ -1,6 +1,7 @@
 //! Translates a [`Recipe`] into yt-dlp arguments.
 
 use crate::plan::codecs::{AudioCodec, Container, VideoCodec};
+use crate::plan::subtitles::SubtitleStep;
 use crate::plan::{AudioAction, Recipe};
 
 /// How long a trimmed part's download may receive nothing before it counts
@@ -186,6 +187,51 @@ pub fn recipe_args(recipe: &Recipe) -> Vec<String> {
     args
 }
 
+/// The name yt-dlp writes a subtitle track to, before Siphon prepares it:
+/// `subtitles-source.en-orig.srt` (yt-dlp puts the track's key before the extension).
+pub const SUBTITLE_SOURCE: &str = "subtitles-source";
+
+/// The arguments that fetch one subtitle track and nothing else, on its own
+/// after the video: a subtitle that can't be had never costs the video.
+/// SubRip is asked for first (YouTube's WebVTT for speech recognition repeats
+/// every line as it rolls up, with a timing tag on every word; its SubRip
+/// doesn't), and anything else is made into SubRip by yt-dlp, which reads
+/// TTML itself and WebVTT through ffmpeg. Styled SubStation Alpha is fetched
+/// as it is, for Matroska. None for a key yt-dlp could read as something else
+/// than one language: `--sub-langs` takes patterns separated by commas, "all"
+/// for every language, and a leading "-" to leave one out.
+pub fn subtitle_args(step: &SubtitleStep) -> Option<Vec<String>> {
+    let key = step.key.as_str();
+    let plain = key.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if !plain || key.is_empty() || key.starts_with('-') || key.eq_ignore_ascii_case("all") {
+        return None;
+    }
+    let mut args: Vec<String> = vec![
+        "--skip-download".into(),
+        // People's tracks and machine-made ones are listed apart, and each flag reads only its own list.
+        if step.automatic {
+            "--write-auto-subs"
+        } else {
+            "--write-subs"
+        }
+        .into(),
+        "--sub-langs".into(),
+        step.key.clone(),
+        "--sub-format".into(),
+    ];
+    if step.styled {
+        args.push("ass/ssa".into());
+    } else {
+        args.extend([
+            "srt/vtt/ass/ssa/ttml/dfxp".into(),
+            "--convert-subs".into(),
+            "srt".into(),
+        ]);
+    }
+    args.push("--no-playlist".into());
+    Some(args)
+}
+
 /// Title, artist, date and the video's thumbnail as cover art, so a music
 /// player shows more than a file name. Audio only: writing tags means one
 /// more pass over the whole file, which is nothing for a song but a full
@@ -283,6 +329,45 @@ pub fn recording_stem(stem: &str) -> &str {
         _ => stem,
     };
     finished_stem(stem)
+}
+
+#[cfg(test)]
+mod subtitle_tests {
+    use super::*;
+    use crate::plan::subtitles::Delivery;
+    use crate::ytdlp::subtitles::SubtitleKind;
+
+    fn step(key: &str, automatic: bool, styled: bool) -> SubtitleStep {
+        SubtitleStep {
+            key: key.into(),
+            automatic,
+            lang: "en".into(),
+            title: "English".into(),
+            kind: if automatic {
+                SubtitleKind::Automatic
+            } else {
+                SubtitleKind::Uploaded
+            },
+            delivery: Delivery::Embed,
+            styled,
+        }
+    }
+
+    #[test]
+    fn fetches_one_track_as_subrip_unless_styled() {
+        assert_eq!(
+            subtitle_args(&step("en-orig", true, false)).unwrap().join(" "),
+            "--skip-download --write-auto-subs --sub-langs en-orig --sub-format srt/vtt/ass/ssa/ttml/dfxp --convert-subs srt --no-playlist"
+        );
+        assert_eq!(
+            subtitle_args(&step("ja", false, true)).unwrap().join(" "),
+            "--skip-download --write-subs --sub-langs ja --sub-format ass/ssa --no-playlist"
+        );
+        // Never a pattern, a list, every language or a language left out.
+        for odd in ["en,fr", "all", "ALL", ".*", "", "-live_chat"] {
+            assert_eq!(subtitle_args(&step(odd, false, false)), None, "{odd}");
+        }
+    }
 }
 
 #[cfg(test)]

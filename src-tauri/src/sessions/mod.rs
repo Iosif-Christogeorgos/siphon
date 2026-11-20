@@ -653,6 +653,7 @@ mod tests {
             formats: Vec::new(),
             with_account: false,
             live: None,
+            subtitles: Vec::new(),
         }))
     }
 

@@ -12,8 +12,10 @@ use std::path::Path;
 use std::time::Duration;
 
 use crate::plan::codecs::{AudioCodec, Container, VideoCodec};
+use crate::plan::subtitles::SubtitleStep;
 use crate::plan::{AudioAction, Recipe, Trim, VideoAction, VideoEncode, VideoStep};
 use crate::process;
+use crate::ytdlp::subtitles::iso639_2;
 use encoders::Hardware;
 
 /// Whether this ffmpeg can fetch a stream in requests of a set size
@@ -43,22 +45,25 @@ pub enum Pass<'a> {
     },
 }
 
-/// [`convert_args_shifted`] for a part whose audio and video share a clock.
+/// [`convert_args_shifted`] for a part whose audio and video share a clock, without subtitles.
 #[cfg(test)]
 pub fn convert_args(recipe: &Recipe, input: &Path, output: &Path, pass: Pass) -> Vec<OsString> {
-    convert_args_shifted(recipe, input, output, pass, None)
+    convert_args_shifted(recipe, input, output, pass, None, None)
 }
 
 /// Builds the ffmpeg arguments that turn the downloaded `input` into the
 /// file the recipe describes. Every value is its own argument; nothing is
 /// ever passed through a shell. For a cut, `audio_shift` moves the audio
 /// that many seconds onto the video's clock (see `smart_cut::clock_shift`).
+/// `subtitles` is the recipe's subtitle file, prepared on the video's own
+/// clock (see `crate::srt`): a cut shifts it with the picture.
 pub fn convert_args_shifted(
     recipe: &Recipe,
     input: &Path,
     output: &Path,
     pass: Pass,
     audio_shift: Option<f64>,
+    subtitles: Option<&Path>,
 ) -> Vec<OsString> {
     let mut args: Vec<OsString> = Vec::new();
     let mut push = |values: &[&str]| args.extend(values.iter().map(OsString::from));
@@ -81,12 +86,21 @@ pub fn convert_args_shifted(
         args.extend(["-itsoffset".into(), shift.to_string().into(), "-i".into()]);
         args.push(input.into());
     }
+    let first_pass = matches!(pass, Pass::First { .. });
+    // The subtitle file: the input after the source (and its shifted audio).
+    let subtitle_track = match (subtitles, &recipe.subtitles) {
+        (Some(file), Some(step)) if !first_pass => {
+            args.extend(["-i".into(), file.into()]);
+            Some((step, 1 + usize::from(audio_shift.is_some())))
+        }
+        _ => None,
+    };
     let mut push = |values: &[&str]| args.extend(values.iter().map(OsString::from));
 
     // ── Streams ──
-    // First video track, and the first audio track if we keep one. Drops
-    // subtitles, thumbnails and data tracks that some containers reject.
-    let first_pass = matches!(pass, Pass::First { .. });
+    // First video track, and the first audio track if we keep one. Drops the
+    // source's own subtitles, thumbnails and data tracks, which some
+    // containers reject; Siphon's subtitle file is added on its own.
     push(&["-map", "0:v:0"]);
     match recipe.audio_codec() {
         Some(_) if !first_pass && audio_shift.is_some() => push(&["-map", "1:a:0?"]),
@@ -143,6 +157,12 @@ pub fn convert_args_shifted(
         }
     }
 
+    if let Some((step, input)) = subtitle_track {
+        for arg in subtitle_track_args(step, recipe.container, input) {
+            push(&[&arg]);
+        }
+    }
+
     // ── Output ──
     if let Some(cut) = cut {
         // Shift everything back so the clip starts at zero.
@@ -155,6 +175,63 @@ pub fn convert_args_shifted(
     if matches!(recipe.container, Container::Mp4 | Container::Mov) {
         // Put the index at the front so playback can start before the whole file is read.
         push(&["-movflags", "+faststart"]);
+    }
+    args.push(output.into());
+    args
+}
+
+/// The arguments that make the first stream of input `input` the file's
+/// subtitle track: in the kind of track its file type holds (MP4's own timed
+/// text, WebVTT in WebM, SubRip or the styled original in Matroska), tagged
+/// with its language and named, and shown when the video opens, since it was
+/// asked for. A file only gets Siphon's own track, so it is always `s:0`.
+pub fn subtitle_track_args(step: &SubtitleStep, container: Container, input: usize) -> Vec<String> {
+    let mut args: Vec<String> = vec!["-map".into(), format!("{input}:0")];
+    args.extend(subtitle_codec_args(step, container));
+    args
+}
+
+/// The codec, language, name and disposition of the file's subtitle track.
+fn subtitle_codec_args(step: &SubtitleStep, container: Container) -> Vec<String> {
+    let codec = match container {
+        Container::Mp4 | Container::Mov => "mov_text",
+        Container::Webm => "webvtt",
+        _ if step.styled => "copy",
+        _ => "srt",
+    };
+    let mut args: Vec<String> = vec!["-c:s".into(), codec.into()];
+    // Matroska and WebM name languages the bibliographic way ("gre"), MP4 the other ("ell").
+    let bibliographic = matches!(container, Container::Mkv | Container::Webm);
+    if let Some(code) = iso639_2(&step.lang, bibliographic) {
+        args.extend(["-metadata:s:s:0".into(), format!("language={code}")]);
+    }
+    args.extend(["-metadata:s:s:0".into(), format!("title={}", step.title)]);
+    if matches!(container, Container::Mp4 | Container::Mov) {
+        // What MP4 players show as the track's name.
+        args.extend(["-metadata:s:s:0".into(), format!("handler_name={}", step.title)]);
+    }
+    args.extend(["-disposition:s:0".into(), "default".into()]);
+    args
+}
+
+/// The arguments that copy a finished MP4's streams into `container`: a
+/// smart cut is joined and checked as MP4 (its checks read decode times,
+/// which Matroska doesn't keep), then put in the file type the plan asked
+/// for. Its subtitle track, if any, comes along in that file type's kind.
+pub fn rewrap_args(
+    input: &Path,
+    output: &Path,
+    subtitles: Option<&SubtitleStep>,
+    container: Container,
+) -> Vec<OsString> {
+    let mut args: Vec<OsString> = ["-hide_banner", "-nostdin", "-y", "-loglevel", "error", "-i"]
+        .map(OsString::from)
+        .to_vec();
+    args.push(input.into());
+    args.extend(["-map", "0:v:0", "-map", "0:a:0?", "-c", "copy"].map(OsString::from));
+    if let Some(step) = subtitles {
+        args.extend(["-map".into(), "0:s:0?".into()]);
+        args.extend(subtitle_codec_args(step, container).into_iter().map(OsString::from));
     }
     args.push(output.into());
     args
@@ -718,6 +795,7 @@ mod recording_tests {
             section_request_size: None,
             fallback: None,
             cut_encode: None,
+            subtitles: None,
         };
         let text = |args: Vec<OsString>| {
             args.iter()

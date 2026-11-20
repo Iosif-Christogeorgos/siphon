@@ -11,6 +11,7 @@ export const STAGE_LABELS: Record<Stage, string> = {
   downloading: "Downloading",
   merging: "Merging",
   converting: "Converting",
+  subtitles: "Adding subtitles",
   finishing: "Finishing up",
   waiting_live: "Waiting for the stream to start",
   recording: "Recording",

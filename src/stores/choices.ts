@@ -138,7 +138,7 @@ export function currentTarget(registry: Registry, choices: Choices): Target | un
 export function toChoice(registry: Registry, choices: Choices): Choice | null {
   if (choices.active.kind !== "preset") {
     const options = savedOf(choices)?.options ?? choices.custom;
-    return { mode: "custom", ...options };
+    return { mode: "custom", ...options, subtitles: choices.subtitles };
   }
   const target = currentTarget(registry, choices);
   if (!target) return null;
@@ -149,6 +149,7 @@ export function toChoice(registry: Registry, choices: Choices): Choice | null {
     tier: choices.tiers[target.id] ?? null,
     music_format: choices.music_format,
     smooth_editing: choices.smooth_editing,
+    subtitles: choices.subtitles,
   };
 }
 

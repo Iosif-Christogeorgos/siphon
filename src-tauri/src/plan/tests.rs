@@ -77,6 +77,7 @@ fn info(formats: Vec<Format>, seconds: f64) -> VideoInfo {
         formats,
         with_account: false,
         live: None,
+        subtitles: Vec::new(),
     }
 }
 
@@ -120,6 +121,7 @@ fn preset(target: TargetId) -> PresetChoice {
         tier: None,
         music_format: MusicFormat::Mp3,
         smooth_editing: false,
+        subtitles: None,
     }
 }
 
@@ -941,4 +943,156 @@ fn audio_files_get_tags_and_cover_art_and_videos_are_left_alone() {
     // A video is not rewritten once more just for tags.
     let video = plan_for(&youtube_4k(), TargetId::Windows);
     assert!(!has(&video, "--embed-metadata") && !has(&video, "--embed-thumbnail"));
+}
+
+// ── Subtitles ───────────────────────────────────────────────────────────
+
+fn with_subtitles(
+    mut video: VideoInfo,
+    tracks: &[(&str, crate::ytdlp::subtitles::SubtitleKind, &[&str])],
+) -> VideoInfo {
+    video.subtitles = tracks
+        .iter()
+        .map(|(key, kind, exts)| crate::ytdlp::subtitles::SubtitleTrack {
+            key: key.to_string(),
+            lang: crate::ytdlp::subtitles::language_tag(key),
+            name: None,
+            kind: *kind,
+            exts: exts.iter().map(|ext| ext.to_string()).collect(),
+        })
+        .collect();
+    video
+}
+
+fn wanting(target: TargetId, language: &str) -> PresetChoice {
+    PresetChoice {
+        subtitles: Some(language.into()),
+        ..preset(target)
+    }
+}
+
+#[test]
+fn subtitles_go_inside_a_file_to_watch_and_beside_one_to_edit() {
+    use crate::ytdlp::subtitles::SubtitleKind::*;
+    use subtitles::Delivery;
+    let video = with_subtitles(
+        x_4k(),
+        &[("en", Uploaded, &["srt", "vtt"]), ("el", Automatic, &["srt"])],
+    );
+
+    // Watch on Windows: a track in an MKV, the file type Windows' players show
+    // subtitles from. The streams are still copied, in Siphon's own pass.
+    let watch = plan_with(&video, wanting(TargetId::Windows, "en"), &Capabilities::BASIC);
+    let step = watch.subtitles.as_ref().unwrap();
+    assert_eq!(
+        (step.key.as_str(), step.delivery, step.styled),
+        ("en", Delivery::Embed, false)
+    );
+    assert_eq!(step.title, "English");
+    assert_eq!(watch.container, Container::Mkv);
+    assert!(watch
+        .hints
+        .iter()
+        .any(|hint| hint.text.contains("In MKV rather than MP4")));
+    assert!(copied(&watch) && watch.needs_ffmpeg_pass() && watch.adds_only_subtitles());
+    assert_eq!(watch.badge, Badge::Lossless);
+    // TVs read them from MKV too; Apple devices and Android keep MP4's own timed text.
+    let container = |target| plan_with(&video, wanting(target, "en"), &Capabilities::BASIC).container;
+    assert_eq!(container(TargetId::Tv), Container::Mkv);
+    assert_eq!(container(TargetId::Apple), Container::Mp4);
+    assert_eq!(container(TargetId::Android), Container::Mp4);
+    // Without subtitles, nothing changes.
+    assert_eq!(plan_for(&video, TargetId::Windows).container, Container::Mp4);
+    // Speech recognition is marked as machine-made, and says so.
+    let greek = plan_with(&video, wanting(TargetId::Windows, "el"), &Capabilities::BASIC);
+    assert!(greek.subtitles.as_ref().unwrap().automatic);
+    assert!(greek.hints.iter().any(|hint| hint.text.contains("speech recognition")));
+
+    // Edit: an SRT file beside the video.
+    let edit = plan_with(&video, wanting(TargetId::Premiere, "en"), &Capabilities::BASIC);
+    assert_eq!(edit.subtitles.as_ref().map(|step| step.delivery), Some(Delivery::File));
+
+    // Nothing for a file that can't show them, nor in a language the video lacks.
+    for target in [TargetId::Discord, TargetId::Music, TargetId::Original] {
+        assert_eq!(
+            plan_with(&video, wanting(target, "en"), &Capabilities::BASIC).subtitles,
+            None
+        );
+    }
+    let french = plan_with(&video, wanting(TargetId::Windows, "fr"), &Capabilities::BASIC);
+    assert_eq!(french.subtitles, None);
+    assert!(!french.needs_ffmpeg_pass());
+    // And none when none are asked for.
+    assert_eq!(plan_for(&video, TargetId::Windows).subtitles, None);
+}
+
+#[test]
+fn max_quality_keeps_styled_subtitles_in_matroska_but_a_clip_cant() {
+    use crate::ytdlp::subtitles::SubtitleKind::*;
+    let video = with_subtitles(x_4k(), &[("ja", Uploaded, &["ass", "srt"])]);
+    let max = plan_with(&video, wanting(TargetId::Max, "ja"), &Capabilities::BASIC);
+    assert_eq!(max.container, Container::Mkv);
+    assert!(max.subtitles.as_ref().unwrap().styled);
+
+    // So does Watch on Windows; Apple's MP4 can't, and says what is lost.
+    let windows = plan_with(&video, wanting(TargetId::Windows, "ja"), &Capabilities::BASIC);
+    assert!(windows.subtitles.as_ref().unwrap().styled);
+    let apple = plan_with(&video, wanting(TargetId::Apple, "ja"), &Capabilities::BASIC);
+    assert_eq!(apple.container, Container::Mp4);
+    assert!(!apple.subtitles.as_ref().unwrap().styled);
+    assert!(apple.hints.iter().any(|hint| hint.text.contains("an MP4 file")));
+
+    // A clip is cut as SubRip, styling or not.
+    let clip = plan(
+        &video,
+        &Choice::Preset(wanting(TargetId::Max, "ja")),
+        Some(Trim { start: 10.0, end: 20.0 }),
+        &Capabilities::BASIC,
+    )
+    .unwrap();
+    assert!(!clip.subtitles.as_ref().unwrap().styled);
+    assert!(clip.hints.iter().any(|hint| hint.text.contains("a clip")));
+}
+
+#[test]
+fn custom_settings_take_subtitles_unless_they_make_audio() {
+    use crate::ytdlp::subtitles::SubtitleKind::*;
+    let video = with_subtitles(youtube_4k(), &[("en-orig", Automatic, &["srt"])]);
+    let custom = |content: Content| {
+        plan(
+            &video,
+            &Choice::Custom(ManualOptions {
+                content,
+                container: Some(Container::Webm),
+                subtitles: Some("en".into()),
+                ..ManualOptions::default()
+            }),
+            None,
+            &Capabilities::BASIC,
+        )
+        .unwrap()
+    };
+    let webm = custom(Content::VideoAudio);
+    assert_eq!(webm.subtitles.as_ref().map(|step| step.key.as_str()), Some("en-orig"));
+    assert!(webm.hints.iter().any(|hint| hint.text.contains("speech recognition")));
+    // The file type chosen is kept, and where it falls short is said.
+    assert_eq!(webm.container, Container::Webm);
+    assert!(webm.hints.iter().any(|hint| hint.text.contains("inside WebM files")));
+    assert_eq!(custom(Content::AudioOnly).subtitles, None);
+}
+
+#[test]
+fn a_stream_as_it_airs_gets_no_subtitles() {
+    use crate::ytdlp::subtitles::SubtitleKind::*;
+    let mut video = with_subtitles(x_4k(), &[("en", Uploaded, &["vtt"])]);
+    video.live = Some(crate::ytdlp::metadata::Live {
+        status: crate::ytdlp::metadata::LiveStatus::Live,
+        since: None,
+        viewers: None,
+        from_start: None,
+    });
+    assert_eq!(
+        plan_with(&video, wanting(TargetId::Windows, "en"), &Capabilities::BASIC).subtitles,
+        None
+    );
 }

@@ -23,6 +23,8 @@ pub enum Stage {
     Downloading,
     Merging,
     Converting,
+    /// Fetching subtitles after the video, or adding them to copied streams.
+    Subtitles,
     Finishing,
     /// A live recording waits for its stream to start.
     WaitingLive,
@@ -87,6 +89,8 @@ pub struct Tracker {
     progress: Progress,
     /// Recent byte counts of the stream being fetched, and when they were read.
     samples: VecDeque<(Instant, u64)>,
+    /// What Siphon's own ffmpeg pass is called: converting, or only adding subtitles.
+    pass_stage: Stage,
 }
 
 impl Tracker {
@@ -108,7 +112,22 @@ impl Tracker {
                 live: None,
             },
             samples: VecDeque::new(),
+            pass_stage: Stage::Converting,
         }
+    }
+
+    /// Names Siphon's ffmpeg pass by what it does (see `on_convert`).
+    pub fn set_pass_stage(&mut self, stage: Stage) {
+        self.pass_stage = stage;
+    }
+
+    /// What a job reports while it fetches subtitles after the video.
+    pub fn on_subtitles(&mut self) -> Progress {
+        self.progress.stage = Stage::Subtitles;
+        self.progress.fraction = self.progress.fraction.max(self.download_share);
+        self.progress.speed = None;
+        self.progress.eta = None;
+        self.current()
     }
 
     /// What a job reports while it waits in the queue.
@@ -262,7 +281,7 @@ impl Tracker {
     /// Progress of the ffmpeg conversion, 0–1, mapped onto the rest of the bar.
     pub fn on_convert(&mut self, done: f64) -> Progress {
         let overall = self.download_share + (1.0 - self.download_share) * done.clamp(0.0, 1.0);
-        self.progress.stage = Stage::Converting;
+        self.progress.stage = self.pass_stage;
         self.progress.fraction = self.progress.fraction.max(overall);
         self.progress.speed = None;
         self.progress.eta = None;

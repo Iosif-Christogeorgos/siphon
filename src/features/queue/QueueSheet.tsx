@@ -271,6 +271,7 @@ const SHORT_STAGES: Record<Stage, string | null> = {
   downloading: null,
   merging: "Merging",
   converting: "Converting",
+  subtitles: "Subtitles",
   finishing: "Finishing",
   waiting_live: "Waiting to go live",
   recording: null,
@@ -351,11 +352,12 @@ function statusPieces(download: Download): { key: string; node: ReactNode }[] {
             node: (
               <>
                 <Info />
-                {/* The other note says the disk filled up and the recording stopped there. Rows
+                {/* A recording's other note says the disk filled up and it stopped there. Rows
                     from before 0.13.1 have no flag, but their note says which it is. */}
-                {(download.asRecorded ?? download.note.includes("saved as it was recorded"))
-                  ? "Saved as recorded"
-                  : "Stopped early"}
+                {download.noteLabel ??
+                  ((download.asRecorded ?? download.note.includes("saved as it was recorded"))
+                    ? "Saved as recorded"
+                    : "Stopped early")}
               </>
             ),
           },

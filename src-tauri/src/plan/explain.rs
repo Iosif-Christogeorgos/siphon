@@ -4,6 +4,7 @@ use serde::Serialize;
 
 use super::codecs::{AudioCodec, VideoCodec};
 use super::registry::{Group, QualityKind};
+use super::subtitles::{self, Delivery};
 use super::{
     plan, quality_options, AudioAction, Badge, Capabilities, Choice, Hint, PresetChoice, Recipe, Trim, VideoAction,
 };
@@ -35,6 +36,11 @@ pub struct PlanSummary {
     pub ext: &'static str,
     /// Why Download isn't offered (Share: too long to look decent).
     pub blocked: Option<String>,
+    /// How subtitles would reach the file with this choice, in any language;
+    /// None when it can take none (audio, Share).
+    pub subtitle_delivery: Option<Delivery>,
+    /// The subtitle track the plan adds (its key), if any.
+    pub subtitle_track: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -92,6 +98,8 @@ pub fn summarize(video: &VideoInfo, choice: &Choice, trim: Option<Trim>, caps: &
         resolved,
         ext: recipe.container.ext(),
         blocked: recipe.blocked.clone(),
+        subtitle_delivery: subtitles::delivery(choice, &recipe),
+        subtitle_track: recipe.subtitles.as_ref().map(|step| step.key.clone()),
     })
 }
 
@@ -163,7 +171,25 @@ fn headline(recipe: &Recipe, is_share: bool) -> String {
     }
 }
 
+/// What the plan does, in a sentence or two, and where its subtitles go.
 fn detail(recipe: &Recipe) -> String {
+    let streams = streams_detail(recipe);
+    match &recipe.subtitles {
+        Some(step) if step.delivery == Delivery::Embed => {
+            format!(
+                "{streams} {} subtitles are inside the file, as a track you can turn on and off.",
+                step.title
+            )
+        }
+        Some(step) => format!(
+            "{streams} {} subtitles come as an SRT file beside the video, to import as captions.",
+            step.title
+        ),
+        None => streams,
+    }
+}
+
+fn streams_detail(recipe: &Recipe) -> String {
     let promise = &recipe.promise;
     let reason = recipe
         .reason
