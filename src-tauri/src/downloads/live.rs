@@ -606,8 +606,13 @@ impl DownloadManager {
         tokio::fs::create_dir_all(&work).await?;
         let result = self.finalize_in(job, recording, &work).await;
         let _ = tokio::fs::remove_dir_all(&work).await;
-        if result.is_ok() {
-            self.forget_recording(job.id, false).await;
+        match (&result, self.stop_of(job.id)) {
+            (Ok(_), _) => self.forget_recording(job.id, false).await,
+            // Cancelled: thrown away, as while recording.
+            (Err(_), Some(Stop::Cancel)) => self.forget_recording(job.id, true).await,
+            // Siphon is closing: the recording stays as it was recorded, and
+            // is finished when Siphon starts again.
+            _ => {}
         }
         result
     }
@@ -695,7 +700,7 @@ impl DownloadManager {
         let partial = partial_path(&output);
         let mut made = self.make_file(job, &recipe, input, &partial, recorded).await;
         let on_hardware = matches!(&recipe.video, Some(video) if matches!(&video.action, VideoAction::Encode(encode) if encode.hardware != Hardware::Software));
-        if made.is_err() && on_hardware {
+        if made.is_err() && on_hardware && self.stop_of(job.id).is_none() {
             made = self
                 .make_file(job, &recipe.on_software(), input, &partial, recorded)
                 .await;
@@ -704,6 +709,13 @@ impl DownloadManager {
             Ok(()) => self.check_finished(job, &recipe, &partial, recorded).await,
             Err(error) => Err(error.details.unwrap_or(error.message)),
         };
+        // Stopped while it was being made or checked (Siphon is closing):
+        // that isn't the recording's fault, so it isn't kept as recorded.
+        // `finalize` leaves it to be made next time.
+        if self.stop_of(job.id).is_some() {
+            let _ = tokio::fs::remove_file(&partial).await;
+            return Err(AppError::cancelled());
+        }
         match checked {
             Ok(()) => {
                 tokio::fs::rename(&partial, &output).await?;
