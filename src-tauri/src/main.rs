@@ -3,6 +3,7 @@
 
 mod app_update;
 mod binaries;
+mod chat;
 mod choices;
 mod commands;
 mod downloads;

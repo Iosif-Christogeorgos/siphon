@@ -171,9 +171,14 @@ fn headline(recipe: &Recipe, is_share: bool) -> String {
     }
 }
 
-/// What the plan does, in a sentence or two, and where its subtitles go.
+/// What the plan does, in a sentence or two, and where its subtitles and chat go.
 fn detail(recipe: &Recipe) -> String {
-    let streams = streams_detail(recipe);
+    let mut streams = streams_detail(recipe);
+    // Said once: as the reason for converting, or after it.
+    let chat_said = recipe.reason.as_deref().is_some_and(|reason| reason.contains("chat"));
+    if recipe.chat.is_some() && !chat_said {
+        streams.push_str(" The chat is drawn into the picture.");
+    }
     match &recipe.subtitles {
         Some(step) => match step.delivery {
             Delivery::Embed => format!(
@@ -268,6 +273,15 @@ fn convert_seconds(recipe: &Recipe) -> Option<f64> {
         (VideoCodec::Hevc, Hardware::Software) => 0.5,
         (VideoCodec::Av1, Hardware::Software) => 0.8,
         (_, Hardware::Software) => 0.4,
+    };
+    // The fastest setting, measured on Twitch 1080p60 with a chat layer
+    // drawn in (2026-11-21): NVENC's p1 at 14 times real time for H.264 and
+    // 17 for HEVC; x264's veryfast 2.4 times as fast as its medium.
+    let speed = match (encode.fast, encode.codec, encode.hardware) {
+        (false, _, _) => speed,
+        (true, VideoCodec::Hevc, Hardware::Nvenc) => 34.0,
+        (true, _, Hardware::Nvenc) => 28.0,
+        (true, _, _) => speed * 2.4,
     };
     let passes = if encode.two_pass() { 1.6 } else { 1.0 };
     Some(duration * load / speed * passes)

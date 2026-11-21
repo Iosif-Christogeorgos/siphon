@@ -12,6 +12,8 @@ export const STAGE_LABELS: Record<Stage, string> = {
   merging: "Merging",
   converting: "Converting",
   subtitles: "Adding subtitles",
+  chat: "Fetching the chat",
+  drawing_chat: "Drawing in the chat",
   finishing: "Finishing up",
   waiting_live: "Waiting for the stream to start",
   recording: "Recording",
@@ -25,6 +27,7 @@ export const isIndeterminate = (stage: Stage) =>
   stage === "updating" ||
   stage === "retrying" ||
   stage === "preparing" ||
+  stage === "chat" ||
   stage === "waiting_live" ||
   stage === "recording" ||
   stage === "reconnecting";

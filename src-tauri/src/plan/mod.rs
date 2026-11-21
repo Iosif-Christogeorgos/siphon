@@ -29,6 +29,7 @@ use std::cmp::Ordering;
 
 use serde::{Deserialize, Serialize};
 
+use crate::chat::{ChatStep, Placement};
 use crate::error::{AppError, ErrorKind, Result};
 use crate::ffmpeg::encoders::{Encoders, Hardware};
 use crate::ytdlp::metadata::{Format, FormatKind, VideoInfo};
@@ -60,6 +61,20 @@ pub struct PresetChoice {
     /// See [`subtitles`].
     #[serde(default)]
     pub subtitles: Option<String>,
+    /// Draw the video's chat into the picture, here; `None` is without chat.
+    /// Only Twitch's chat, with Max quality and Watch (see `crate::chat`).
+    #[serde(default)]
+    pub chat: Option<Placement>,
+}
+
+impl Choice {
+    /// Where the chat is to be drawn, if it is.
+    pub fn chat(&self) -> Option<&Placement> {
+        match self {
+            Choice::Preset(preset) => preset.chat.as_ref(),
+            Choice::Custom(_) => None,
+        }
+    }
 }
 
 /// The part of the video to keep, in seconds from its start. Cuts are
@@ -193,6 +208,9 @@ pub struct Recipe {
     /// The subtitle track to add, and how (see [`subtitles`]).
     #[serde(default)]
     pub subtitles: Option<subtitles::SubtitleStep>,
+    /// The chat drawn into the picture (see `crate::chat`).
+    #[serde(default)]
+    pub chat: Option<ChatStep>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -228,6 +246,17 @@ pub struct VideoEncode {
     /// Scale down to this short side (never up).
     pub scale_lines: Option<u32>,
     pub max_fps: Option<f64>,
+    /// The encoder's fastest setting, at the same quality: a file a little
+    /// larger, made two to three times sooner. For drawing chat into hours
+    /// of video, where the wait matters more than the size (docs/chat.md).
+    #[serde(default)]
+    pub fast: bool,
+    /// The most a constant-quality encode may spend at any moment, in kbit/s.
+    /// Twitch encodes streams live at a fixed bitrate, so its busiest scenes
+    /// are starved, and keeping their every artefact took 2.3 times the
+    /// source's bitrate (measured 2026-11-21, docs/chat.md).
+    #[serde(default)]
+    pub max_kbps: Option<u32>,
 }
 
 impl VideoEncode {
@@ -238,6 +267,8 @@ impl VideoEncode {
             bitrate_kbps: None,
             scale_lines: None,
             max_fps: None,
+            fast: false,
+            max_kbps: None,
         }
     }
 
@@ -521,8 +552,20 @@ impl Recipe {
             VideoCodec::H264 => 0.75,
             _ => 1.0,
         };
+        // Held under a cap (drawing chat into Twitch's streams): a calm
+        // stretch needs far less than the source, a busy one reaches the cap.
+        // Measured 2026-11-21 on Twitch 1080p60: H.264 came to 0.6 times the
+        // source calm and the cap busy; HEVC 0.4 and 1.2 (docs/chat.md).
+        if let Some(max) = encode.max_kbps.map(f64::from).filter(|max| *max > 0.0) {
+            let typical = if encode.codec == VideoCodec::Hevc { 0.75 } else { 1.0 };
+            let likely = (source_kbps * scale * typical).min(max);
+            return Some((likely, 0.5, max / likely));
+        }
+        // The fastest setting spends about a quarter more for the same
+        // picture (measured 2026-11-21 on Twitch 1080p60, docs/chat.md).
+        let speed = if encode.fast { 1.25 } else { 1.0 };
         // Content swings it two ways: half to double covers every case measured.
-        Some((source_kbps * scale * codec * source, 0.5, 2.0))
+        Some((source_kbps * scale * codec * source * speed, 0.5, 2.0))
     }
 
     /// The same recipe, encoding on the CPU: for when a hardware encoder
@@ -703,6 +746,21 @@ pub fn plan(video: &VideoInfo, choice: &Choice, trim: Option<Trim>, caps: &Capab
     if video.live.is_none() {
         subtitles::attach(&mut recipe, &video.subtitles, choice);
     }
+    if let (Some(placement), Some(source)) = (choice.chat(), &video.chat) {
+        let group = match choice {
+            Choice::Preset(preset) => Some(preset.target.group()),
+            Choice::Custom(_) => None,
+        };
+        if matches!(group, Some(Group::Max | Group::Watch)) && video.live.is_none() {
+            planner.draw_chat(
+                &mut recipe,
+                ChatStep {
+                    source: source.clone(),
+                    placement: placement.sanitized(),
+                },
+            );
+        }
+    }
     // A copied stream that is cut keeps its codec: only the frames at the
     // cuts are re-encoded (the planner only copies codecs that can be).
     if recipe.cut().is_some() {
@@ -868,6 +926,41 @@ impl<'a> Planner<'a> {
         VideoEncode::quality(codec, self.caps.hardware(codec))
     }
 
+    /// Draws the chat into the picture, which means encoding the video
+    /// whatever the preset would have done with it: in the codec it was going
+    /// to be converted to, or the one it has (H.264 rather than HEVC without
+    /// an HEVC encoder on the graphics card), at the encoder's fastest setting.
+    fn draw_chat(&self, recipe: &mut Recipe, step: ChatStep) {
+        let Some(video) = recipe.video.as_mut() else {
+            return;
+        };
+        let encode = match &video.action {
+            VideoAction::Encode(encode) => encode.clone(),
+            VideoAction::Copy => {
+                let codec = match Self::cut_codec(video.source, video.lines) {
+                    VideoCodec::Hevc if !self.caps.has_hardware(VideoCodec::Hevc) => VideoCodec::H264,
+                    codec => codec,
+                };
+                self.encode(codec)
+            }
+        };
+        // Never more than half again the source's bitrate: a busy scene comes
+        // out a little softer than it went in (VMAF 94.8 against 96.6
+        // uncapped) at less than half the size; a calm one doesn't reach it.
+        let max_kbps = video.kbps.filter(|kbps| *kbps > 0.0).map(|kbps| (kbps * 1.5) as u32);
+        video.action = VideoAction::Encode(VideoEncode {
+            fast: true,
+            max_kbps,
+            ..encode
+        });
+        // The whole part is encoded anyway: nothing to cut around.
+        recipe.cut_encode = None;
+        recipe
+            .reason
+            .get_or_insert_with(|| "the chat is drawn into the picture".to_string());
+        recipe.chat = Some(step);
+    }
+
     /// The codec a cut stream is converted to when it can't be cut as it is.
     fn cut_codec(source: VideoCodec, lines: u32) -> VideoCodec {
         match source {
@@ -897,6 +990,7 @@ impl<'a> Planner<'a> {
             fallback: None,
             cut_encode: None,
             subtitles: None,
+            chat: None,
         }
     }
 

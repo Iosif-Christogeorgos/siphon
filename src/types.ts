@@ -438,6 +438,10 @@ export type Stage =
   | "converting"
   /** Fetching subtitles after the video, or adding them to copied streams. */
   | "subtitles"
+  /** Fetching the chat after the video. */
+  | "chat"
+  /** Encoding the video with its chat drawn in. */
+  | "drawing_chat"
   | "finishing"
   /** A recording waits for its stream to start. */
   | "waiting_live"

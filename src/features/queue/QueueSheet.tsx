@@ -272,6 +272,8 @@ const SHORT_STAGES: Record<Stage, string | null> = {
   merging: "Merging",
   converting: "Converting",
   subtitles: "Subtitles",
+  chat: "Fetching chat",
+  drawing_chat: "Drawing chat",
   finishing: "Finishing",
   waiting_live: "Waiting to go live",
   recording: null,

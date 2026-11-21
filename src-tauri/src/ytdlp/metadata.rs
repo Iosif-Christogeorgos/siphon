@@ -13,6 +13,7 @@ use super::saved::SavedLookup;
 use super::subtitles::{self, SubtitleTrack};
 use super::{command, errors, validate_url};
 use crate::binaries::BinaryManager;
+use crate::chat::ChatSource;
 use crate::error::{AppError, ErrorKind, Result};
 use crate::plan::codecs::{AudioCodec, VideoCodec};
 use crate::process;
@@ -52,6 +53,9 @@ pub struct VideoInfo {
     pub live: Option<Live>,
     /// The subtitle tracks it offers, people's first (see `ytdlp::subtitles`).
     pub subtitles: Vec<SubtitleTrack>,
+    /// Where its chat can be had, for drawing it into the picture: Twitch's
+    /// VODs and streams (see `crate::chat`).
+    pub chat: Option<ChatSource>,
     /// What the lookup printed, for the download to start from (see `ytdlp::saved`).
     #[serde(skip)]
     pub saved: Option<Arc<SavedLookup>>,
@@ -193,6 +197,9 @@ struct RawInfo {
     channel: Option<String>,
     #[serde(default, deserialize_with = "text")]
     uploader: Option<String>,
+    /// The uploader's login on sites that have one (Twitch's channel name).
+    #[serde(default, deserialize_with = "text")]
+    uploader_id: Option<String>,
     #[serde(default, deserialize_with = "number")]
     view_count: Option<f64>,
     #[serde(default, deserialize_with = "text")]
@@ -420,6 +427,7 @@ fn offline(url: &str) -> VideoInfo {
             from_start: None,
         }),
         subtitles: Vec::new(),
+        chat: None,
         saved: None,
     }
 }
@@ -475,6 +483,11 @@ fn video(raw: RawInfo, requested_url: &str) -> Result<VideoInfo> {
         estimate_size(format, raw.duration);
     }
 
+    let chat = ChatSource::of(
+        raw.extractor_key.as_deref(),
+        raw.id.as_deref(),
+        raw.uploader_id.as_deref(),
+    );
     Ok(VideoInfo {
         id: raw.id.unwrap_or_default(),
         title: raw.title.unwrap_or_else(|| "Untitled video".to_string()),
@@ -488,6 +501,7 @@ fn video(raw: RawInfo, requested_url: &str) -> Result<VideoInfo> {
         with_account: false,
         live,
         subtitles: subtitles::read(raw.subtitles.as_ref(), raw.automatic_captions.as_ref()),
+        chat,
         saved: None,
     })
 }

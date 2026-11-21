@@ -25,6 +25,10 @@ pub enum Stage {
     Converting,
     /// Fetching subtitles after the video, or adding them to copied streams.
     Subtitles,
+    /// Fetching the chat after the video (see `crate::chat`).
+    Chat,
+    /// Encoding the video with its chat drawn in.
+    DrawingChat,
     Finishing,
     /// A live recording waits for its stream to start.
     WaitingLive,
@@ -124,6 +128,15 @@ impl Tracker {
     /// What a job reports while it fetches subtitles after the video.
     pub fn on_subtitles(&mut self) -> Progress {
         self.progress.stage = Stage::Subtitles;
+        self.progress.fraction = self.progress.fraction.max(self.download_share);
+        self.progress.speed = None;
+        self.progress.eta = None;
+        self.current()
+    }
+
+    /// What a job reports while it fetches the chat after the video.
+    pub fn on_chat(&mut self) -> Progress {
+        self.progress.stage = Stage::Chat;
         self.progress.fraction = self.progress.fraction.max(self.download_share);
         self.progress.speed = None;
         self.progress.eta = None;

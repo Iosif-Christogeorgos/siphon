@@ -48,7 +48,62 @@ pub enum Pass<'a> {
 /// [`convert_args_shifted`] for a part whose audio and video share a clock, without subtitles.
 #[cfg(test)]
 pub fn convert_args(recipe: &Recipe, input: &Path, output: &Path, pass: Pass) -> Vec<OsString> {
-    convert_args_shifted(recipe, input, output, pass, None, None)
+    convert_args_shifted(recipe, input, output, pass, None, None, None)
+}
+
+/// The chat layer Siphon feeds ffmpeg on its standard input for a recipe
+/// with chat (see `crate::chat::render`): raw RGBA frames of the box, `fps`
+/// a second, laid over the picture with the box's top left at `x`, `y`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ChatLayer {
+    pub width: u32,
+    pub height: u32,
+    pub fps: f64,
+    pub x: u32,
+    pub y: u32,
+    /// Where on the video's clock the layer's first frame goes.
+    pub start: f64,
+    /// High definition video, whose colours are BT.709 rather than BT.601.
+    pub hd: bool,
+}
+
+impl ChatLayer {
+    /// The input that reads the frames from Siphon.
+    fn input_args(&self) -> Vec<String> {
+        let size = format!("{}x{}", self.width, self.height);
+        let rate = format!("{:.6}", self.fps);
+        [
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgba",
+            "-s",
+            size.as_str(),
+            "-framerate",
+            rate.as_str(),
+            "-i",
+            "pipe:0",
+        ]
+        .map(str::to_string)
+        .to_vec()
+    }
+
+    /// The filter graph that draws the layer (input `input`) over the
+    /// picture after the picture's own `filters`, as the output `[v]`.
+    fn graph(&self, filters: &[String], input: usize) -> String {
+        let base = if filters.is_empty() {
+            "null".to_string()
+        } else {
+            filters.join(",")
+        };
+        let matrix = if self.hd { "bt709" } else { "smpte170m" };
+        let chat = format!(
+            "setpts=PTS-STARTPTS+{}/TB,scale=out_color_matrix={matrix}:out_range=tv,format=yuva420p",
+            self.start
+        );
+        let overlay = format!("overlay=x={}:y={}:format=yuv420:eof_action=repeat", self.x, self.y);
+        format!("[0:v]{base}[base];[{input}:v]{chat}[chat];[base][chat]{overlay}[v]")
+    }
 }
 
 /// Builds the ffmpeg arguments that turn the downloaded `input` into the
@@ -59,6 +114,7 @@ pub fn convert_args(recipe: &Recipe, input: &Path, output: &Path, pass: Pass) ->
 /// clock (see `crate::srt`): a cut shifts it with the picture. A file to be
 /// drawn into the picture is read from the folder ffmpeg runs in, by its
 /// name: a filter's arguments would need a Windows path escaped twice over.
+/// `chat` is the chat layer, for a recipe that draws its chat in.
 pub fn convert_args_shifted(
     recipe: &Recipe,
     input: &Path,
@@ -66,6 +122,7 @@ pub fn convert_args_shifted(
     pass: Pass,
     audio_shift: Option<f64>,
     subtitles: Option<&Path>,
+    chat: Option<&ChatLayer>,
 ) -> Vec<OsString> {
     let mut args: Vec<OsString> = Vec::new();
     let mut push = |values: &[&str]| args.extend(values.iter().map(OsString::from));
@@ -104,13 +161,28 @@ pub fn convert_args_shifted(
         }
         _ => None,
     };
+    // The chat layer, the last input, drawn over the encoded picture.
+    let chat = match (chat, recipe.video_encode()) {
+        (Some(layer), Some(_)) => {
+            let index = 1 + usize::from(audio_shift.is_some()) + usize::from(subtitle_track.is_some());
+            args.extend(layer.input_args().into_iter().map(OsString::from));
+            Some((layer, index))
+        }
+        _ => None,
+    };
     let mut push = |values: &[&str]| args.extend(values.iter().map(OsString::from));
 
     // ── Streams ──
     // First video track, and the first audio track if we keep one. Drops the
     // source's own subtitles, thumbnails and data tracks, which some
     // containers reject; Siphon's subtitle file is added on its own.
-    push(&["-map", "0:v:0"]);
+    match (chat, &recipe.video, recipe.video_encode()) {
+        (Some((layer, index)), Some(video), Some(encode)) => {
+            let filters = video_filters(video, encode, cut, burn.as_deref());
+            push(&["-filter_complex", &layer.graph(&filters, index), "-map", "[v]"]);
+        }
+        _ => push(&["-map", "0:v:0"]),
+    }
     match recipe.audio_codec() {
         Some(_) if !first_pass && audio_shift.is_some() => push(&["-map", "1:a:0?"]),
         Some(_) if !first_pass => push(&["-map", "0:a:0?"]),
@@ -126,7 +198,14 @@ pub fn convert_args_shifted(
                 }
             }
             VideoAction::Encode(encode) => {
-                for arg in video_encode_args(video, encode, cut, pass, burn.as_deref()) {
+                // With chat, the picture's filters are part of the chat's graph.
+                if chat.is_none() {
+                    let filters = video_filters(video, encode, cut, burn.as_deref());
+                    if !filters.is_empty() {
+                        push(&["-vf", &filters.join(",")]);
+                    }
+                }
+                for arg in video_encode_args(video, encode, pass) {
                     push(&[&arg]);
                 }
             }
@@ -251,19 +330,11 @@ pub fn rewrap_args(
     args
 }
 
-/// `burn`: the name of a subtitle file in ffmpeg's folder to draw into the
-/// picture, on the video's own clock like the frames it is drawn on.
-fn video_encode_args(
-    video: &VideoStep,
-    encode: &VideoEncode,
-    cut: Option<Trim>,
-    pass: Pass,
-    burn: Option<&str>,
-) -> Vec<String> {
-    let mut args: Vec<String> = Vec::new();
-    let mut push = |values: &[&str]| args.extend(values.iter().map(|value| value.to_string()));
-
-    // Filters: draw in the subtitles, downscale (never up) and cap the frame rate.
+/// What is done to the picture before it is encoded: cut on the exact
+/// frames, subtitles drawn in, scaled down, the frame rate capped. `burn`:
+/// the name of a subtitle file in ffmpeg's folder to draw into the picture,
+/// on the video's own clock like the frames it is drawn on.
+fn video_filters(video: &VideoStep, encode: &VideoEncode, cut: Option<Trim>, burn: Option<&str>) -> Vec<String> {
     let mut filters: Vec<String> = Vec::new();
     if let Some(cut) = cut {
         // Keep exactly the frames inside the selection (times are absolute, thanks to -copyts).
@@ -293,9 +364,13 @@ fn video_encode_args(
     if let Some(fps) = output_fps {
         filters.push(format!("fps={fps}"));
     }
-    if !filters.is_empty() {
-        push(&["-vf", &filters.join(",")]);
-    }
+    filters
+}
+
+/// The encoder and its settings.
+fn video_encode_args(video: &VideoStep, encode: &VideoEncode, pass: Pass) -> Vec<String> {
+    let mut args: Vec<String> = Vec::new();
+    let mut push = |values: &[&str]| args.extend(values.iter().map(|value| value.to_string()));
 
     let hardware = encode.hardware;
     push(&["-c:v", hardware.encoder(encode.codec)]);
@@ -337,7 +412,7 @@ fn video_encode_args(
         // ── Constant quality: visually close to the source ──
         (None, Hardware::Nvenc) => push(&[
             "-preset",
-            "p5",
+            if encode.fast { "p1" } else { "p5" },
             "-tune",
             "hq",
             "-rc",
@@ -347,17 +422,33 @@ fn video_encode_args(
             "-b:v",
             "0",
         ]),
-        (None, Hardware::Qsv) => push(&["-preset", "medium", "-global_quality", if hevc { "23" } else { "21" }]),
+        (None, Hardware::Qsv) => push(&[
+            "-preset",
+            if encode.fast { "veryfast" } else { "medium" },
+            "-global_quality",
+            if hevc { "23" } else { "21" },
+        ]),
         (None, Hardware::Amf) => {
             let (i, p) = if hevc { ("22", "24") } else { ("20", "22") };
-            push(&["-quality", "quality", "-rc", "cqp", "-qp_i", i, "-qp_p", p]);
+            let quality = if encode.fast { "speed" } else { "quality" };
+            push(&["-quality", quality, "-rc", "cqp", "-qp_i", i, "-qp_p", p]);
         }
-        (None, Hardware::Software) => match encode.codec {
-            VideoCodec::Hevc => push(&["-preset", "medium", "-crf", "22"]),
-            VideoCodec::Vp9 | VideoCodec::Vp8 => push(&["-crf", "31", "-b:v", "0", "-row-mt", "1", "-cpu-used", "2"]),
-            VideoCodec::Av1 => push(&["-preset", "8", "-crf", "30"]),
-            _ => push(&["-preset", "medium", "-crf", "19"]),
-        },
+        (None, Hardware::Software) => {
+            let preset = if encode.fast { "veryfast" } else { "medium" };
+            match encode.codec {
+                VideoCodec::Hevc => push(&["-preset", preset, "-crf", "22"]),
+                VideoCodec::Vp9 | VideoCodec::Vp8 => {
+                    push(&["-crf", "31", "-b:v", "0", "-row-mt", "1", "-cpu-used", "2"])
+                }
+                VideoCodec::Av1 => push(&["-preset", "8", "-crf", "30"]),
+                _ => push(&["-preset", preset, "-crf", "19"]),
+            }
+        }
+    }
+
+    // A constant-quality encode held under a cap (see `VideoEncode::max_kbps`).
+    if let (None, Some(max)) = (encode.bitrate_kbps, encode.max_kbps) {
+        push(&["-maxrate", &format!("{max}k"), "-bufsize", &format!("{}k", max * 2)]);
     }
 
     match encode.codec {
@@ -426,7 +517,11 @@ pub fn finalize_args(recipe: &Recipe, input: Recorded, output: &Path) -> Vec<OsS
                     }
                 }
                 VideoAction::Encode(encode) => {
-                    for arg in video_encode_args(video, encode, None, Pass::Only, None) {
+                    let filters = video_filters(video, encode, None, None);
+                    if !filters.is_empty() {
+                        push(&["-vf", &filters.join(",")]);
+                    }
+                    for arg in video_encode_args(video, encode, Pass::Only) {
                         push(&[&arg]);
                     }
                 }
@@ -544,6 +639,54 @@ pub fn decode_check_args(file: &Path, at_end: bool) -> Vec<OsString> {
     }
     args.extend(["-f", "null", if cfg!(windows) { "NUL" } else { "/dev/null" }].map(OsString::from));
     args
+}
+
+/// The arguments that make ffprobe print a file's picture size, frame rate and length.
+pub fn picture_probe_args(file: &Path) -> Vec<OsString> {
+    let mut args: Vec<OsString> = [
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=width,height,avg_frame_rate,r_frame_rate:format=duration",
+        "-of",
+        "json",
+    ]
+    .map(OsString::from)
+    .to_vec();
+    args.push(file.into());
+    args
+}
+
+/// A file's picture: its size in pixels, frames a second and length.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Picture {
+    pub width: u32,
+    pub height: u32,
+    pub fps: Option<f64>,
+    pub duration: Option<f64>,
+}
+
+impl Picture {
+    /// Reads what [`picture_probe_args`] printed.
+    pub fn parse(json: &str) -> Option<Picture> {
+        let value: serde_json::Value = serde_json::from_str(json).ok()?;
+        let stream = value["streams"].as_array()?.first()?;
+        // "60/1"; "0/0" when unknown.
+        let rate = |text: &serde_json::Value| -> Option<f64> {
+            let (numerator, denominator) = text.as_str()?.split_once('/')?;
+            let (numerator, denominator): (f64, f64) = (numerator.parse().ok()?, denominator.parse().ok()?);
+            (numerator > 0.0 && denominator > 0.0).then(|| numerator / denominator)
+        };
+        Some(Picture {
+            width: u32::try_from(stream["width"].as_u64()?).ok()?,
+            height: u32::try_from(stream["height"].as_u64()?).ok()?,
+            fps: rate(&stream["avg_frame_rate"]).or_else(|| rate(&stream["r_frame_rate"])),
+            duration: value["format"]["duration"].as_str().and_then(|d| d.parse().ok()),
+        })
+        .filter(|picture| picture.width > 0 && picture.height > 0)
+    }
 }
 
 /// A file's length and the span of its first video and audio track, in seconds.
@@ -798,6 +941,7 @@ mod recording_tests {
             fallback: None,
             cut_encode: None,
             subtitles: None,
+            chat: None,
         };
         let text = |args: Vec<OsString>| {
             args.iter()

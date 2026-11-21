@@ -78,6 +78,7 @@ fn info(formats: Vec<Format>, seconds: f64) -> VideoInfo {
         with_account: false,
         live: None,
         subtitles: Vec::new(),
+        chat: None,
         saved: None,
     }
 }
@@ -122,6 +123,7 @@ fn preset(target: TargetId) -> PresetChoice {
         tier: None,
         music_format: MusicFormat::Mp3,
         subtitles: None,
+        chat: None,
     }
 }
 
@@ -1034,6 +1036,7 @@ fn share_draws_subtitles_into_the_picture_even_when_the_original_fits() {
         Pass::Only,
         None,
         Some(Path::new(r"C:\work\abc\subtitles.srt")),
+        None,
     ));
     let filters = &args[args.iter().position(|arg| arg == "-vf").unwrap() + 1];
     assert!(filters.starts_with("subtitles=filename=subtitles.srt"), "{filters}");
@@ -1062,6 +1065,7 @@ fn a_subtitle_track_goes_in_as_the_file_type_holds_it() {
             Pass::Only,
             None,
             Some(Path::new("subtitles.srt")),
+            None,
         ))
         .join(" ")
     };
@@ -1104,4 +1108,150 @@ fn audio_of_an_unnamed_kind_is_called_what_it_is() {
         summary.detail
     );
     assert!(!summary.detail.contains("audio audio"));
+}
+
+// ── Chat ────────────────────────────────────────────────────────────────
+
+/// A Twitch VOD as yt-dlp lists it: HLS streams with sound in them, H.264 up to 1080p60.
+fn twitch_vod() -> VideoInfo {
+    let hls = |id: &str, height: u32, fps: f64, kbps: f64| Format {
+        segmented: true,
+        fps: Some(fps),
+        ..muxed(id, height, kbps)
+    };
+    VideoInfo {
+        extractor: Some("TwitchVod".into()),
+        chat: Some(crate::chat::ChatSource::Vod {
+            id: "2929613567".into(),
+            channel: "greekgodx".into(),
+        }),
+        ..info(
+            vec![
+                hls("480p", 480, 30.0, 1453.0),
+                hls("720p60", 720, 60.0, 3438.0),
+                hls("1080p60", 1080, 60.0, 7777.0),
+            ],
+            3600.0,
+        )
+    }
+}
+
+fn with_chat(target: TargetId) -> PresetChoice {
+    PresetChoice {
+        chat: Some(crate::chat::Placement::DEFAULT),
+        ..preset(target)
+    }
+}
+
+#[test]
+fn chat_is_drawn_in_by_encoding_the_video_as_fast_as_the_encoder_goes() {
+    let without = plan_with(&twitch_vod(), preset(TargetId::Max), &nvidia());
+    assert!(copied(&without) && without.chat.is_none());
+
+    for target in [TargetId::Max, TargetId::Windows] {
+        let recipe = plan_with(&twitch_vod(), with_chat(target), &nvidia());
+        let encode = recipe.video_encode().expect("the picture is encoded");
+        assert_eq!(
+            (encode.codec, encode.hardware, encode.fast),
+            (VideoCodec::H264, Hardware::Nvenc, true)
+        );
+        assert_eq!(
+            recipe.container, without.container,
+            "the same file type as without chat"
+        );
+        assert_eq!(recipe.badge, Badge::Converts);
+        assert_eq!(recipe.reason.as_deref(), Some("the chat is drawn into the picture"));
+        assert_eq!(recipe.chat.as_ref().unwrap().placement, crate::chat::Placement::DEFAULT);
+        let summary = explain::summarize(&twitch_vod(), &Choice::Preset(with_chat(target)), None, &nvidia()).unwrap();
+        assert!(
+            summary.detail.contains("because the chat is drawn into the picture"),
+            "{}",
+            summary.detail
+        );
+        // About fourteen times real time for 1080p60 on NVENC's fastest setting.
+        let seconds = summary.convert_seconds.unwrap();
+        assert!((200.0..320.0).contains(&seconds), "{seconds}");
+    }
+}
+
+#[test]
+fn chat_goes_with_max_quality_and_watch_on_twitch_only() {
+    for target in [TargetId::Music, TargetId::Original, TargetId::Discord] {
+        let recipe = plan_with(&twitch_vod(), with_chat(target), &nvidia());
+        assert!(recipe.chat.is_none(), "{target:?}");
+    }
+    // Only Twitch's chat is drawn in: elsewhere the plan is the same as without.
+    let youtube = plan_with(&youtube_4k(), with_chat(TargetId::Windows), &nvidia());
+    assert_eq!(youtube, plan_with(&youtube_4k(), preset(TargetId::Windows), &nvidia()));
+}
+
+#[test]
+fn a_clip_with_chat_is_encoded_whole_rather_than_smart_cut() {
+    let trim = Some(Trim {
+        start: 600.0,
+        end: 660.0,
+    });
+    let plain = plan(&twitch_vod(), &Choice::Preset(preset(TargetId::Max)), trim, &nvidia()).unwrap();
+    assert!(plain.smart_cut());
+    let recipe = plan(
+        &twitch_vod(),
+        &Choice::Preset(with_chat(TargetId::Max)),
+        trim,
+        &nvidia(),
+    )
+    .unwrap();
+    assert!(!recipe.smart_cut() && recipe.cut_encode.is_none());
+    assert_eq!(recipe.cut(), trim);
+}
+
+#[test]
+fn the_chat_layer_is_read_from_standard_input_and_laid_over_the_picture() {
+    let recipe = plan(
+        &twitch_vod(),
+        &Choice::Preset(with_chat(TargetId::Max)),
+        Some(Trim {
+            start: 600.0,
+            end: 660.0,
+        }),
+        &nvidia(),
+    )
+    .unwrap();
+    let layer = ffmpeg::ChatLayer {
+        width: 422,
+        height: 692,
+        fps: 30.0,
+        x: 1468,
+        y: 324,
+        start: 600.0,
+        hd: true,
+    };
+    let args = strings(ffmpeg::convert_args_shifted(
+        &recipe,
+        Path::new("in.mp4"),
+        Path::new("out.mp4"),
+        Pass::Only,
+        None,
+        None,
+        Some(&layer),
+    ));
+    let joined = args.join(" ");
+    assert!(
+        joined.contains("-f rawvideo -pix_fmt rgba -s 422x692 -framerate 30.000000 -i pipe:0"),
+        "{joined}"
+    );
+    let graph = &args[args.iter().position(|arg| arg == "-filter_complex").unwrap() + 1];
+    assert_eq!(
+        graph,
+        "[0:v]trim=start=600:end=660[base];\
+         [1:v]setpts=PTS-STARTPTS+600/TB,scale=out_color_matrix=bt709:out_range=tv,format=yuva420p[chat];\
+         [base][chat]overlay=x=1468:y=324:format=yuv420:eof_action=repeat[v]"
+    );
+    assert!(joined.contains("-map [v] -map 0:a:0?"), "{joined}");
+    assert!(!args.contains(&"-vf".to_string()), "the cut is in the graph");
+    assert!(
+        joined.contains("-c:v h264_nvenc -pix_fmt yuv420p -preset p1"),
+        "{joined}"
+    );
+    // Never more than half again Twitch's 7777 kbit/s.
+    assert!(joined.contains("-maxrate 11665k -bufsize 23330k"), "{joined}");
 }

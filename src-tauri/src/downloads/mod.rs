@@ -5,6 +5,7 @@
 //! streams the recipe names, then, only if the recipe converts anything,
 //! run Siphon's own ffmpeg pass.
 
+mod chat;
 mod live;
 mod tracker;
 
@@ -151,6 +152,10 @@ impl Note {
             text,
             label: "No subtitles",
         }
+    }
+
+    fn chat(text: String) -> Self {
+        Note { text, label: "No chat" }
     }
 }
 
@@ -882,7 +887,7 @@ impl DownloadManager {
         // fail, and with the video in the same run they would be (see
         // `subtitles`). Side by side rather than after it, they cost the
         // download no time of its own.
-        let (downloaded, fetched) = {
+        let (downloaded, fetched, chat) = {
             let subtitles_fetch = async {
                 let step = recipe.subtitles.as_ref()?;
                 if !work_ready {
@@ -893,8 +898,17 @@ impl DownloadManager {
                         .await,
                 )
             };
+            // The chat too, the same way: a chat that can't be had never costs the video.
+            let chat_fetch = async {
+                let step = recipe.chat.as_ref()?;
+                if !work_ready {
+                    return Some(Ok(Err("Siphon couldn't make a folder for it.".to_string())));
+                }
+                Some(self.fetch_chat(job, &recipe, step, &work).await)
+            };
             tokio::pin!(subtitles_fetch);
-            let (downloaded, fetched) = {
+            tokio::pin!(chat_fetch);
+            let (downloaded, fetched, chat) = {
                 let streams = self.fetch_streams(
                     job,
                     &video.url,
@@ -906,16 +920,18 @@ impl DownloadManager {
                 );
                 tokio::pin!(streams);
                 let mut fetched = None;
+                let mut chat = None;
                 let downloaded = loop {
                     tokio::select! {
                         result = &mut streams => break result,
                         result = &mut subtitles_fetch, if fetched.is_none() => fetched = Some(result),
+                        result = &mut chat_fetch, if chat.is_none() => chat = Some(result),
                     }
                 };
-                (downloaded, fetched)
+                (downloaded, fetched, chat)
             };
-            // A video that failed takes its subtitles with it: dropping their
-            // fetch ends its yt-dlp.
+            // A video that failed takes its subtitles and chat with it: dropping
+            // their fetches ends them.
             let fetched = match (&downloaded, fetched) {
                 (Err(_), _) => None,
                 (Ok(_), Some(fetched)) => fetched,
@@ -924,16 +940,52 @@ impl DownloadManager {
                     subtitles_fetch.await
                 }
             };
-            (downloaded, fetched)
+            let chat = match (&downloaded, chat) {
+                (Err(_), _) => None,
+                (Ok(_), Some(chat)) => chat,
+                (Ok(_), None) => {
+                    job.emit(tracker.on_chat());
+                    chat_fetch.await
+                }
+            };
+            (downloaded, fetched, chat)
         };
         // However the fetch ended: the next try writes it again.
         if let Some(info_json) = &info_json {
             let _ = tokio::fs::remove_file(info_json).await;
         }
         let downloaded = downloaded?;
-        let (subtitles, note) = self
+        let (subtitles, mut note) = self
             .subtitles(&video, choice, &recipe, &work, fetched.transpose()?)
             .await;
+        // No chat to draw: the video as it would have been without it, so a
+        // copy stays a copy.
+        let (recipe, downloaded) = match chat.transpose()? {
+            Some(Err(why)) => {
+                let text = format!("Saved without the chat. {why}");
+                // Missing subtitles are said too, after it.
+                note = Some(Note::chat(match note {
+                    Some(subtitles) => format!("{text} {}", subtitles.text),
+                    None => text,
+                }));
+                let mut without = choice.clone();
+                if let Choice::Preset(preset) = &mut without {
+                    preset.chat = None;
+                }
+                let plain = plan::plan(&video, &without, trim, &caps)?;
+                let downloaded = if plain.needs_ffmpeg_pass() || fetch_dir == output_dir {
+                    downloaded
+                } else {
+                    // Fetched into the work folder for the conversion that isn't happening.
+                    let name = downloaded.file_name().unwrap_or_default();
+                    let moved = output_dir.join(name);
+                    move_file(&downloaded, &moved).await?;
+                    moved
+                };
+                (plain, downloaded)
+            }
+            _ => (recipe, downloaded),
+        };
 
         let (recipe, source) = if recipe.needs_ffmpeg_pass() {
             (recipe, downloaded)
@@ -1835,8 +1887,18 @@ impl DownloadManager {
         };
         let share = 1.0 / passes.len() as f64;
 
+        if recipe.chat.is_some() {
+            tracker.set_pass_stage(Stage::DrawingChat);
+        }
         job.emit(tracker.on_convert(0.0));
         let audio_shift = self.audio_shift(job, recipe, input).await?;
+        if let Some(step) = &recipe.chat {
+            return self
+                .draw_chat(job, recipe, step, input, output, work, audio_shift, subtitles, |done| {
+                    job.emit(tracker.on_convert(done))
+                })
+                .await;
+        }
         for (index, pass) in passes.into_iter().enumerate() {
             let mut cmd = process::command(&ffmpeg);
             // Subtitles drawn into the picture are read from here, by name.
@@ -1848,6 +1910,7 @@ impl DownloadManager {
                 pass,
                 audio_shift,
                 subtitles,
+                None,
             ));
             let result = self
                 .run_child(job.bins, job.id, cmd, |event| {
@@ -1897,6 +1960,9 @@ impl DownloadManager {
             .map_err(|err| {
                 Failure::Spawn(AppError::setup("Couldn't start the download engine.").with_details(err.to_string()))
             })?;
+        // Whatever the command was given as its input (a pipe Siphon writes
+        // into) is now the process's alone: when it ends, the writer hears so.
+        drop(cmd);
         // Ends with Siphon even if Siphon crashes, rather than writing on alone.
         process::end_with_siphon(&child);
         // Registering the process and reading the stop share one lock with `stop`, so a
@@ -2232,6 +2298,7 @@ mod tests {
             fallback: None,
             cut_encode: None,
             subtitles: None,
+            chat: None,
         }
     }
 

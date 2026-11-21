@@ -296,6 +296,7 @@ mod tests {
                 from_start: None,
             }),
             subtitles: Vec::new(),
+            chat: None,
             saved: None,
         }
     }
@@ -307,6 +308,7 @@ mod tests {
             tier: None,
             music_format: Default::default(),
             subtitles: None,
+            chat: None,
         })
     }
 

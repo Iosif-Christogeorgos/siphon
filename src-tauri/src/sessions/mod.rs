@@ -654,6 +654,7 @@ mod tests {
             with_account: false,
             live: None,
             subtitles: Vec::new(),
+            chat: None,
             saved: None,
         }))
     }
