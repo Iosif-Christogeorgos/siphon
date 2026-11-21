@@ -7,9 +7,16 @@
 //! closing loses any of it:
 //! - `chat.json`: the channel, its emotes and badges, as the recording began;
 //! - `chat.jsonl`: every message, deletion and timeout, as it came;
-//! - `aired-N.json`: when a moment of the recording's Nth stretch aired.
+//! - `aired-N.json`: when a moment of the recording's Nth stretch aired;
+//! - from the start: `vod.json`, the VOD the stream is saved to, and
+//!   `replay.json`, what its replay has from before the recording began.
 //!
-//! When a stretch aired is found by matching a frame. The stream's playlist
+//! Recorded from the start, a recording is the stream's VOD from its first
+//! frame (yt-dlp records Twitch from the start from it), so its chat is
+//! placed as the VOD's replay places it: what was said before Record comes
+//! from the replay, what was said after from IRC, both on one clock.
+//!
+//! Recorded from now, when a stretch aired is found by matching a frame. The stream's playlist
 //! says when each of its two-second segments aired; the first frame of a
 //! recent one is decoded and looked for among the recording's last frames.
 //! The playlist is read as often as a player reads it, because Twitch starts
@@ -38,6 +45,15 @@ use crate::process;
 const SNAPSHOT: &str = "chat.json";
 /// Everything the chat said, one event a line, in the work folder.
 const EVENTS: &str = "chat.jsonl";
+/// Recorded from the start: the stream's VOD, looked up as the recording
+/// began (Twitch stops naming a stream's VOD once the stream ends).
+const VOD: &str = "vod.json";
+/// Recorded from the start: what the chat said before the recording began.
+const BEFORE: &str = "replay.json";
+/// How long into a recording from the start its chat from before Record is
+/// fetched: by then Twitch's replay has the last of it (a message showed in
+/// the replay within three minutes of being sent, 2026-11-21).
+const BEFORE_AFTER: Duration = Duration::from_secs(2 * 60);
 /// A recording's file appears about this long after what it starts with aired:
 /// ffmpeg starts three segments back from the newest, which is itself behind.
 const GUESSED_DELAY: f64 = 8.0;
@@ -73,6 +89,32 @@ pub(super) struct Aired {
     pub aired: f64,
     /// Found by matching a frame, rather than guessed from when the file appeared.
     pub exact: bool,
+    /// The stretch is the stream's VOD from its first frame (recorded from the
+    /// start): placed by the VOD's replay where it can be had, rather than by
+    /// `aired`, the stream's start to the second.
+    #[serde(default)]
+    pub vod_start: bool,
+}
+
+/// The VOD a stream recorded from the start is saved to, and what is wanted
+/// from its replay.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct VodRef {
+    id: String,
+    /// When the stream began, in seconds since 1970.
+    since: f64,
+    /// When the recording began: the replay is wanted up to here.
+    until: f64,
+}
+
+/// What the chat said before a recording from the start began, from the
+/// VOD's replay.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Before {
+    /// When the VOD starts as its replay counts, in seconds since 1970.
+    origin: f64,
+    /// Each at the moment it was sent, on the clock IRC's messages are on.
+    messages: Vec<Message>,
 }
 
 /// A stretch of the recording as the finished file holds it.
@@ -127,14 +169,52 @@ fn aired_file(work: &Path, number: usize) -> PathBuf {
 }
 
 impl ChatCapture {
-    /// Starts reading `channel`'s chat into `work`, and keeps its emotes and badges there.
-    pub(super) fn start(app: &AppHandle, channel: &str, work: &Path) -> ChatCapture {
+    /// Starts reading `channel`'s chat into `work`, and keeps its emotes and
+    /// badges there. `from_start`: the recording is from the stream's start,
+    /// which began then (seconds since 1970); what was said before is fetched
+    /// from its VOD's replay.
+    pub(super) fn start(app: &AppHandle, channel: &str, work: &Path, from_start: Option<f64>) -> ChatCapture {
         let mut capture = ChatCapture {
             app: app.clone(),
             work: work.to_path_buf(),
             tasks: Vec::new(),
         };
         let _ = std::fs::create_dir_all(work);
+
+        if let Some(since) = from_start {
+            let (app, login, work) = (app.clone(), channel.to_string(), work.to_path_buf());
+            let began = now();
+            capture.tasks.push(tokio::spawn(async move {
+                // Kept from the first time: Siphon restarted while recording.
+                if work.join(VOD).exists() {
+                    return;
+                }
+                let Ok(twitch) = Twitch::new() else { return };
+                let vod = match twitch.live_vod(&login).await {
+                    Ok(Some(id)) => VodRef {
+                        id,
+                        since,
+                        until: began,
+                    },
+                    Ok(None) => {
+                        log::line(&app, &format!("chat #{login}: the stream keeps no VOD to read back"));
+                        return;
+                    }
+                    Err(error) => {
+                        log::line(
+                            &app,
+                            &format!("chat #{login}: its VOD couldn't be found: {}", error.message),
+                        );
+                        return;
+                    }
+                };
+                if save_json(&work.join(VOD), &vod).await.is_err() {
+                    return;
+                }
+                tokio::time::sleep(BEFORE_AFTER).await;
+                fetch_before(&app, &work, &vod).await;
+            }));
+        }
 
         let (app, login, snapshot) = (app.clone(), channel.to_string(), work.join(SNAPSHOT));
         capture.tasks.push(tokio::spawn(async move {
@@ -221,16 +301,18 @@ async fn find_aired(app: &AppHandle, work: &Path, watch: PartWatch) {
         tokio::time::sleep(Duration::from_secs(2)).await;
     };
     let guess = match watch.began {
-        // From the start, the file starts where the stream did.
+        // From the start, the file starts where the stream did (see `chat_for_file`).
         Some(began) => Aired {
             at: start,
             aired: began,
             exact: true,
+            vod_start: true,
         },
         None => Aired {
             at: start,
             aired: appeared - GUESSED_DELAY,
             exact: false,
+            vod_start: false,
         },
     };
     save_aired(&target, &guess).await;
@@ -272,12 +354,72 @@ async fn find_aired(app: &AppHandle, work: &Path, watch: PartWatch) {
 }
 
 async fn save_aired(target: &Path, aired: &Aired) {
-    if let Ok(json) = serde_json::to_vec(aired) {
-        let partial = target.with_extension("part");
-        if tokio::fs::write(&partial, json).await.is_ok() {
-            let _ = tokio::fs::rename(&partial, target).await;
+    let _ = save_json(target, aired).await;
+}
+
+/// Writes `value` to `target` whole: beside it first, then renamed over it,
+/// so a crash never leaves half a file.
+async fn save_json(target: &Path, value: &impl Serialize) -> std::io::Result<()> {
+    let json = serde_json::to_vec(value)?;
+    let partial = target.with_extension("part");
+    tokio::fs::write(&partial, json).await?;
+    tokio::fs::rename(&partial, target).await
+}
+
+async fn load_json<T: serde::de::DeserializeOwned>(file: &Path) -> Option<T> {
+    serde_json::from_slice(&tokio::fs::read(file).await.ok()?).ok()
+}
+
+/// Fetches what the chat said before a recording from the start began, from
+/// the VOD's replay, into the work folder, and says what it fetched.
+async fn fetch_before(app: &AppHandle, work: &Path, vod: &VodRef) -> Option<Before> {
+    let started = Instant::now();
+    let fetched = async {
+        let twitch = Twitch::new()?;
+        // A minute past the recording's start: IRC was on by then, and what
+        // both have is kept once.
+        twitch
+            .comments(&vod.id, 0.0, (vod.until - vod.since + 60.0).max(0.0), |_| {})
+            .await
+    };
+    let replay = match fetched.await {
+        Ok(replay) => replay,
+        Err(error) => {
+            log::line(
+                app,
+                &format!("chat: the replay of VOD {} couldn't be had: {}", vod.id, error.message),
+            );
+            return None;
         }
-    }
+    };
+    let Some(origin) = replay.origin else {
+        log::line(app, &format!("chat: the replay of VOD {} has nothing yet", vod.id));
+        return None;
+    };
+    let before = Before {
+        origin,
+        messages: replay
+            .messages
+            .into_iter()
+            .map(|mut message| {
+                message.time += origin;
+                message
+            })
+            .collect(),
+    };
+    log::line(
+        app,
+        &format!(
+            "chat: {} messages from before the recording, from VOD {} ({} gaps), its start {:.2} s after the stream's, {:.1} s",
+            before.messages.len(),
+            vod.id,
+            replay.gaps,
+            origin - vod.since,
+            started.elapsed().as_secs_f64()
+        ),
+    );
+    save_json(&work.join(BEFORE), &before).await.ok()?;
+    Some(before)
 }
 
 /// The stream's own segments that `playlist` lists now (none while it shows
@@ -319,6 +461,7 @@ async fn match_frame(
         at,
         aired: segment.aired,
         exact: true,
+        vod_start: false,
     })
 }
 
@@ -433,31 +576,69 @@ fn parse_framemd5(text: &str) -> Vec<(f64, String)> {
 /// The recording's chat placed on the finished file's clock, from what the
 /// capture kept in `work`; `None` if it kept no message or no stretch could
 /// be placed. Deleted messages and timed-out users' messages are left out.
-pub(super) async fn chat_for_file(work: &Path, stretches: &[Stretch]) -> Option<ChatLog> {
-    let events = tokio::fs::read_to_string(work.join(EVENTS)).await.ok()?;
+/// Recorded from the start, what was said before Record comes from the
+/// VOD's replay (fetched now if it wasn't while recording), and the stretch
+/// that is the VOD from its start is placed as the replay places it.
+pub(super) async fn chat_for_file(app: &AppHandle, work: &Path, stretches: &[Stretch]) -> Option<ChatLog> {
+    let events = tokio::fs::read_to_string(work.join(EVENTS)).await.unwrap_or_default();
+    let before = match load_json::<Before>(&work.join(BEFORE)).await {
+        Some(before) => Some(before),
+        None => match load_json::<VodRef>(&work.join(VOD)).await {
+            Some(vod) => fetch_before(app, work, &vod).await,
+            None => None,
+        },
+    };
     let mut placed: Vec<(Stretch, Aired)> = Vec::new();
     for stretch in stretches {
-        let Ok(bytes) = tokio::fs::read(aired_file(work, stretch.number)).await else {
+        let Some(aired) = load_json::<Aired>(&aired_file(work, stretch.number)).await else {
             continue;
         };
-        if let Ok(aired) = serde_json::from_slice::<Aired>(&bytes) {
-            placed.push((
-                Stretch {
-                    number: stretch.number,
-                    start: stretch.start,
-                    length: stretch.length,
-                    offset: stretch.offset,
-                },
-                aired,
-            ));
-        }
+        placed.push((
+            Stretch {
+                number: stretch.number,
+                start: stretch.start,
+                length: stretch.length,
+                offset: stretch.offset,
+            },
+            aired,
+        ));
     }
     if placed.is_empty() {
         return None;
     }
     let snapshot = ChatLog::load(&work.join(SNAPSHOT)).await.unwrap_or_default();
-    let messages = place(said(&events), &placed);
+    let messages = arrange(said(&events), before, placed);
     (!messages.is_empty()).then_some(ChatLog { messages, ..snapshot })
+}
+
+/// The chat on the finished file's clock: what IRC caught, and the replay's
+/// messages from before it, each in the stretch that was airing then. A
+/// stretch that is the VOD from its start is placed as the replay places it.
+fn arrange(said: Vec<Message>, before: Option<Before>, mut placed: Vec<(Stretch, Aired)>) -> Vec<Message> {
+    if let Some(before) = &before {
+        for (stretch, aired) in placed.iter_mut().filter(|(_, aired)| aired.vod_start) {
+            // The file starts with the VOD's first frame, where the replay
+            // counts from: placed `REPLAY_LEAD` later, that is where it shows.
+            aired.at = stretch.start;
+            aired.aired = before.origin - REPLAY_LEAD;
+        }
+    }
+    let said = merged(said, before.map(|before| before.messages).unwrap_or_default());
+    place(said, &placed)
+}
+
+/// What IRC caught, and the replay's messages from before IRC's first one:
+/// IRC has every message (the replay keeps at most 15 a second) and the
+/// notices. A message both have is kept once.
+fn merged(mut said: Vec<Message>, before: Vec<Message>) -> Vec<Message> {
+    let first = said.iter().map(|message| message.time).fold(f64::INFINITY, f64::min);
+    let known: HashSet<String> = said.iter().map(|message| message.id.clone()).collect();
+    said.extend(
+        before
+            .into_iter()
+            .filter(|message| message.time < first && !known.contains(&message.id)),
+    );
+    said
 }
 
 /// What the chat said, with deleted messages and timed-out users' recent
@@ -609,6 +790,7 @@ mod tests {
                     at: 11.4,
                     aired: 1010.0,
                     exact: true,
+                    vod_start: false,
                 },
             ),
             (
@@ -622,6 +804,7 @@ mod tests {
                     at: 0.0,
                     aired: 1160.0,
                     exact: false,
+                    vod_start: false,
                 },
             ),
         ];
@@ -638,5 +821,45 @@ mod tests {
         );
         let times: Vec<(&str, f64)> = placed.iter().map(|m| (m.id.as_str(), m.time)).collect();
         assert_eq!(times, vec![("early", 0.5), ("later", 110.0)]);
+    }
+
+    #[test]
+    fn from_the_start_the_replay_gives_what_was_said_before_record_and_the_timing() {
+        // The stream began at 1000.0; its VOD's replay counts from 1005.7.
+        let stretch = || Stretch {
+            number: 1,
+            start: 64.066,
+            length: 1000.0,
+            offset: 0.0,
+        };
+        let aired = Aired {
+            at: 64.066,
+            aired: 1000.0,
+            exact: true,
+            vod_start: true,
+        };
+        let before = Before {
+            origin: 1005.7,
+            messages: vec![
+                message("early", "a", 1010.7),
+                // IRC has it too, a moment apart on the clock.
+                message("both", "b", 1300.2),
+                // After IRC's first message: IRC's own are kept.
+                message("late", "c", 1500.7),
+            ],
+        };
+        let said = vec![message("both", "b", 1300.7), message("irc", "d", 1400.7)];
+        let placed = arrange(said.clone(), Some(before), vec![(stretch(), aired)]);
+        let times: Vec<(&str, f64)> = placed.iter().map(|m| (m.id.as_str(), m.time)).collect();
+        // As the replay places them: seconds since its origin.
+        let expected = [("early", 5.0), ("both", 295.0), ("irc", 395.0)];
+        assert_eq!(times.len(), expected.len(), "{times:?}");
+        for ((id, time), (want_id, want_time)) in times.iter().zip(expected) {
+            assert_eq!(*id, want_id);
+            assert!((time - want_time).abs() < 1e-9, "{id}: {time}");
+        }
+        // Without the replay, by the stream's start (to the second), as before.
+        let placed = arrange(said, None, vec![(stretch(), aired)]);
+        assert!((placed[0].time - (1300.7 - REPLAY_LEAD - 1000.0)).abs() < 1e-9);
     }
 }

@@ -52,6 +52,10 @@ pub struct Replay {
     /// Places where two pages a bucket apart didn't meet, so some comments
     /// between them may be missing. Logged; Twitch has no page between them.
     pub gaps: usize,
+    /// When the video starts as its replay counts, in seconds since 1970,
+    /// on the clock of IRC's `tmi-sent-ts` (see [`timed`]). `None` without a
+    /// comment that says when it was sent.
+    pub origin: Option<f64>,
 }
 
 /// A VOD: whose it is, and how long.
@@ -227,9 +231,24 @@ impl Twitch {
             .filter(|comment| comment.offset >= from && comment.offset <= to)
             .collect();
         Ok(Replay {
+            origin: origin(&comments),
             messages: timed(comments),
             gaps,
         })
+    }
+
+    /// The VOD a live channel's stream is being saved to, if it keeps them.
+    pub async fn live_vod(&self, login: &str) -> Result<Option<String>> {
+        let data = self
+            .query(
+                "query($login:String!){user(login:$login){stream{archiveVideo{id}}}}",
+                json!({ "login": login }),
+            )
+            .await?;
+        Ok(data
+            .pointer("/user/stream/archiveVideo/id")
+            .and_then(Value::as_str)
+            .map(str::to_string))
     }
 
     /// Covers `start` to `end` seconds with pages that overlap: a probe
@@ -341,21 +360,27 @@ fn bucket(seconds: u32) -> u32 {
     seconds - seconds % BUCKET
 }
 
-/// Each comment's moment, to the millisecond. Twitch gives whole seconds
-/// into the video, rounded down, and the moment it was sent; the video's
-/// start, as Twitch counts it, is the earliest "sent minus seconds in" over
-/// all comments, which places every comment within its second.
-fn timed(comments: Vec<Comment>) -> Vec<Message> {
+/// The video's start, as Twitch counts it, in seconds since 1970: the
+/// earliest "sent minus seconds in" over all comments. Twitch gives whole
+/// seconds into the video, rounded down, and the moment each was sent.
+fn origin(comments: &[Comment]) -> Option<f64> {
     let start = comments
         .iter()
         .filter_map(|c| c.sent.map(|sent| sent - f64::from(c.offset)))
         .fold(f64::INFINITY, f64::min);
+    start.is_finite().then_some(start)
+}
+
+/// Each comment's moment, to the millisecond: when it was sent, less the
+/// video's [`origin`], which places every comment within its second.
+fn timed(comments: Vec<Comment>) -> Vec<Message> {
+    let start = origin(&comments);
     let mut messages: Vec<Message> = comments
         .into_iter()
         .map(|c| {
             let whole = f64::from(c.offset);
-            let time = match c.sent {
-                Some(sent) if start.is_finite() => (sent - start).clamp(whole, whole + 0.999),
+            let time = match (c.sent, start) {
+                (Some(sent), Some(start)) => (sent - start).clamp(whole, whole + 0.999),
                 _ => whole,
             };
             Message {
@@ -689,16 +714,19 @@ mod tests {
             parts: Vec::new(),
         };
         // The video started at 1000.25 by Twitch's count: offsets are the seconds since, rounded down.
-        let messages = timed(vec![
+        let comments = vec![
             comment("late", 12, 1012.75),
             comment("early", 3, 1003.25),
             comment("exact", 7, 1007.5),
-        ]);
+        ];
+        assert_eq!(origin(&comments), Some(1000.25));
+        let messages = timed(comments);
         let times: Vec<(&str, f64)> = messages.iter().map(|m| (m.id.as_str(), m.time)).collect();
         assert_eq!(times, vec![("early", 3.0), ("exact", 7.25), ("late", 12.5)]);
-        // Without a moment, the whole second.
+        // Without a moment, the whole second, and no start to be had.
         let mut bare = comment("bare", 5, 0.0);
         bare.sent = None;
+        assert_eq!(origin(std::slice::from_ref(&bare)), None);
         assert_eq!(timed(vec![bare])[0].time, 5.0);
     }
 }

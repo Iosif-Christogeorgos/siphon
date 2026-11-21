@@ -357,11 +357,17 @@ impl DownloadManager {
             flow.reserve(plan::live::reserve(&recipe));
         }
 
-        // The chat, read as it airs into the work folder (see `live_chat`).
+        // The chat, read as it airs into the work folder (see `live_chat`);
+        // from the start, what was said before comes from the stream's VOD.
+        let stream_began = video
+            .live
+            .as_ref()
+            .and_then(|live| live.since)
+            .map(|since| since as f64);
         let mut capture = match recipe.chat.as_ref().map(|step| &step.source) {
             Some(ChatSource::Live { channel }) => work_dir(job.app, job.id)
                 .ok()
-                .map(|work| ChatCapture::start(job.app, channel, &work)),
+                .map(|work| ChatCapture::start(job.app, channel, &work, stream_began.filter(|_| from_start))),
             _ => None,
         };
         let mut recording = Recording {
@@ -405,10 +411,7 @@ impl DownloadManager {
                     ffmpeg: job.bins.ffmpeg(),
                     ffprobe: job.bins.ffprobe(),
                     playlist: playlist_of(&video, &recording.recipe),
-                    began: (from_start && first)
-                        .then(|| video.live.as_ref().and_then(|live| live.since))
-                        .flatten()
-                        .map(|since| since as f64),
+                    began: stream_began.filter(|_| from_start && first),
                 });
             }
             let ended = self
@@ -821,7 +824,7 @@ impl DownloadManager {
         let chat: Option<(ChatLog, Placement)> = match &recipe.chat {
             Some(step) => {
                 let stretches = stretches(&numbers, &probes, recorded);
-                live_chat::chat_for_file(work, &stretches)
+                live_chat::chat_for_file(job.app, work, &stretches)
                     .await
                     .map(|log| (log, step.placement))
             }
