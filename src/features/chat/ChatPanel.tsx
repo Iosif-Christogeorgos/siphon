@@ -24,7 +24,8 @@ const MAX_SHADE = 0.8;
 
 /**
  * Where the chat goes: the preview, with the chat box over it showing the
- * real chat at the playhead. The place is kept for the channel, so the
+ * real chat at the playhead (for a stream as it airs, a still of the stream
+ * with its chat as it comes). The place is kept for the channel, so the
  * next video from it starts there.
  *
  * Keyboard: Space plays or pauses; ← and → move five seconds.
@@ -75,6 +76,8 @@ export function ChatPanel({
   }, [playing]);
 
   useEffect(() => {
+    // A stream as it airs has nothing to play or seek.
+    if (live) return;
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement;
       // Typing in a field, driving a menu or moving the box takes priority.
@@ -93,21 +96,25 @@ export function ChatPanel({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [seek, time, togglePlay]);
+  }, [live, seek, time, togglePlay]);
 
   return (
     <div ref={panel} className="scroll-my-3 space-y-3 rounded-[1.25rem] border bg-card p-3 shadow-card">
       <div className="overflow-hidden rounded-xl bg-black">
         <div className="relative mx-auto max-h-80" style={{ aspectRatio: aspect, maxWidth: `${20 * aspect}rem` }}>
-          <Preview
-            video={video}
-            ref={player}
-            onReady={() => {
-              if (!live) seek(time.get());
-            }}
-            onTime={(seconds) => time.set(seconds)}
-            onPlaying={setPlaying}
-          />
+          {live ? (
+            // A still of the stream rather than the stream: Twitch opens a new
+            // stream with an ad for viewers without an account.
+            video.thumbnail && <img src={video.thumbnail} alt="" className="size-full object-contain" />
+          ) : (
+            <Preview
+              video={video}
+              ref={player}
+              onReady={() => seek(time.get())}
+              onTime={(seconds) => time.set(seconds)}
+              onPlaying={setPlaying}
+            />
+          )}
           <ChatBox
             url={video.url}
             time={time}
@@ -119,23 +126,23 @@ export function ChatPanel({
         </div>
       </div>
 
-      <div className="flex items-center gap-2 px-0.5">
-        <Hint label={playing ? "Pause (Space)" : "Play (Space)"}>
-          <Button size="icon" onClick={togglePlay} aria-label={playing ? "Pause" : "Play"}>
-            {playing ? <Pause className="fill-current" /> : <Play className="fill-current" />}
-          </Button>
-        </Hint>
-        {live ? (
-          <span className="text-xs text-muted-foreground">Live: the box shows the chat as it comes.</span>
-        ) : (
-          <>
-            <span className="shrink-0 font-mono text-xs text-muted-foreground tabular-nums">
-              <motion.span className="text-foreground">{timeLabel}</motion.span> / {formatTimecode(duration)}
-            </span>
-            <Scrubber duration={duration} time={time} onSeek={seek} />
-          </>
-        )}
-      </div>
+      {live ? (
+        <p className="px-1 text-xs text-muted-foreground">
+          Live: the box shows the chat as it comes, over a still of the stream.
+        </p>
+      ) : (
+        <div className="flex items-center gap-2 px-0.5">
+          <Hint label={playing ? "Pause (Space)" : "Play (Space)"}>
+            <Button size="icon" onClick={togglePlay} aria-label={playing ? "Pause" : "Play"}>
+              {playing ? <Pause className="fill-current" /> : <Play className="fill-current" />}
+            </Button>
+          </Hint>
+          <span className="shrink-0 font-mono text-xs text-muted-foreground tabular-nums">
+            <motion.span className="text-foreground">{timeLabel}</motion.span> / {formatTimecode(duration)}
+          </span>
+          <Scrubber duration={duration} time={time} onSeek={seek} />
+        </div>
+      )}
 
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-0.5">
         <div className="flex items-center gap-1" role="toolbar" aria-label="Quick places">

@@ -65,7 +65,9 @@ pub async fn source(app: &AppHandle, bins: &BinaryManager, video: &VideoInfo, le
             });
         }
     }
-    if level <= LAST_LEVEL {
+    // A stream as it airs is never downloaded for a preview: it doesn't end,
+    // so yt-dlp would record it until the time limit.
+    if level <= LAST_LEVEL && video.live.is_none() {
         let path = download_proxy(app, bins, video).await?;
         return Ok(Preview {
             source: PreviewSource::File {
