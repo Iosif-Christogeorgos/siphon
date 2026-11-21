@@ -210,6 +210,10 @@ fn apple_hevc_is_tagged_hvc1_whether_converted_or_copied() {
     assert!(!copied.needs_ffmpeg_pass());
     let yt_dlp = args::recipe_args(&copied);
     assert!(yt_dlp.iter().any(|arg| arg.contains("-tag:v hvc1")));
+    // A whole video from YouTube is fetched in pieces, four at once.
+    assert!(yt_dlp
+        .windows(2)
+        .any(|pair| pair == ["--extractor-args", "youtube:formats=dashy"]));
 }
 
 #[test]
@@ -731,6 +735,8 @@ fn a_cut_for_apple_is_re_encoded_in_full_and_counts_from_the_start() {
     assert!(yt_dlp.iter().any(|arg| arg.contains("-copyts -start_at_zero")));
     // A second past the end, for the frames the last ones are decoded from.
     assert!(yt_dlp.windows(2).any(|pair| pair == ["--download-sections", "*10-21"]));
+    // ffmpeg fetches a part from the stream's address: YouTube's plain files, not pieces.
+    assert!(!yt_dlp.iter().any(|arg| arg.contains("dashy")));
 }
 
 #[test]

@@ -104,6 +104,19 @@ pub fn recipe_args(recipe: &Recipe) -> Vec<String> {
     let mut args: Vec<String> = vec!["--format".into(), recipe.format_selector()];
     let mut push = |values: &[&str]| args.extend(values.iter().map(|value| value.to_string()));
 
+    if recipe.trim.is_none() {
+        // YouTube's streams are plain files, which yt-dlp fetches on one
+        // connection, 10 MB at a time, and one connection to YouTube gets
+        // anywhere from a third to all of the line's speed. As DASH ("dashy"),
+        // the same formats, under the same ids, are fetched in 10 MB pieces,
+        // four at once (`--concurrent-fragments`). Measured 2026-11-21 on a
+        // 680 MB 4K stream, three rounds each: 18–40 MiB/s as plain files,
+        // 46 MiB/s every time as pieces, the line's full speed. Only YouTube
+        // reads this. A trimmed part is fetched by ffmpeg from the stream's
+        // address, which needs the plain file.
+        push(&["--extractor-args", "youtube:formats=dashy"]);
+    }
+
     if let Some(trim) = recipe.trim {
         // Fetch only the selected part. yt-dlp cuts the streams without
         // re-encoding them, starting at the key frame before `start`.
