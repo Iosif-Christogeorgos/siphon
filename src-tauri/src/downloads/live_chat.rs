@@ -56,6 +56,13 @@ const MATCH_WINDOW: f64 = 40.0;
 /// A timed-out user's messages from this long before go with them, as in
 /// Twitch's own chat, which takes away what is still on screen.
 const CLEARED_SPAN: f64 = 120.0;
+/// A message is shown this long before the moment it was sent aired, as
+/// Twitch's own replay of the stream shows it: the replay counts from when
+/// the VOD was created, a few seconds after the stream's first frame aired
+/// (4.3, 5.0 and 5.8 s on three channels, 2026-11-21), which is also about
+/// how far behind viewers watch, so reactions come just after what they
+/// react to. Placed by when it aired, chat came 4–6 s later than on Twitch.
+pub(super) const REPLAY_LEAD: f64 = 5.0;
 
 /// When a moment of a recording's stretch aired.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -486,8 +493,9 @@ fn said(events: &str) -> Vec<Message> {
 }
 
 /// Each message moved from when it was sent to where it shows in the
-/// finished file: in the stretch that was airing then. Messages sent while
-/// nothing was being recorded (the stream had dropped) are left out.
+/// finished file ([`REPLAY_LEAD`] before what was airing then), in the
+/// stretch that was airing then. Messages sent while nothing was being
+/// recorded (the stream had dropped) are left out.
 fn place(messages: Vec<Message>, stretches: &[(Stretch, Aired)]) -> Vec<Message> {
     let mut placed: Vec<Message> = messages
         .into_iter()
@@ -495,7 +503,7 @@ fn place(messages: Vec<Message>, stretches: &[(Stretch, Aired)]) -> Vec<Message>
             let time = stretches.iter().find_map(|(stretch, aired)| {
                 // When the stretch's file starts, on the clock.
                 let began = aired.aired - (aired.at - stretch.start);
-                let into = message.time - began;
+                let into = message.time - REPLAY_LEAD - began;
                 (0.0..=stretch.length).contains(&into).then_some(stretch.offset + into)
             })?;
             message.time = time;
@@ -617,12 +625,14 @@ mod tests {
                 },
             ),
         ];
+        // Each sent a little after what it reacts to aired, as Twitch's replay shows it.
+        let sent = |aired: f64| aired + REPLAY_LEAD;
         let placed = place(
             vec![
-                message("before", "a", 999.0),
-                message("early", "a", 1000.5),
-                message("gap", "a", 1130.0),
-                message("later", "a", 1170.0),
+                message("before", "a", sent(999.0)),
+                message("early", "a", sent(1000.5)),
+                message("gap", "a", sent(1130.0)),
+                message("later", "a", sent(1170.0)),
             ],
             &stretches,
         );
