@@ -128,7 +128,9 @@ export function ChatPanel({
 
       {live ? (
         <p className="px-1 text-xs text-muted-foreground">
-          Live: the box shows the chat as it comes, over a still of the stream.
+          {video.live?.status === "live"
+            ? "Live: the box shows the chat as it comes, over a still of the stream."
+            : "Not on air yet: the box shows the channel’s chat as it comes."}
         </p>
       ) : (
         <div className="flex items-center gap-2 px-0.5">
@@ -174,7 +176,16 @@ export function ChatPanel({
           />
           <span className="w-8 text-right tabular-nums">{Math.round(placement.shade * 100)}%</span>
         </label>
-        <Button variant="secondary" size="sm" className="ml-auto" onClick={onDone}>
+        <Button
+          variant="secondary"
+          size="sm"
+          className="ml-auto"
+          onClick={() => {
+            // Kept even if left where it started, so the channel's next video doesn't ask again.
+            if (!disabled) place(placement);
+            onDone();
+          }}
+        >
           Done
         </Button>
       </div>
