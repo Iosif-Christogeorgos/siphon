@@ -918,19 +918,21 @@ impl DownloadManager {
             };
             // A video that failed takes its subtitles with it: dropping their
             // fetch ends its yt-dlp.
-            let downloaded = downloaded?;
-            let fetched = match fetched {
-                Some(fetched) => fetched,
-                None => {
+            let fetched = match (&downloaded, fetched) {
+                (Err(_), _) => None,
+                (Ok(_), Some(fetched)) => fetched,
+                (Ok(_), None) => {
                     job.emit(tracker.on_subtitles());
                     subtitles_fetch.await
                 }
             };
             (downloaded, fetched)
         };
+        // However the fetch ended: the next try writes it again.
         if let Some(info_json) = &info_json {
             let _ = tokio::fs::remove_file(info_json).await;
         }
+        let downloaded = downloaded?;
         let (subtitles, mut note) = self
             .subtitles(&video, choice, &recipe, &work, fetched.transpose()?)
             .await;
@@ -2054,7 +2056,8 @@ const INFO_JSON: &str = "lookup.info.json";
 
 /// Writes the video's saved lookup into `work` for yt-dlp to start from, if
 /// it is young enough (see `ytdlp::saved`), with a whole YouTube video's
-/// streams in pieces. `None`: yt-dlp looks the video up itself.
+/// streams in pieces, and without the cookies of a signed-in lookup. `None`:
+/// yt-dlp looks the video up itself.
 async fn saved_lookup(video: &VideoInfo, recipe: &Recipe, work: &Path) -> Option<PathBuf> {
     let saved = video.saved.as_ref()?;
     // A trimmed part is fetched by ffmpeg from the stream's own link, as a plain file.
@@ -2065,7 +2068,7 @@ async fn saved_lookup(video: &VideoInfo, recipe: &Recipe, work: &Path) -> Option
     } else {
         Vec::new()
     };
-    let json = saved.for_download(&pieces)?;
+    let json = saved.for_download(&pieces, video.with_account)?;
     let path = work.join(INFO_JSON);
     tokio::fs::write(&path, json).await.ok()?;
     Some(path)

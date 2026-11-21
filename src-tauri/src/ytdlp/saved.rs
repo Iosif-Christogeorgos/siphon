@@ -48,17 +48,43 @@ impl SavedLookup {
 
     /// The lookup for yt-dlp to download from, if it is still young enough,
     /// with YouTube's `pieces` formats fetched in pieces (see [`in_pieces`]).
-    pub fn for_download(&self, pieces: &[&str]) -> Option<Vec<u8>> {
+    /// `signed_in`: the lookup was made with the site's sign-in, so the
+    /// cookies yt-dlp put in it are left out (see [`without_cookies`]).
+    pub fn for_download(&self, pieces: &[&str], signed_in: bool) -> Option<Vec<u8>> {
         if self.at.elapsed() >= REUSE_FOR {
             return None;
         }
         let json = self.json.lock().unwrap().clone()?;
-        if pieces.is_empty() {
+        if pieces.is_empty() && !signed_in {
             return Some(json);
         }
         let mut value: Value = serde_json::from_slice(&json).ok()?;
         in_pieces(&mut value, pieces);
+        if signed_in {
+            without_cookies(&mut value);
+        }
         serde_json::to_vec(&value).ok()
+    }
+}
+
+/// Takes the cookies out of a lookup. yt-dlp writes the cookies it sent into
+/// what it prints (`cookies` on the video and on every format), so a lookup
+/// made with the sign-in holds the account's session in plain text, and the
+/// download's copy is written to disk. Signed-in cookies only ever leave the
+/// encrypted jar in a file of their own, deleted when the job ends; the
+/// download gets them that way (`--cookies`), with whatever the lookup renewed
+/// already written back to the jar.
+pub fn without_cookies(info: &mut Value) {
+    match info {
+        Value::Object(map) => {
+            map.remove("cookies");
+            if let Some(Value::Object(headers)) = map.get_mut("http_headers") {
+                headers.retain(|name, _| !name.eq_ignore_ascii_case("cookie"));
+            }
+            map.values_mut().for_each(without_cookies);
+        }
+        Value::Array(items) => items.iter_mut().for_each(without_cookies),
+        _ => {}
     }
 }
 
@@ -185,10 +211,38 @@ mod tests {
     }
 
     #[test]
+    fn a_signed_in_lookup_keeps_no_cookies() {
+        // What yt-dlp printed for a lookup with `--cookies` (seen 2026-11-21).
+        let session = "session=1f2e3d; Domain=127.0.0.1; Path=/; Expires=2000000000";
+        let json = serde_json::json!({
+            "extractor_key": "Generic",
+            "title": "cookies",
+            "cookies": session,
+            "http_headers": {"User-Agent": "Mozilla/5.0", "Cookie": "session=1f2e3d"},
+            "formats": [{"format_id": "mp4", "url": "http://127.0.0.1/clip.mp4", "cookies": session,
+                         "http_headers": {"User-Agent": "Mozilla/5.0"}}],
+            "requested_formats": [{"format_id": "mp4", "cookies": session}]
+        });
+        let saved = SavedLookup::new(serde_json::to_vec(&json).unwrap());
+
+        let signed_in = String::from_utf8(saved.for_download(&[], true).unwrap()).unwrap();
+        assert!(!signed_in.contains("1f2e3d"), "{signed_in}");
+        let value: Value = serde_json::from_str(&signed_in).unwrap();
+        // Everything else is kept, the title included even though it reads "cookies".
+        assert_eq!(value["title"], "cookies");
+        assert_eq!(value["http_headers"]["User-Agent"], "Mozilla/5.0");
+        assert_eq!(value["formats"][0]["url"], "http://127.0.0.1/clip.mp4");
+
+        // Without the sign-in, the cookies are the site's own, from the lookup, and stay.
+        let anonymous = String::from_utf8(saved.for_download(&[], false).unwrap()).unwrap();
+        assert!(anonymous.contains("1f2e3d"));
+    }
+
+    #[test]
     fn is_used_only_while_young() {
         let saved = SavedLookup::new(b"{}".to_vec());
         assert!(saved.fresh());
-        assert_eq!(saved.for_download(&[]).as_deref(), Some(&b"{}"[..]));
+        assert_eq!(saved.for_download(&[], false).as_deref(), Some(&b"{}"[..]));
         // Right after Windows starts there is no instant that long ago to test with.
         let Some(then) = Instant::now().checked_sub(REUSE_FOR) else {
             return;
@@ -198,7 +252,7 @@ mod tests {
             json: Mutex::new(Some(b"{}".to_vec())),
         };
         assert!(!old.fresh());
-        assert_eq!(old.for_download(&[]), None);
+        assert_eq!(old.for_download(&[], false), None);
         old.drop_if_stale();
         assert!(old.json.lock().unwrap().is_none());
     }
