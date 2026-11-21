@@ -12,6 +12,8 @@
 //! When a stretch aired is found by matching a frame. The stream's playlist
 //! says when each of its two-second segments aired; the first frame of a
 //! recent one is decoded and looked for among the recording's last frames.
+//! The playlist is read as often as a player reads it, because Twitch starts
+//! it with an ad for viewers without an account that only plays out then.
 //! Decoding is exact, so the frame decodes the same in both, whatever ads
 //! Twitch stitched into either. Until it is found, a stretch is placed by
 //! when its file appeared, which is a few seconds out.
@@ -19,7 +21,7 @@
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
@@ -39,9 +41,16 @@ const EVENTS: &str = "chat.jsonl";
 /// A recording's file appears about this long after what it starts with aired:
 /// ffmpeg starts three segments back from the newest, which is itself behind.
 const GUESSED_DELAY: f64 = 8.0;
-/// How often the frame is looked for, and for how long before giving up.
+/// How often the stream's playlist is read while the frame is looked for: as
+/// often as a player reads it. Twitch starts a new playlist with an ad for
+/// viewers without an account, and the ad only plays out while the playlist
+/// is read (2026-11-21: read every 15 s, a playlist was still on its ad after
+/// five minutes; read every 3 s, its 30-second ad ended on time).
+const PLAYLIST_EVERY: Duration = Duration::from_secs(2);
+/// How often the frame is looked for once the playlist lists the stream
+/// itself, and for how long in all before giving up.
 const MATCH_EVERY: Duration = Duration::from_secs(15);
-const MATCH_TRIES: usize = 40;
+const MATCH_FOR: Duration = Duration::from_secs(10 * 60);
 /// How far back from the end of the recording the frame is looked for.
 const MATCH_WINDOW: f64 = 40.0;
 /// A timed-out user's messages from this long before go with them, as in
@@ -223,20 +232,28 @@ async fn find_aired(app: &AppHandle, work: &Path, watch: PartWatch) {
     }
     let Some(playlist) = watch.playlist else { return };
     let Ok(twitch) = Twitch::new() else { return };
-    for _ in 0..MATCH_TRIES {
-        tokio::time::sleep(MATCH_EVERY).await;
-        if let Some(found) = match_frame(twitch.http(), &watch.ffmpeg, &watch.ffprobe, work, &playlist, &file).await {
-            log::line(
-                app,
-                &format!(
-                    "chat: stretch {} aired {:.2} s after it was guessed to",
-                    watch.number,
-                    found.aired - found.at - (guess.aired - guess.at)
-                ),
-            );
-            save_aired(&target, &found).await;
-            return;
+    let started = Instant::now();
+    let mut last_try: Option<Instant> = None;
+    while started.elapsed() < MATCH_FOR {
+        let live = live_segments(twitch.http(), &playlist).await;
+        // A few of the stream's own segments: past the ad, and one old enough
+        // to be in the recording already.
+        if live.len() >= 3 && last_try.is_none_or(|at| at.elapsed() >= MATCH_EVERY) {
+            last_try = Some(Instant::now());
+            if let Some(found) = match_frame(twitch.http(), &watch.ffmpeg, &watch.ffprobe, work, &live, &file).await {
+                log::line(
+                    app,
+                    &format!(
+                        "chat: stretch {} aired {:.2} s after it was guessed to",
+                        watch.number,
+                        found.aired - found.at - (guess.aired - guess.at)
+                    ),
+                );
+                save_aired(&target, &found).await;
+                return;
+            }
         }
+        tokio::time::sleep(PLAYLIST_EVERY).await;
     }
     log::line(
         app,
@@ -256,6 +273,19 @@ async fn save_aired(target: &Path, aired: &Aired) {
     }
 }
 
+/// The stream's own segments that `playlist` lists now (none while it shows
+/// an ad, or when it can't be read).
+async fn live_segments(http: &reqwest::Client, playlist: &str) -> Vec<Segment> {
+    let read = async { http.get(playlist).send().await?.error_for_status()?.text().await };
+    match read.await {
+        Ok(text) => segments(&text, playlist)
+            .into_iter()
+            .filter(|segment| segment.live)
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
 /// One try at the frame match: a recent live segment's first frame, looked
 /// for among the recording's last frames.
 async fn match_frame(
@@ -263,14 +293,9 @@ async fn match_frame(
     ffmpeg: &Path,
     ffprobe: &Path,
     work: &Path,
-    playlist: &str,
+    live: &[Segment],
     file: &Path,
 ) -> Option<Aired> {
-    let text = http.get(playlist).send().await.ok()?.text().await.ok()?;
-    let live: Vec<Segment> = segments(&text, playlist)
-        .into_iter()
-        .filter(|segment| segment.live)
-        .collect();
     // The third newest: old enough to be in the recording already.
     let segment = live.iter().rev().nth(2).or_else(|| live.first())?;
     let bytes = http.get(&segment.url).send().await.ok()?.bytes().await.ok()?;
