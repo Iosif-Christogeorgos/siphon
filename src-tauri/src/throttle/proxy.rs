@@ -6,10 +6,13 @@
 //! the site is paced by the [`Limiter`] and counted by the [`Meter`]. What
 //! goes out (requests) is not limited.
 
+use std::collections::VecDeque;
 use std::io;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinSet;
@@ -201,12 +204,77 @@ async fn forward(request: &RequestHead<'_>, upstream: Option<Upstream>) -> io::R
     Ok((server, Vec::new()))
 }
 
+/// Connects to `host:port` the way browsers do ("Happy Eyeballs", RFC 8305):
+/// a name's IPv6 and IPv4 addresses take turns, the next is tried beside the
+/// last whenever that hasn't answered within [`NEXT_ADDRESS`] (or has failed),
+/// and the first to answer is kept. Tried one after another, an address that
+/// never answers held the connection for the system's 21 seconds before the
+/// next was tried: on a network whose IPv6 doesn't reach Twitch's video
+/// servers, every segment of a recording waited out the 30-second limit, and
+/// the recording stalled (found 2026-11-21).
 async fn connect(host: &str, port: u16) -> io::Result<TcpStream> {
-    let stream = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect((host, port)))
+    let attempt = async {
+        let addresses = interleave(tokio::net::lookup_host((host, port)).await?.collect());
+        first_to_answer(&addresses).await
+    };
+    let stream = tokio::time::timeout(CONNECT_TIMEOUT, attempt)
         .await
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "timed out"))??;
     let _ = stream.set_nodelay(true);
     Ok(stream)
+}
+
+/// How long an address is given before the next is tried beside it (RFC 8305
+/// suggests 250 ms).
+const NEXT_ADDRESS: Duration = Duration::from_millis(250);
+
+/// The addresses with IPv6 and IPv4 taking turns, starting with the family the
+/// system put first, each family in the system's order.
+fn interleave(addresses: Vec<SocketAddr>) -> Vec<SocketAddr> {
+    let first_v6 = addresses.first().is_some_and(SocketAddr::is_ipv6);
+    let (mut first, mut second): (VecDeque<SocketAddr>, VecDeque<SocketAddr>) =
+        addresses.into_iter().partition(|address| address.is_ipv6() == first_v6);
+    let mut turns = Vec::with_capacity(first.len() + second.len());
+    while !first.is_empty() || !second.is_empty() {
+        turns.extend(first.pop_front());
+        turns.extend(second.pop_front());
+    }
+    turns
+}
+
+/// The first of `addresses` to take the connection, trying the next beside
+/// those still trying every [`NEXT_ADDRESS`], and at once when one fails.
+async fn first_to_answer(addresses: &[SocketAddr]) -> io::Result<TcpStream> {
+    let mut untried = addresses.iter().copied();
+    let mut trying = FuturesUnordered::new();
+    let mut last_error = None;
+    loop {
+        if trying.is_empty() {
+            match untried.next() {
+                Some(address) => trying.push(TcpStream::connect(address)),
+                None => {
+                    return Err(last_error
+                        .unwrap_or_else(|| io::Error::new(io::ErrorKind::NotFound, "the name has no address")))
+                }
+            }
+        }
+        tokio::select! {
+            Some(tried) = trying.next() => match tried {
+                Ok(stream) => return Ok(stream),
+                Err(error) => {
+                    last_error = Some(error);
+                    if let Some(address) = untried.next() {
+                        trying.push(TcpStream::connect(address));
+                    }
+                }
+            },
+            () = tokio::time::sleep(NEXT_ADDRESS) => {
+                if let Some(address) = untried.next() {
+                    trying.push(TcpStream::connect(address));
+                }
+            }
+        }
+    }
 }
 
 /// Passes bytes both ways until the site is done; what comes back is paced and counted.
@@ -611,6 +679,48 @@ mod tests {
         let took = started.elapsed();
         assert!(took >= Duration::from_millis(450), "took {took:?}");
         assert!(took < Duration::from_millis(1500), "took {took:?}");
+    }
+
+    #[test]
+    fn ipv6_and_ipv4_addresses_take_turns() {
+        let address = |text: &str| text.parse::<SocketAddr>().unwrap();
+        let resolved = vec![
+            address("[2600::1]:443"),
+            address("[2600::2]:443"),
+            address("[2600::3]:443"),
+            address("13.0.0.1:443"),
+            address("13.0.0.2:443"),
+        ];
+        assert_eq!(
+            interleave(resolved),
+            vec![
+                address("[2600::1]:443"),
+                address("13.0.0.1:443"),
+                address("[2600::2]:443"),
+                address("13.0.0.2:443"),
+                address("[2600::3]:443"),
+            ]
+        );
+        let only_v4 = vec![address("13.0.0.1:443"), address("13.0.0.2:443")];
+        assert_eq!(interleave(only_v4.clone()), only_v4);
+    }
+
+    #[tokio::test]
+    async fn an_address_that_never_answers_doesnt_hold_up_the_next() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let working = listener.local_addr().unwrap();
+        // A documentation address (TEST-NET-1): it never answers, or fails at once.
+        let silent: SocketAddr = "192.0.2.1:443".parse().unwrap();
+        let started = Instant::now();
+        let stream = first_to_answer(&[silent, working]).await.unwrap();
+        assert_eq!(stream.peer_addr().unwrap(), working);
+        let took = started.elapsed();
+        assert!(took < Duration::from_secs(2), "took {took:?}");
+
+        // Nothing listens on a port that was just freed: refused, and said so.
+        drop(listener);
+        let error = first_to_answer(&[working]).await.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::ConnectionRefused);
     }
 
     #[test]
