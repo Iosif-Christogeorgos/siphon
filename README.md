@@ -26,7 +26,7 @@ A clean, fast video downloader for Windows, built on [yt-dlp](https://github.com
 
 ## Why Siphon
 
-yt-dlp can download from well over a thousand sites, but it's a command-line tool, and the hard part is rarely the download: it's knowing which of a video's dozens of formats will actually play on your phone, fit under Discord's limit, or import cleanly into your editor. Siphon makes that choice for you, from the formats the video really has and what your PC can do, and tells you plainly what it's going to make before it makes it.
+yt-dlp can download from well over a thousand sites, but it's a command-line tool, and the hard part is rarely the download: it's knowing which of a video's dozens of formats will actually play on your phone or your TV, or fit under Discord's limit. Siphon makes that choice for you, from the formats the video really has and what your PC can do, and tells you plainly what it's going to make before it makes it.
 
 No account, no ads, no tracking. Siphon talks only to the sites you download from and to GitHub for its own updates.
 
@@ -42,7 +42,6 @@ Pick what the video is for and Siphon works out the rest:
 | **Watch** | The best version that plays on Windows, iPhone / iPad / Mac, Android or a TV |
 | **Share** | The best quality that fits Discord, WhatsApp, TikTok, Reels or Shorts |
 | **Audio** | MP3 or M4A with title, artist and cover art, or the original track untouched |
-| **Edit** | Constant frame rate files for Premiere Pro, DaVinci Resolve, CapCut and Vegas |
 
 Original streams are copied whenever the device can play them, because converting is slower and never improves quality. When a conversion is needed, it runs on your graphics card (NVIDIA, Intel or AMD) if it can. Every plan says what it will do before you press Download: **No quality loss**, **Converts**, **Size-optimized** or **May not play everywhere**, with an estimated size.
 
@@ -59,7 +58,7 @@ Combined with **Share**, each clip is made as sharp as it can be while still fit
 
 ### Subtitles in your language
 
-Pick a language once, and every video with subtitles in it gets them in the form its destination needs: a track you can turn on and off for watching, drawn into the picture for Discord or WhatsApp, or an SRT file beside the video for your editor. Subtitles written by people come before speech recognition, another language is never swapped in, and if a site won't send them the video is still saved, with a note saying why.
+Pick a language once, and every video with subtitles in it gets them in the form its destination needs: a track you can turn on and off for watching, or drawn into the picture for Discord or WhatsApp. Subtitles written by people come before speech recognition, another language is never swapped in, and if a site won't send them the video is still saved, with a note saying why.
 
 ### A queue that keeps going
 

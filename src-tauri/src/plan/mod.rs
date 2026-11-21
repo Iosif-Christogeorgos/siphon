@@ -18,7 +18,6 @@
 mod audio;
 pub mod codecs;
 mod custom;
-mod edit;
 pub mod explain;
 pub mod live;
 pub mod registry;
@@ -57,9 +56,6 @@ pub struct PresetChoice {
     pub tier: Option<TierId>,
     #[serde(default)]
     pub music_format: MusicFormat,
-    /// Edit targets: an intermediate codec instead of H.264.
-    #[serde(default)]
-    pub smooth_editing: bool,
     /// The language subtitles are wanted in ("en", "pt-br"); `None` is none.
     /// See [`subtitles`].
     #[serde(default)]
@@ -170,7 +166,7 @@ pub struct Recipe {
     pub strip_audio: bool,
     /// Why something is converted, as a clause: "Apple devices can't play VP9".
     pub reason: Option<String>,
-    /// "Plays natively on Apple devices", "Ready for Premiere Pro", …
+    /// "Plays natively on Apple devices", "Plays in any music player", …
     pub promise: String,
     pub hints: Vec<Hint>,
     /// Seconds of output, when known (needed for size estimates and conversion progress).
@@ -232,10 +228,6 @@ pub struct VideoEncode {
     /// Scale down to this short side (never up).
     pub scale_lines: Option<u32>,
     pub max_fps: Option<f64>,
-    /// Force a constant frame rate (editing).
-    pub constant_frame_rate: bool,
-    /// A key frame at least this often, so editors can scrub smoothly.
-    pub keyframe_seconds: Option<f64>,
 }
 
 impl VideoEncode {
@@ -246,8 +238,6 @@ impl VideoEncode {
             bitrate_kbps: None,
             scale_lines: None,
             max_fps: None,
-            constant_frame_rate: false,
-            keyframe_seconds: None,
         }
     }
 
@@ -275,8 +265,6 @@ pub enum AudioAction {
     Encode {
         codec: AudioCodec,
         bitrate_kbps: Option<u32>,
-        /// Resample to this rate (editors expect 48 kHz).
-        sample_rate: Option<u32>,
         /// Mix down to stereo (Share: surround is wasted on a phone).
         stereo: bool,
     },
@@ -287,7 +275,6 @@ impl AudioAction {
         AudioAction::Encode {
             codec,
             bitrate_kbps,
-            sample_rate: None,
             stereo: false,
         }
     }
@@ -473,9 +460,6 @@ impl Recipe {
                     .map(|size| SizeEstimate::exact(size as f64 * self.source_fraction)),
                 VideoAction::Encode(encode) => match (encode.codec, encode.bitrate_kbps) {
                     (_, Some(kbps)) => bitrate(f64::from(kbps)).map(SizeEstimate::exact),
-                    (VideoCodec::Prores, None) => {
-                        bitrate(self.prores_kbps()).map(|likely| SizeEstimate::spread(likely, 0.8, 1.25))
-                    }
                     (_, None) => self.quality_encode_kbps(step, encode).and_then(|(kbps, low, high)| {
                         bitrate(kbps).map(|likely| SizeEstimate::spread(likely, low, high))
                     }),
@@ -537,18 +521,8 @@ impl Recipe {
             VideoCodec::H264 => 0.75,
             _ => 1.0,
         };
-        // A key frame every second (Edit) costs most on still pictures: up to 3.5× measured.
-        let keyframes = if encode.keyframe_seconds.is_some() { 1.6 } else { 1.0 };
         // Content swings it two ways: half to double covers every case measured.
-        Some((source_kbps * scale * codec * source * keyframes, 0.5, 2.0))
-    }
-
-    /// ProRes 422 spends about 4.3 Mbit per 1080p frame whatever the picture
-    /// (measured 4.0–4.6), scaling with pixels.
-    fn prores_kbps(&self) -> f64 {
-        let Some(step) = &self.video else { return 0.0 };
-        let lines = f64::from(self.output_lines().unwrap_or(step.lines));
-        4_300.0 * (lines / 1080.0).powi(2) * self.output_fps().unwrap_or(30.0)
+        Some((source_kbps * scale * codec * source, 0.5, 2.0))
     }
 
     /// The same recipe, encoding on the CPU: for when a hardware encoder
@@ -870,7 +844,6 @@ impl<'a> Planner<'a> {
         }
         match target.group {
             Group::Watch => self.watch(target, choice.quality),
-            Group::Edit => self.edit(target, choice.quality, choice.smooth_editing),
             Group::Audio if target.id == TargetId::Music => self.music(choice.music_format, choice.quality),
             Group::Audio => self.original_audio(),
             Group::Max => self.max_quality(),

@@ -12,7 +12,6 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum Group {
     Watch,
-    Edit,
     Audio,
     Max,
     Share,
@@ -26,11 +25,6 @@ pub enum TargetId {
     Apple,
     Android,
     Tv,
-    // Edit
-    Premiere,
-    Resolve,
-    Capcut,
-    Vegas,
     // Audio
     Music,
     Original,
@@ -85,8 +79,6 @@ pub enum QualityKind {
 pub enum Extra {
     /// Pick an account tier (Share).
     Tier,
-    /// "Smoothest editing (large files)": an intermediate codec instead of H.264.
-    SmoothEditing,
     /// MP3 or M4A.
     MusicFormat,
 }
@@ -195,10 +187,10 @@ const fn target(
     }
 }
 
-use Extra::{MusicFormat as MusicExtra, SmoothEditing};
+use Extra::MusicFormat as MusicExtra;
 use QualityKind::{Bitrate, Resolution};
 
-static TARGETS: [Target; 14] = [
+static TARGETS: [Target; 10] = [
     target(
         TargetId::Windows,
         Group::Watch,
@@ -227,43 +219,6 @@ static TARGETS: [Target; 14] = [
         &[],
     ),
     target(TargetId::Tv, Group::Watch, "TV", "smart TVs", "tv", Resolution, &[]),
-    target(
-        TargetId::Premiere,
-        Group::Edit,
-        "Premiere Pro",
-        "Premiere Pro",
-        "clapperboard",
-        Resolution,
-        &[SmoothEditing],
-    ),
-    target(
-        TargetId::Resolve,
-        Group::Edit,
-        "DaVinci Resolve",
-        "DaVinci Resolve",
-        "clapperboard",
-        Resolution,
-        &[SmoothEditing],
-    ),
-    // CapCut's support for intermediate codecs couldn't be confirmed.
-    target(
-        TargetId::Capcut,
-        Group::Edit,
-        "CapCut",
-        "CapCut",
-        "clapperboard",
-        Resolution,
-        &[],
-    ),
-    target(
-        TargetId::Vegas,
-        Group::Edit,
-        "Vegas",
-        "VEGAS Pro",
-        "clapperboard",
-        Resolution,
-        &[SmoothEditing],
-    ),
     target(
         TargetId::Music,
         Group::Audio,
@@ -355,12 +310,11 @@ impl Target {
 
 impl Group {
     /// In the order the app shows them. A new user starts on Max quality (see `choices.rs`).
-    pub const ALL: [Group; 5] = [Group::Max, Group::Watch, Group::Share, Group::Audio, Group::Edit];
+    pub const ALL: [Group; 4] = [Group::Max, Group::Watch, Group::Share, Group::Audio];
 
     pub fn default_target(self) -> TargetId {
         match self {
             Group::Watch => TargetId::Windows,
-            Group::Edit => TargetId::Premiere,
             Group::Audio => TargetId::Music,
             Group::Max => TargetId::Max,
             Group::Share => TargetId::Discord,
@@ -370,7 +324,6 @@ impl Group {
     fn info(self) -> GroupInfo {
         let (label, icon, description) = match self {
             Group::Watch => ("Watch", "play", "The best version that plays on the device, as it is."),
-            Group::Edit => ("Edit", "scissors", "Files that import and scrub smoothly in an editor."),
             Group::Audio => ("Audio", "headphones", "Just the sound."),
             Group::Max => (
                 "Max quality",

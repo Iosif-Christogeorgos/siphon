@@ -226,7 +226,7 @@ export type GroupId = string;
 export type TargetId = string;
 export type TierId = string;
 
-export type VideoCodec = "h264" | "hevc" | "vp9" | "av1" | "vp8" | "prores" | "other";
+export type VideoCodec = "h264" | "hevc" | "vp9" | "av1" | "vp8" | "other";
 export type AudioCodec = "aac" | "opus" | "mp3" | "vorbis" | "flac" | "ac3" | "pcm" | "other";
 export type Container =
   | "mp4"
@@ -242,7 +242,7 @@ export type Container =
 export type Content = "video_audio" | "video_only" | "audio_only";
 export type MusicFormat = "mp3" | "m4a";
 export type QualityKind = "resolution" | "bitrate" | "none";
-export type Extra = "tier" | "smooth_editing" | "music_format";
+export type Extra = "tier" | "music_format";
 
 export interface Tier {
   id: TierId;
@@ -298,7 +298,6 @@ export type Choice =
       quality: number | null;
       tier: TierId | null;
       music_format: MusicFormat;
-      smooth_editing: boolean;
       /** The language subtitles are wanted in ("en", "pt-br"); null is none. */
       subtitles: string | null;
     }
@@ -351,8 +350,8 @@ export interface PlanSummary {
   subtitle_track: string | null;
 }
 
-/** Inside the file as a track, an SRT file beside it, or drawn into the picture (`plan/subtitles.rs`). */
-export type SubtitleDelivery = "embed" | "file" | "burn";
+/** Inside the file as a track, or drawn into the picture (`plan/subtitles.rs`). */
+export type SubtitleDelivery = "embed" | "burn";
 
 // ── choices.rs ─────────────────────────────────────────────────────────
 
@@ -375,7 +374,6 @@ export interface Choices {
   /** The tier picked for each Share target. */
   tiers: Record<TargetId, TierId>;
   music_format: MusicFormat;
-  smooth_editing: boolean;
   custom: ManualOptions;
   saved: SavedPreset[];
   /** The language subtitles are wanted in, for every video that has it; null is none. */

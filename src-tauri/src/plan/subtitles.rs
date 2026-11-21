@@ -20,8 +20,6 @@ use crate::ytdlp::subtitles::{language_name, language_tag, primary, SubtitleKind
 pub enum Delivery {
     /// A track inside the file, which players can turn on and off.
     Embed,
-    /// A SubRip file beside the video, named after it: editors import captions from one.
-    File,
     /// Drawn into the picture, for Share: chat apps show no subtitle tracks.
     /// It can't be turned off, and the video has to be encoded for it.
     #[serde(rename = "burn")]
@@ -65,7 +63,6 @@ pub fn delivery(choice: &Choice, recipe: &Recipe) -> Option<Delivery> {
     recipe.video.as_ref()?;
     match choice {
         Choice::Preset(preset) => match preset.target.group() {
-            Group::Edit => Some(Delivery::File),
             Group::Share => Some(Delivery::BurnIn),
             Group::Audio => None,
             Group::Watch | Group::Max => Some(Delivery::Embed),
@@ -108,7 +105,7 @@ pub fn attach(recipe: &mut Recipe, tracks: &[SubtitleTrack], choice: &Choice) {
             *recipe = *encode;
             recipe.reason = Some("the subtitles are drawn into the picture".into());
         }
-        Delivery::BurnIn | Delivery::File => {}
+        Delivery::BurnIn => {}
     }
     if delivery == Delivery::BurnIn {
         let app = match choice {
@@ -126,13 +123,12 @@ pub fn attach(recipe: &mut Recipe, tracks: &[SubtitleTrack], choice: &Choice) {
         && match delivery {
             Delivery::Embed => recipe.container == Container::Mkv,
             Delivery::BurnIn => true,
-            Delivery::File => false,
         };
     if has_styling && !styled {
-        let into = match delivery {
-            Delivery::File => "an SRT file".to_string(),
-            _ if !whole => "a clip".to_string(),
-            Delivery::Embed | Delivery::BurnIn => format!("an {} file", recipe.container.label()),
+        let into = if whole {
+            format!("an {} file", recipe.container.label())
+        } else {
+            "a clip".to_string()
         };
         recipe.hints.push(info(format!(
             "The subtitles' fonts, colours and placement can't go in {into}; their words and timings do."

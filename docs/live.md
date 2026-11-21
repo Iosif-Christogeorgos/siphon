@@ -5,7 +5,7 @@ Paste a live stream (Twitch, YouTube, Kick, or any site yt-dlp records live) and
 ## What the user sees
 
 - **The card** marks the stream LIVE, UPCOMING or OFFLINE, with how long it has been on air, how many watch, or when it starts. Channel listings show live and scheduled streams as rows that open to record.
-- **Presets:** Max quality, Watch and Audio. Share and Edit stay in view but disabled, with a hint that they are for the finished recording; Trim is hidden. The plan's size is **per hour**.
+- **Presets:** Max quality, Watch and Audio. Share stays in view but disabled, with a hint that it is for the finished recording; Trim is hidden. The plan's size is **per hour**.
 - **From:** *Now* (the default) or *The start*, offered only where the site keeps what already aired (a second lookup with `--live-from-start`; YouTube, and Twitch channels that keep VODs). yt-dlp records from the start only on YouTube, Twitch, TVer and mellow-fan; elsewhere it refuses ("no formats that can be downloaded from the start") and *From* isn't shown. Kick is one of those sites: checked 2026-11-21 on a live channel. From the start, what already aired comes at full speed, then it records in real time; the button says "Catching up · 42 min behind live" until it is within 30 s.
 - **While recording:** ● REC, the time, the size and the bitrate, and **Stop**. No Pause: a live stream doesn't wait, so a pause would only lose that part. Waiting for a stream shows when it starts, and a way to stop waiting.
 - **Notes behind the ⓘ:** how much room the disk has for this stream; that recordings go first within the speed limit; on Twitch, that its ads are recorded too. (Siphon offers no way to sign in to a site that doesn't ask for it, so the note doesn't suggest a subscribed account.) In view: a warning when the speed limit is below what the stream needs, or the disk has room for less than two hours; and a quiet note when three or more recordings are already running.
@@ -38,7 +38,7 @@ Measured 2026-11-19, with a 1080p60 Twitch stream (≈ 0.9 MB/s) and a 4K YouTub
 
 ## Tested
 
-**Unit tests:** live, scheduled and offline detection; planning per hour, Share and Edit refused, from-the-start formats; the speed-limit and disk warnings; the waiting schedule; the recording's readings (bitrate, catching up, disk); the reserved limiter; recording file names; the finishing arguments; the checks on a finished file (lengths, tracks, sync, Matroska tags); cleanup of yt-dlp's companions; the process tree and its kill fallback.
+**Unit tests:** live, scheduled and offline detection; planning per hour, Share refused, from-the-start formats; the speed-limit and disk warnings; the waiting schedule; the recording's readings (bitrate, catching up, disk); the reserved limiter; recording file names; the finishing arguments; the checks on a finished file (lengths, tracks, sync, Matroska tags); cleanup of yt-dlp's companions; the process tree and its kill fallback.
 
 **A fake live stream** (ffmpeg writing a live HLS playlist in real time, a small HTTP server that can refuse everything for a while), in the dev build:
 

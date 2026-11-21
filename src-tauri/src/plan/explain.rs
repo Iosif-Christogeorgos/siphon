@@ -180,10 +180,6 @@ fn detail(recipe: &Recipe) -> String {
                 "{streams} {} subtitles are inside the file, as a track you can turn on and off.",
                 step.title
             ),
-            Delivery::File => format!(
-                "{streams} {} subtitles come as an SRT file beside the video, to import as captions.",
-                step.title
-            ),
             Delivery::BurnIn => format!("{streams} {} subtitles are drawn into the picture.", step.title),
         },
         None => streams,
@@ -227,11 +223,7 @@ fn streams_detail(recipe: &Recipe) -> String {
         VideoAction::Copy if recipe.smart_cut() => format!("{promise}. Original streams.{cut}"),
         VideoAction::Copy => format!("{promise}. Original streams, no re-encoding."),
         VideoAction::Encode(encode) => {
-            let how = match encode.codec {
-                // ProRes has no hardware encoder here; it is quick on any CPU.
-                VideoCodec::Prores => String::new(),
-                _ => format!(" {}", encoder_phrase(encode.hardware)),
-            };
+            let how = format!(" {}", encoder_phrase(encode.hardware));
             let scaled = match encode.scale_lines {
                 Some(lines) if lines < video.lines => format!(" and scaled down from {}p", video.lines),
                 _ => String::new(),
@@ -270,7 +262,6 @@ fn convert_seconds(recipe: &Recipe) -> Option<f64> {
     let lines = f64::from(recipe.output_lines().unwrap_or(1080).max(1));
     let load = (lines / 1080.0).powi(2) * recipe.output_fps().unwrap_or(30.0) / 30.0;
     let speed = match (encode.codec, encode.hardware) {
-        (VideoCodec::Prores, _) => 4.0,
         (_, Hardware::Nvenc) => 10.0,
         (_, Hardware::Qsv | Hardware::Amf) => 7.0,
         (VideoCodec::H264, Hardware::Software) => 2.5,

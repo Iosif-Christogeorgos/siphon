@@ -29,7 +29,7 @@ use crate::ffmpeg::smart_cut::{self, AudioPiece, Fallback};
 use crate::ffmpeg::{self, encoders::Hardware, Pass};
 use crate::log;
 use crate::plan::codecs::{Container, VideoCodec};
-use crate::plan::subtitles::{Delivery, SubtitleStep};
+use crate::plan::subtitles::SubtitleStep;
 use crate::plan::{self, AudioAction, Choice, Recipe, Trim};
 use crate::process;
 use crate::sessions::{Account, CookieFile, Sessions};
@@ -154,14 +154,12 @@ impl Note {
     }
 }
 
-/// Subtitles ready to go into the file, or beside it.
+/// Subtitles ready to go into the file, or into the picture.
 struct Prepared {
     /// The file for the ffmpeg pass, in the work folder, on the video's own clock.
-    track: Option<PathBuf>,
+    track: PathBuf,
     /// How many cues it has: they take room in a smart cut's index.
     cues: usize,
-    /// SubRip for a file beside the video, from zero.
-    beside: Option<String>,
 }
 
 /// A playlist video's folder and number. Sent again, unchanged, on every
@@ -933,7 +931,7 @@ impl DownloadManager {
             let _ = tokio::fs::remove_file(info_json).await;
         }
         let downloaded = downloaded?;
-        let (subtitles, mut note) = self
+        let (subtitles, note) = self
             .subtitles(&video, choice, &recipe, &work, fetched.transpose()?)
             .await;
 
@@ -952,8 +950,7 @@ impl DownloadManager {
                 _ => {
                     let path = self.publish(&downloaded, job.id).await?;
                     let _ = tokio::fs::remove_dir_all(&work).await;
-                    let beside = write_beside(&path, &recipe, subtitles.as_ref()).await;
-                    return Ok(Done::file(path, note.or(beside)));
+                    return Ok(Done::file(path, note));
                 }
             }
         };
@@ -977,7 +974,6 @@ impl DownloadManager {
             ),
         }
         result?;
-        note = note.or(write_beside(&output, &recipe, subtitles.as_ref()).await);
         Ok(Done::file(output, note))
     }
 
@@ -1020,17 +1016,11 @@ impl DownloadManager {
         if step.styled {
             // SubStation Alpha goes into Matroska, or into the picture, as it came, styling and all.
             let cues = text.lines().filter(|line| line.starts_with("Dialogue:")).count();
-            let prepared = Prepared {
-                track: Some(raw),
-                cues,
-                beside: None,
-            };
-            return (Some(prepared), None);
+            return (Some(Prepared { track: raw, cues }), None);
         }
         let span = recipe.trim.map(|trim| srt::Span {
             start: trim.start,
             end: trim.end,
-            from_zero: step.delivery == Delivery::File,
         });
         let cues = srt::prepare(srt::parse(&text), span);
         if cues.is_empty() {
@@ -1041,24 +1031,13 @@ impl DownloadManager {
             };
             return (None, without(why.into()));
         }
-        let text = srt::write(&cues);
-        let prepared = match step.delivery {
-            Delivery::File => Prepared {
-                track: None,
-                cues: cues.len(),
-                beside: Some(text),
-            },
-            Delivery::Embed | Delivery::BurnIn => {
-                let track = work.join("subtitles.srt");
-                if let Err(err) = tokio::fs::write(&track, text).await {
-                    return (None, without(format!("Couldn't write them: {err}.")));
-                }
-                Prepared {
-                    track: Some(track),
-                    cues: cues.len(),
-                    beside: None,
-                }
-            }
+        let track = work.join("subtitles.srt");
+        if let Err(err) = tokio::fs::write(&track, srt::write(&cues)).await {
+            return (None, without(format!("Couldn't write them: {err}.")));
+        }
+        let prepared = Prepared {
+            track,
+            cues: cues.len(),
         };
         (Some(prepared), None)
     }
@@ -1192,7 +1171,7 @@ impl DownloadManager {
         }
         let mut shrinks = 0;
         loop {
-            let track = subtitles.and_then(|prepared| prepared.track.as_deref());
+            let track = subtitles.map(|prepared| prepared.track.as_path());
             let mut result = self.convert(job, &recipe, source, &partial, work, tracker, track).await;
             // A hardware encoder can refuse a job it passed the probe for (driver
             // limits, too many sessions). The CPU encoders always work.
@@ -1326,9 +1305,8 @@ impl DownloadManager {
                 AudioAction::Encode {
                     codec,
                     bitrate_kbps,
-                    sample_rate,
                     stereo,
-                } => AudioPiece::Encode(ffmpeg::audio_encode_args(*codec, *bitrate_kbps, *sample_rate, *stereo)),
+                } => AudioPiece::Encode(ffmpeg::audio_encode_args(*codec, *bitrate_kbps, *stereo)),
             }),
             _ => None,
         };
@@ -1386,7 +1364,9 @@ impl DownloadManager {
             .as_ref()
             .map_or(0, |_| ((plan.end() - plan.first()) * 100.0).ceil() as usize);
         // The subtitle track, shifted with the pieces; each cue is a packet in the index.
-        let track = subtitles.and_then(|prepared| prepared.track.as_deref().zip(recipe.subtitles.as_ref()));
+        let track = subtitles
+            .map(|prepared| prepared.track.as_path())
+            .zip(recipe.subtitles.as_ref());
         let other_packets = audio_packets + subtitles.map_or(0, |prepared| prepared.cues * 2);
         let mut joined = Err(Fallback::NoFrames);
         // Room for the index at the front first; if it turns out too small,
@@ -2095,39 +2075,6 @@ async fn fetched_subtitles(work: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Writes the subtitles for a file beside it (Edit), named the way players
-/// and editors look for them: `Title [id].en.srt`, numbered if that name is
-/// taken, since nothing already in the folder is ever replaced. Says so if
-/// it couldn't be written.
-async fn write_beside(video_file: &Path, recipe: &Recipe, subtitles: Option<&Prepared>) -> Option<Note> {
-    let (Some(step), Some(text)) = (
-        recipe.subtitles.as_ref(),
-        subtitles.and_then(|prepared| prepared.beside.as_deref()),
-    ) else {
-        return None;
-    };
-    let target = beside_name(video_file, &step.lang, |candidate| candidate.exists());
-    match tokio::fs::write(&target, text).await {
-        Ok(()) => None,
-        Err(err) => Some(Note::subtitles(format!(
-            "Saved without the {} subtitle file: {err}.",
-            step.title
-        ))),
-    }
-}
-
-/// `Title [id].mp4` → `Title [id].en.srt`, or `Title [id].en (2).srt` if `taken`.
-fn beside_name(video_file: &Path, lang: &str, taken: impl Fn(&Path) -> bool) -> PathBuf {
-    let stem = video_file.file_stem().and_then(|stem| stem.to_str()).unwrap_or("video");
-    let mut target = video_file.with_file_name(format!("{stem}.{lang}.srt"));
-    let mut copy = 2;
-    while taken(&target) {
-        target = video_file.with_file_name(format!("{stem}.{lang} ({copy}).srt"));
-        copy += 1;
-    }
-    target
-}
-
 /// Bytes free for the current user on the disk `dir` is on.
 pub fn free_space(dir: &Path) -> Option<u64> {
     use std::os::windows::ffi::OsStrExt;
@@ -2351,17 +2298,6 @@ mod naming_tests {
         assert_eq!(retries.next(Retry::Soon), None);
         assert_eq!(retries.next(Retry::Later), None);
         assert_eq!(Retries::default().next(Retry::No), None);
-    }
-
-    #[test]
-    fn a_subtitle_file_beside_the_video_is_named_after_it() {
-        let video = Path::new(r"C:\Videos\Talk [abc] (2).mp4");
-        assert_eq!(
-            beside_name(video, "pt-br", |_| false),
-            Path::new(r"C:\Videos\Talk [abc] (2).pt-br.srt")
-        );
-        let taken = beside_name(video, "en", |path| path.to_string_lossy().ends_with(".en.srt"));
-        assert_eq!(taken, Path::new(r"C:\Videos\Talk [abc] (2).en (2).srt"));
     }
 
     #[test]

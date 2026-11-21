@@ -35,7 +35,6 @@ Presets start from where the video is going. Pick a **group**, then a **target**
 | Watch | Windows · iPhone / iPad / Mac · Android · TV | The best version that plays natively on the device |
 | Share | Discord · WhatsApp · TikTok / Reels / Shorts | The best quality that fits the upload limit of your tier |
 | Audio | Music · Best audio (original) | MP3 or M4A at a chosen bitrate, or the original track untouched |
-| Edit | Premiere Pro · DaVinci Resolve · CapCut · Vegas | Constant frame rate H.264 with 48 kHz sound; or ProRes with **Smoothest editing (large files)** |
 
 The **Quality** choice offers **Best** and the resolutions the video actually has. It shows only the current pick until you point at it; it then unfolds across the row, and each resolution shows its estimated size as you point at it (a range when converting, since the size then depends on the picture); a lower one downloads the matching stream, and nothing is upscaled. Music offers bitrates instead; Max quality and Share have no quality row. **Customize** (under the summary) opens the old manual mode, where you choose the streams, file type and codecs yourself, and can save them as a named preset that appears under **My presets**. Siphon remembers the last group, target, quality and Share tier.
 
@@ -63,7 +62,7 @@ The preview comes from YouTube's embedded player for YouTube links, from a low-r
 Only the selected part is downloaded (`--download-sections`), and every clip starts and ends on the exact frames chosen. There is no choice to make:
 
 - **When the stream is kept as it is** (H.264 or HEVC), Siphon makes a **smart cut**: it re-encodes only the frames from the start of the clip to the next key frame and from the last key frame to the end, about two seconds each, and copies everything in between untouched. The re-encoded frames match the original's settings and are visually lossless. An hour of 1080p60 from Twitch is cut in about 20 seconds.
-- **When the video is converted anyway** (Edit, Share at a lower size, VP9 or AV1 kept as they are, or a clip for iPhone / iPad / Mac), the cut is made during that conversion.
+- **When the video is converted anyway** (Share at a lower size, VP9 or AV1 kept as they are, or a clip for iPhone / iPad / Mac), the cut is made during that conversion.
 
 Every smart cut is checked before it is kept: every frame at its time, the sound in sync from start to end, and the joins decoding exactly like the original. If anything is off, the whole clip is re-encoded instead, so a clip never comes out broken. `siphon.log` (in `%LOCALAPPDATA%\app.siphon.desktop\logs`) records which way each cut was made. How it works, and what was measured, is in [decisions.md](decisions.md#trimming).
 
@@ -71,7 +70,7 @@ Every smart cut is checked before it is kept: every frame at its time, the sound
 
 **Subtitles** beside the other choices picks a language (or Off, where a new user starts), and Siphon remembers the language, so every video that has it gets it. The list has the video's languages, Windows' language first; typing jumps to one. People's subtitles come before speech recognition; YouTube's machine translations aren't offered, since YouTube refuses them. A video without the language is saved without subtitles and says so, never with another language in its place.
 
-Where they go depends on the preset: a track inside the file for Watch and Max quality (MKV for Windows, TVs and Max quality, because Windows' own players don't show subtitle tracks in MP4 or WebM; MP4 timed text for Apple and Android), an SRT file beside the video for Edit, and drawn into the picture for Share, since chat apps show no tracks. The track is fetched by a yt-dlp run of its own beside the video's, so subtitles that can't be had never cost the video; a clip gets only the part inside it. How, why, and what was tested is in [subtitles.md](subtitles.md).
+Where they go depends on the preset: a track inside the file for Watch and Max quality (MKV for Windows, TVs and Max quality, because Windows' own players don't show subtitle tracks in MP4 or WebM; MP4 timed text for Apple and Android), and drawn into the picture for Share, since chat apps show no tracks. The track is fetched by a yt-dlp run of its own beside the video's, so subtitles that can't be had never cost the video; a clip gets only the part inside it. How, why, and what was tested is in [subtitles.md](subtitles.md).
 
 ## Queue, playlists and settings
 

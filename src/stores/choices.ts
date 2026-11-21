@@ -21,7 +21,6 @@ interface ChoicesState {
   setQuality: (value: number | null, bitrate: boolean) => void;
   setTier: (target: TargetId, tier: TierId) => void;
   setMusicFormat: (format: MusicFormat) => void;
-  setSmoothEditing: (smooth: boolean) => void;
   /** The language subtitles are wanted in, for every video that has it; null is none. */
   setSubtitles: (language: string | null) => void;
   /** Opens the custom settings, starting from the ones last used. */
@@ -78,7 +77,6 @@ export const useChoices = create<ChoicesState>((set, get) => {
     setQuality: (value, bitrate) => change(() => (bitrate ? { music_kbps: value } : { quality: value })),
     setTier: (target, tier) => change((choices) => ({ tiers: { ...choices.tiers, [target]: tier } })),
     setMusicFormat: (music_format) => change(() => ({ music_format })),
-    setSmoothEditing: (smooth_editing) => change(() => ({ smooth_editing })),
     setSubtitles: (subtitles) => change(() => ({ subtitles })),
 
     customize: () =>
@@ -151,7 +149,6 @@ export function toChoice(registry: Registry, choices: Choices): Choice | null {
     quality: target.quality === "bitrate" ? choices.music_kbps : choices.quality,
     tier: choices.tiers[target.id] ?? null,
     music_format: choices.music_format,
-    smooth_editing: choices.smooth_editing,
     subtitles: choices.subtitles,
   };
 }

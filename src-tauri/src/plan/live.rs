@@ -55,13 +55,13 @@ pub fn summarize(video: &VideoInfo, choice: &Choice, from_start: bool, caps: &Ca
     Ok(summary)
 }
 
-/// Share and Edit make a file from the whole video: they are for the finished
-/// recording, not for a stream as it airs. The interface doesn't offer them.
+/// Share makes a file from the whole video: it is for the finished
+/// recording, not for a stream as it airs. The interface doesn't offer it.
 fn refuse_file_only(choice: &Choice) -> Result<()> {
     match choice {
-        Choice::Preset(preset) if matches!(preset.target.group(), Group::Share | Group::Edit) => Err(AppError::new(
+        Choice::Preset(preset) if preset.target.group() == Group::Share => Err(AppError::new(
             ErrorKind::Unsupported,
-            "Share and Edit are for the finished recording. Record it with Max quality or Watch first.",
+            "Share is for the finished recording. Record it with Max quality or Watch first.",
         )),
         _ => Ok(()),
     }
@@ -306,7 +306,6 @@ mod tests {
             quality: None,
             tier: None,
             music_format: Default::default(),
-            smooth_editing: false,
             subtitles: None,
         })
     }
@@ -327,8 +326,8 @@ mod tests {
     }
 
     #[test]
-    fn share_and_edit_wait_for_the_finished_recording() {
-        for target in ["discord", "premiere"] {
+    fn share_waits_for_the_finished_recording() {
+        for target in ["discord", "social"] {
             let error = plan(&youtube_live(), &preset(target), false, &Capabilities::BASIC).unwrap_err();
             assert_eq!(error.kind, ErrorKind::Unsupported);
         }

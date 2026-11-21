@@ -1,6 +1,6 @@
 # Presets
 
-What each preset does, and where its assumptions come from. The presets themselves are defined once, in [`src-tauri/src/plan/registry.rs`](../src-tauri/src/plan/registry.rs); the planner files next to it (`watch.rs`, `edit.rs`, `audio.rs`, `share.rs`) hold the rules below. Last checked in November 2026.
+What each preset does, and where its assumptions come from. The presets themselves are defined once, in [`src-tauri/src/plan/registry.rs`](../src-tauri/src/plan/registry.rs); the planner files next to it (`watch.rs`, `audio.rs`, `share.rs`) hold the rules below. Last checked in November 2026.
 
 Two rules apply throughout:
 
@@ -15,9 +15,8 @@ Two rules apply throughout:
 | Watch | Windows · iPhone / iPad / Mac · Android · TV | The best video and audio the device plays as they are; converted only when nothing native is offered at the chosen quality |
 | Share | Discord · WhatsApp · TikTok / Reels / Shorts | The best quality that fits the upload limit of the chosen tier |
 | Audio | Music · Best audio (original) | MP3 or M4A at a chosen bitrate, or the original track untouched |
-| Edit | Premiere Pro · DaVinci Resolve · CapCut · Vegas | Constant frame rate H.264 with 48 kHz audio, or ProRes ("Smoothest editing") |
 
-**Subtitles**, in a language the user picks, go where each group needs them: a track inside the file for Watch and Max quality (in MKV for Windows, TVs and Max quality, in MP4 for Apple and Android), drawn into the picture for Share, an SRT file beside the video for Edit, and nowhere for Audio. Which file type shows them where, with the tests and sources, is in [subtitles.md](subtitles.md#where-they-go).
+**Subtitles**, in a language the user picks, go where each group needs them: a track inside the file for Watch and Max quality (in MKV for Windows, TVs and Max quality, in MP4 for Apple and Android), drawn into the picture for Share, and nowhere for Audio. Which file type shows them where, with the tests and sources, is in [subtitles.md](subtitles.md#where-they-go).
 
 The quality choice offers **Best** and the resolutions the video really has (no tiny ones unless that is all there is). Like the other choices under the groups, it shows only its current value until pointed at, then unfolds; the estimated size of the resolution pointed at shows at its end. A lower resolution downloads the matching stream; nothing is upscaled. Max quality and Share have no quality row; Music offers bitrates instead.
 
@@ -36,13 +35,6 @@ All stop at 2160p60 and pick SDR over HDR when both are offered. Android's **Bes
 - **Android, confirmed:** the [supported media formats](https://developer.android.com/media/platform/supported-formats) table: H.264 always, HEVC since 5.0, VP9 since 4.4, AV1 since 10, all readable from MP4. AV1 is converted because only recent phones decode it in hardware.
 - **Windows, confirmed:** H.264 plays out of the box; HEVC needs the paid HEVC Video Extensions unless the maker preinstalled them ([Windows Latest](https://windowslatest.com/2025/07/16/can-you-get-hevc-codec-for-free-on-windows-11)); VP9 and AV1 need free Store extensions. Siphon checks which are installed (`Get-AppxPackage`, about 0.1 s) and copies those codecs only when they are, saying so in the summary.
 - **TV:** no single specification exists. H.264 in MP4 is the universal baseline and every 4K set decodes HEVC; VP9 and AV1 from USB are inconsistent, so they are converted.
-
-## Edit
-
-Every editor needs a constant frame rate and 48 kHz audio, and web video promises neither, so Edit always re-encodes:
-
-- **Standard:** H.264 with a key frame every second (smooth scrubbing), constant frame rate, AAC 320 kbit/s at 48 kHz, in MP4. All four editors import it. DaVinci Resolve's free version on Windows reads 8-bit H.264 but HEVC only through Windows' own extension ([DaVinci Resolve Club](https://davinciresolveclub.com/davinci-resolve-supported-codecs-formats/)), so H.264 it is.
-- **Smoothest editing (large files):** ProRes 422 with uncompressed 48 kHz audio in MOV; every frame stands on its own, at about ten times the size. Best defaults to 1080p for that reason. Premiere Pro and Resolve read ProRes on Windows; VEGAS Pro reads ProRes ([TV Tech](https://www.tvtechnology.com/news/vegas-creative-software-adds-apple-prores-support)) but its DNxHR import could not be confirmed ([VEGAS forum](https://www.vegascreativesoftware.info/us/forum/please-add-avid-s-dnxhr-and-dnxhd-for-import--121400)), which is why ProRes replaced DNxHR. CapCut doesn't offer the option: its support for intermediate codecs couldn't be confirmed.
 
 ## Audio
 

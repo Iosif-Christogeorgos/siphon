@@ -50,7 +50,6 @@ pub struct Choices {
     /// The tier picked for each Share target.
     pub tiers: HashMap<TargetId, TierId>,
     pub music_format: MusicFormat,
-    pub smooth_editing: bool,
     pub custom: ManualOptions,
     pub saved: Vec<SavedPreset>,
     /// The language subtitles are wanted in, for every video that has it
@@ -69,7 +68,6 @@ impl Default for Choices {
             music_kbps: None,
             tiers: HashMap::new(),
             music_format: MusicFormat::default(),
-            smooth_editing: false,
             custom: ManualOptions::default(),
             saved: Vec::new(),
             subtitles: None,
@@ -163,7 +161,31 @@ impl ChoiceStore {
 }
 
 fn read(file: &Path) -> Option<Choices> {
-    serde_json::from_slice(&std::fs::read(file).ok()?).ok()
+    let mut value: Value = serde_json::from_slice(&std::fs::read(file).ok()?).ok()?;
+    forget_unknown(&mut value);
+    serde_json::from_value(value).ok()
+}
+
+/// Drops a group, target or tier this version doesn't have, rather than the
+/// whole file with the user's saved presets: the Edit group and its targets
+/// were removed after 0.15, and `choices.json` remembers them for anyone who
+/// once picked one.
+fn forget_unknown(value: &mut Value) {
+    fn known<T: serde::de::DeserializeOwned>(value: &Value) -> bool {
+        serde_json::from_value::<T>(value.clone()).is_ok()
+    }
+    let Some(choices) = value.as_object_mut() else {
+        return;
+    };
+    if choices.get("group").is_some_and(|group| !known::<Group>(group)) {
+        choices.remove("group");
+    }
+    if let Some(Value::Object(targets)) = choices.get_mut("targets") {
+        targets.retain(|group, target| known::<Group>(&Value::String(group.clone())) && known::<TargetId>(target));
+    }
+    if let Some(Value::Object(tiers)) = choices.get_mut("tiers") {
+        tiers.retain(|target, tier| known::<TargetId>(&Value::String(target.clone())) && known::<TierId>(tier));
+    }
 }
 
 // ── Migration ───────────────────────────────────────────────────────────
@@ -197,11 +219,6 @@ pub fn from_legacy(old: &Value) -> Choices {
         Some("android") => Some(TargetId::Android),
         Some("windows") => Some(TargetId::Windows),
         Some("tv") => Some(TargetId::Tv),
-        Some("editing") => {
-            // The old editing preset made intermediate files.
-            choices.smooth_editing = true;
-            Some(TargetId::Premiere)
-        }
         Some("audio") => Some(TargetId::Original),
         Some("max") => Some(TargetId::Max),
         Some("share") => {
@@ -270,10 +287,9 @@ mod tests {
     }
 
     #[test]
-    fn editing_audio_and_max_carry_over() {
-        let editing = from_legacy(&json!({"preset": "editing"}));
-        assert_eq!(editing.targets.get(&Group::Edit), Some(&TargetId::Premiere));
-        assert!(editing.smooth_editing);
+    fn audio_and_max_carry_over_and_editing_is_gone() {
+        // Edit was removed after 0.15: the old editing preset starts where a new user does.
+        assert_eq!(from_legacy(&json!({"preset": "editing"})), Choices::default());
         assert_eq!(from_legacy(&json!({"preset": "audio"})).group, Group::Audio);
         assert_eq!(from_legacy(&json!({"preset": "max"})).group, Group::Max);
     }
@@ -345,6 +361,32 @@ mod tests {
         }
         // A new user has none.
         assert_eq!(Choices::default().subtitles, None);
+    }
+
+    #[test]
+    fn a_removed_group_or_target_costs_nothing_else() {
+        // A choices.json from 0.15, by someone who once picked Edit.
+        let dir = std::env::temp_dir().join(format!("siphon-choices-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("choices.json");
+        std::fs::write(
+            &file,
+            r#"{"active": {"kind": "preset"}, "group": "edit",
+                "targets": {"edit": "premiere", "watch": "apple"},
+                "tiers": {"discord": "discord_nitro"}, "smooth_editing": true,
+                "saved": [{"id": "a", "name": "Mine", "options": {"content": "video_audio", "container": "mkv",
+                           "video_codec": null, "audio_codec": null}}],
+                "subtitles": "el"}"#,
+        )
+        .unwrap();
+        let choices = read(&file).unwrap().sanitized().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(choices.group, Group::Max);
+        assert_eq!(choices.targets.len(), 1);
+        assert_eq!(choices.targets.get(&Group::Watch), Some(&TargetId::Apple));
+        assert_eq!(choices.tiers.get(&TargetId::Discord), Some(&TierId::DiscordNitro));
+        assert_eq!(choices.saved.len(), 1);
+        assert_eq!(choices.subtitles.as_deref(), Some("el"));
     }
 
     #[test]

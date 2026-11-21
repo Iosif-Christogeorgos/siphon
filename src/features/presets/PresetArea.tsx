@@ -13,8 +13,8 @@ import { SubtitlesFacet } from "./SubtitlesFacet";
 /** Resolutions offered for a playlist, where no single video's formats are known. */
 const PLAYLIST_LADDER = [2160, 1440, 1080, 720, 480, 360];
 
-/** The groups that make a file from the whole video: not for a stream as it airs. */
-const FINISHED_ONLY = new Set(["share", "edit"]);
+/** The group that makes a file from the whole video: not for a stream as it airs. */
+const FINISHED_ONLY = "share";
 
 /**
  * Where the download is going: the group (Max quality, Watch, …) on top, then
@@ -35,7 +35,7 @@ export function PresetArea({
   disabled: boolean;
   /** A playlist: the quality facet offers a fixed ladder, without sizes. */
   playlist?: boolean;
-  /** A live stream: Share and Edit wait for the finished recording. */
+  /** A live stream: Share waits for the finished recording. */
   live?: boolean;
   /** Where the site keeps what already aired: record from now, or from the start. */
   from?: { start: boolean; onChange: (start: boolean) => void };
@@ -71,7 +71,7 @@ export function PresetArea({
         onChange={chooseGroup}
         options={registry.groups.map((candidate) => {
           const Icon = iconFor(candidate.icon);
-          const later = live && FINISHED_ONLY.has(candidate.id);
+          const later = live && candidate.id === FINISHED_ONLY;
           return {
             id: candidate.id,
             label: candidate.label,
@@ -153,7 +153,7 @@ function splitTier(label: string): { label: string; detail?: string } {
 
 /** The secondary choices a target has. */
 function Extras({ target, choices, disabled }: { target: Target; choices: Choices; disabled: boolean }) {
-  const { setTier, setSmoothEditing, setMusicFormat } = useChoices.getState();
+  const { setTier, setMusicFormat } = useChoices.getState();
   return (
     <>
       {target.extras.includes("tier") && target.tiers.length > 0 && (
@@ -165,19 +165,6 @@ function Extras({ target, choices, disabled }: { target: Target; choices: Choice
           disabled={disabled}
           detailInValue
           options={target.tiers.map((tier) => ({ id: tier.id, ...splitTier(tier.label) }))}
-        />
-      )}
-      {target.extras.includes("smooth_editing") && (
-        <Facet
-          label="Files"
-          group="smooth"
-          value={choices.smooth_editing ? "smooth" : "standard"}
-          onChange={(id) => setSmoothEditing(id === "smooth")}
-          disabled={disabled}
-          options={[
-            { id: "standard", label: "Standard", detail: "H.264" },
-            { id: "smooth", label: "Smoothest editing", detail: "ProRes, ~10×" },
-          ]}
         />
       )}
       {target.extras.includes("music_format") && (

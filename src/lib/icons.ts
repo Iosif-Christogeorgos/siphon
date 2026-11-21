@@ -1,7 +1,6 @@
 import {
   Apple,
   AudioLines,
-  Clapperboard,
   Gem,
   Headphones,
   type LucideIcon,
@@ -10,7 +9,6 @@ import {
   Music,
   Phone,
   Play,
-  Scissors,
   Send,
   Smartphone,
   Sparkles,
@@ -21,7 +19,6 @@ import {
 const ICONS: Record<string, LucideIcon> = {
   apple: Apple,
   "audio-lines": AudioLines,
-  clapperboard: Clapperboard,
   gem: Gem,
   headphones: Headphones,
   "message-circle": MessageCircle,
@@ -29,7 +26,6 @@ const ICONS: Record<string, LucideIcon> = {
   music: Music,
   phone: Phone,
   play: Play,
-  scissors: Scissors,
   send: Send,
   smartphone: Smartphone,
   sparkles: Sparkles,

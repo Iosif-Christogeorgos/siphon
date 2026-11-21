@@ -153,13 +153,12 @@ pub fn convert_args_shifted(
             AudioAction::Encode {
                 codec,
                 bitrate_kbps,
-                sample_rate,
                 stereo,
             } => {
                 if let Some(cut) = cut {
                     push(&["-af", &format!("atrim=start={}:end={}", cut.start, cut.end)]);
                 }
-                for arg in audio_encode_args(codec, bitrate_kbps, sample_rate, stereo) {
+                for arg in audio_encode_args(codec, bitrate_kbps, stereo) {
                     push(&[&arg]);
                 }
             }
@@ -297,26 +296,9 @@ fn video_encode_args(
     if !filters.is_empty() {
         push(&["-vf", &filters.join(",")]);
     }
-    let fps = output_fps.or(source_fps);
-    if encode.constant_frame_rate {
-        push(&["-fps_mode", "cfr"]);
-        if let Some(fps) = fps {
-            push(&["-r", &fps.to_string()]);
-        }
-    }
-    if let (Some(seconds), Some(fps)) = (encode.keyframe_seconds, fps) {
-        // Editors scrub from key frame to key frame; one a second keeps it smooth.
-        push(&["-g", &((fps * seconds).round().max(1.0) as u32).to_string()]);
-    }
 
     let hardware = encode.hardware;
     push(&["-c:v", hardware.encoder(encode.codec)]);
-
-    if encode.codec == VideoCodec::Prores {
-        // ProRes 422 ("standard"), 10-bit 4:2:2, tagged the way Apple's tools expect.
-        push(&["-profile:v", "2", "-vendor", "apl0", "-pix_fmt", "yuv422p10le"]);
-        return args;
-    }
 
     // 8-bit 4:2:0 is the only format every player accepts; keep 10 bits only for HDR in HEVC.
     let ten_bit = video.hdr && encode.codec == VideoCodec::Hevc;
@@ -387,12 +369,7 @@ fn video_encode_args(
     args
 }
 
-pub(crate) fn audio_encode_args(
-    codec: AudioCodec,
-    bitrate_kbps: Option<u32>,
-    sample_rate: Option<u32>,
-    stereo: bool,
-) -> Vec<String> {
+pub(crate) fn audio_encode_args(codec: AudioCodec, bitrate_kbps: Option<u32>, stereo: bool) -> Vec<String> {
     let bitrate = |default: u32| format!("{}k", bitrate_kbps.unwrap_or(default));
     let mut args: Vec<String> = match codec {
         AudioCodec::Mp3 => vec!["-c:a".into(), "libmp3lame".into(), "-b:a".into(), bitrate(192)],
@@ -403,9 +380,6 @@ pub(crate) fn audio_encode_args(
         AudioCodec::Ac3 => vec!["-c:a".into(), "ac3".into(), "-b:a".into(), bitrate(448)],
         AudioCodec::Aac | AudioCodec::Other => vec!["-c:a".into(), "aac".into(), "-b:a".into(), bitrate(192)],
     };
-    if let Some(rate) = sample_rate {
-        args.extend(["-ar".into(), rate.to_string()]);
-    }
     if stereo {
         args.extend(["-ac".into(), "2".into()]);
     }
@@ -468,10 +442,9 @@ pub fn finalize_args(recipe: &Recipe, input: Recorded, output: &Path) -> Vec<OsS
                 AudioAction::Encode {
                     codec,
                     bitrate_kbps,
-                    sample_rate,
                     stereo,
                 } => {
-                    for arg in audio_encode_args(codec, bitrate_kbps, sample_rate, stereo) {
+                    for arg in audio_encode_args(codec, bitrate_kbps, stereo) {
                         push(&[&arg]);
                     }
                 }
@@ -862,7 +835,6 @@ mod recording_tests {
             audio.action = AudioAction::Encode {
                 codec: AudioCodec::Mp3,
                 bitrate_kbps: Some(192),
-                sample_rate: None,
                 stereo: false,
             };
         }

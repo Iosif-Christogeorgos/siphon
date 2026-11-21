@@ -220,18 +220,16 @@ impl Planner<'_> {
 
         let pixels = f64::from(rung.lines).powi(2) * 16.0 / 9.0;
         let ceiling = MAX_BPP * pixels * rung.fps / 1000.0;
-        let mut encode = VideoEncode {
+        let encode = VideoEncode {
             bitrate_kbps: Some(video_kbps.min(ceiling).max(40.0) as u32),
             scale_lines: (video.lines > rung.lines).then_some(rung.lines),
             max_fps: (video.fps > rung.fps + 0.5).then_some(rung.fps),
             ..self.encode(VideoCodec::H264)
         };
-        encode.constant_frame_rate = false;
         recipe.audio = self.audio_for(&video, &[], AudioCodec::Aac).map(|step| AudioStep {
             action: AudioAction::Encode {
                 codec: AudioCodec::Aac,
                 bitrate_kbps: Some(audio_kbps),
-                sample_rate: None,
                 stereo: true,
             },
             ..step

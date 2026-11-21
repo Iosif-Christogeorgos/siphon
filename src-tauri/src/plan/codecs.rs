@@ -12,8 +12,6 @@ pub enum VideoCodec {
     Vp9,
     Av1,
     Vp8,
-    /// Apple ProRes 422: the intra-frame editing codec. Only ever an encode target.
-    Prores,
     Other,
 }
 
@@ -47,7 +45,6 @@ impl VideoCodec {
             VideoCodec::Vp9 => "VP9",
             VideoCodec::Av1 => "AV1",
             VideoCodec::Vp8 => "VP8",
-            VideoCodec::Prores => "ProRes 422",
             VideoCodec::Other => "video",
         }
     }
@@ -60,7 +57,7 @@ impl VideoCodec {
             VideoCodec::Vp9 | VideoCodec::Hevc => 3,
             VideoCodec::H264 => 2,
             VideoCodec::Vp8 => 1,
-            VideoCodec::Prores | VideoCodec::Other => 0,
+            VideoCodec::Other => 0,
         }
     }
 }
@@ -74,7 +71,7 @@ pub enum AudioCodec {
     Vorbis,
     Flac,
     Ac3,
-    /// Uncompressed. Only ever an encode target (WAV, editing files).
+    /// Uncompressed. Only ever an encode target (WAV, or Customize).
     Pcm,
     Other,
 }
@@ -185,7 +182,7 @@ impl Container {
             Container::Mkv => true,
             Container::Mp4 => matches!(codec, H264 | Hevc | Av1 | Vp9),
             Container::Webm => matches!(codec, Vp9 | Vp8 | Av1),
-            Container::Mov => matches!(codec, H264 | Hevc | Prores),
+            Container::Mov => matches!(codec, H264 | Hevc),
             _ => false,
         }
     }

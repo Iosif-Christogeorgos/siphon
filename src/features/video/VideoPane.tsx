@@ -23,7 +23,7 @@ import { VideoCard } from "./VideoCard";
 const MANY_RECORDINGS = 3;
 
 /** Where the plan's subtitles go, after "English subtitles": a track inside the file says nothing more. */
-const SUBTITLE_PLACES: Record<SubtitleDelivery, string> = { embed: "", file: " as an SRT file", burn: " in the picture" };
+const SUBTITLE_PLACES: Record<SubtitleDelivery, string> = { embed: "", burn: " in the picture" };
 
 /** "No Greek subtitles for this video. It has English and German." */
 function missingSubtitles(wanted: string, video: VideoInfo): string {
@@ -60,10 +60,10 @@ export function VideoPane({ video }: { video: VideoInfo }) {
       return count + (download?.record && isActive(download) ? 1 : 0);
     }, 0),
   );
-  // Share and Edit make a file from the whole video: a stream as it airs gets Max quality instead.
+  // Share makes a file from the whole video: a stream as it airs gets Max quality instead.
   const group = useChoices((state) => state.choices?.group);
   useEffect(() => {
-    if (live && (group === "share" || group === "edit") && !customizing) useChoices.getState().chooseGroup("max");
+    if (live && group === "share" && !customizing) useChoices.getState().chooseGroup("max");
   }, [live, group, customizing]);
 
   const trimOpen = useTrim((state) => state.open);

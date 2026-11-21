@@ -121,7 +121,6 @@ fn preset(target: TargetId) -> PresetChoice {
         quality: None,
         tier: None,
         music_format: MusicFormat::Mp3,
-        smooth_editing: false,
         subtitles: None,
     }
 }
@@ -369,62 +368,6 @@ fn a_conversion_says_roughly_how_long_it_takes() {
     let seconds = summary.convert_seconds.unwrap();
     assert!((60.0..1200.0).contains(&seconds), "{seconds}");
     assert!(summary.detail.contains("NVIDIA"));
-}
-
-// ── Edit ────────────────────────────────────────────────────────────────
-
-#[test]
-fn edit_makes_constant_frame_rate_h264_with_48khz_audio_and_short_gops() {
-    for target in [TargetId::Premiere, TargetId::Resolve, TargetId::Capcut, TargetId::Vegas] {
-        let recipe = plan_with(&youtube_4k(), preset(target), &nvidia());
-        let encode = recipe.video_encode().expect("editing always encodes");
-        assert_eq!(encode.codec, VideoCodec::H264);
-        assert!(encode.constant_frame_rate);
-        assert_eq!(encode.keyframe_seconds, Some(1.0));
-        assert_eq!(recipe.container, Container::Mp4);
-        assert!(matches!(
-            recipe.audio.as_ref().map(|a| &a.action),
-            Some(AudioAction::Encode {
-                codec: AudioCodec::Aac,
-                sample_rate: Some(48_000),
-                ..
-            })
-        ));
-        assert_eq!(recipe.output_lines(), Some(2160));
-    }
-    let recipe = plan_with(&youtube_4k(), preset(TargetId::Premiere), &nvidia());
-    let args = strings(ffmpeg::convert_args(
-        &recipe,
-        Path::new("in.mkv"),
-        Path::new("out.mp4"),
-        Pass::Only,
-    ));
-    assert!(args.windows(2).any(|pair| pair == ["-g", "30"]));
-    assert!(args.windows(2).any(|pair| pair == ["-ar", "48000"]));
-    assert!(args.windows(2).any(|pair| pair == ["-fps_mode", "cfr"]));
-}
-
-#[test]
-fn smoothest_editing_makes_prores_at_1080p_except_for_capcut() {
-    let smooth = |target| {
-        plan_with(
-            &youtube_4k(),
-            PresetChoice {
-                smooth_editing: true,
-                ..preset(target)
-            },
-            &Capabilities::BASIC,
-        )
-    };
-    let resolve = smooth(TargetId::Resolve);
-    assert_eq!(encoded_to(&resolve), Some(VideoCodec::Prores));
-    assert_eq!(resolve.container, Container::Mov);
-    assert_eq!(resolve.audio_codec(), Some(AudioCodec::Pcm));
-    assert_eq!(resolve.output_lines(), Some(1080));
-    // ProRes files are big, and the estimate says so.
-    assert!(resolve.estimated_size().unwrap() > 5_000_000_000);
-
-    assert_eq!(encoded_to(&smooth(TargetId::Capcut)), Some(VideoCodec::H264));
 }
 
 // ── Audio ───────────────────────────────────────────────────────────────
@@ -819,27 +762,6 @@ fn quality_conversion_estimates_cover_what_test_encodes_measured() {
             None,
             400.0,
         ),
-        // The same with a key frame every second (Edit): 1.4 Mbit/s.
-        (
-            source("av01.0.08M.08", 1080, 30.0, 283.0),
-            TargetId::Premiere,
-            None,
-            1_400.0,
-        ),
-        // Big Buck Bunny's AV1 4K60 stream, stated at 9.0 Mbit/s, through Edit:
-        // 38, 47 and 64 Mbit/s in three different parts of the film.
-        (
-            source("av01.0.13M.08", 2160, 60.0, 8_982.0),
-            TargetId::Premiere,
-            None,
-            38_000.0,
-        ),
-        (
-            source("av01.0.13M.08", 2160, 60.0, 8_982.0),
-            TargetId::Premiere,
-            None,
-            64_000.0,
-        ),
     ];
     for (video, target, quality, measured_kbps) in cases {
         let recipe = plan_with(
@@ -878,30 +800,6 @@ fn copies_and_size_targeted_encodes_get_one_number() {
     assert!(summary.size_range.is_some());
     let hd = summary.options.iter().find(|option| option.value == 1080).unwrap();
     assert!(hd.size_range.is_none() && !hd.converts);
-}
-
-#[test]
-fn prores_estimates_follow_frames_not_the_source() {
-    let bbb = info(
-        vec![
-            video("1080", "vp09.00.41.08", 1080, 60.0, 4_000.0),
-            video("2160", "vp09.00.51.08", 2160, 60.0, 12_170.0),
-            audio("a", "opus", 160.0),
-        ],
-        600.0,
-    );
-    let recipe = plan_with(
-        &bbb,
-        PresetChoice {
-            smooth_editing: true,
-            ..preset(TargetId::Resolve)
-        },
-        &nvidia(),
-    );
-    // Measured: 277 Mbit/s at 1080p60 for Big Buck Bunny.
-    let estimate = recipe.estimate().unwrap();
-    let measured = (277_000.0 * 1000.0 / 8.0 * 600.0) as u64;
-    assert!(estimate.low <= measured && measured <= estimate.high, "{estimate:?}");
 }
 
 #[test]
@@ -1014,10 +912,6 @@ fn subtitles_go_inside_a_file_to_watch_and_beside_one_to_edit() {
     let greek = plan_with(&video, wanting(TargetId::Windows, "el"), &Capabilities::BASIC);
     assert!(greek.subtitles.as_ref().unwrap().automatic);
     assert!(greek.hints.iter().any(|hint| hint.text.contains("speech recognition")));
-
-    // Edit: an SRT file beside the video.
-    let edit = plan_with(&video, wanting(TargetId::Premiere, "en"), &Capabilities::BASIC);
-    assert_eq!(edit.subtitles.as_ref().map(|step| step.delivery), Some(Delivery::File));
 
     // Nothing for a sound file, nor in a language the video lacks.
     for target in [TargetId::Music, TargetId::Original] {

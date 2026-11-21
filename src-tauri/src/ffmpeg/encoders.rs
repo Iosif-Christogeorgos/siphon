@@ -39,7 +39,6 @@ impl Hardware {
             (VideoCodec::Hevc, Hardware::Software) => "libx265",
             (VideoCodec::Vp9 | VideoCodec::Vp8, _) => "libvpx-vp9",
             (VideoCodec::Av1, _) => "libsvtav1",
-            (VideoCodec::Prores, _) => "prores_ks",
             _ => "libx264",
         }
     }

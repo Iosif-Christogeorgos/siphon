@@ -6,7 +6,6 @@ export const VIDEO_CODEC_LABELS: Record<VideoCodec, string> = {
   vp9: "VP9",
   av1: "AV1",
   vp8: "VP8",
-  prores: "ProRes 422",
   other: "Video",
 };
 

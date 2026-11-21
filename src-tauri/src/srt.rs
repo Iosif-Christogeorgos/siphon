@@ -12,8 +12,8 @@
 //!   ends, each piece showing every line up then: what a player showing the
 //!   overlapping cues would show.
 //! - **No empty cues**, and none of zero length.
-//! - **Cut to a clip**, on the video's own clock, or from zero for a file
-//!   beside a clip.
+//! - **Cut to a clip**, on the video's own clock: the ffmpeg pass shifts them
+//!   with the picture.
 
 use std::fmt::Write as _;
 
@@ -100,14 +100,12 @@ fn stamp(ms: u64) -> String {
     )
 }
 
-/// The part of the video subtitles are wanted for, in seconds, and whether
-/// they should start from zero there (a file beside a clip) or keep the
-/// video's own clock (a track the ffmpeg pass shifts with the picture).
+/// The part of the video subtitles are wanted for, in seconds on the video's
+/// own clock (the ffmpeg pass shifts the track with the picture).
 #[derive(Debug, Clone, Copy)]
 pub struct Span {
     pub start: f64,
     pub end: f64,
-    pub from_zero: bool,
 }
 
 /// Cleans `cues`, cuts them to `span` if any, and splits overlaps: see the
@@ -119,13 +117,12 @@ pub fn prepare(cues: Vec<Cue>, span: Option<Span>) -> Vec<Cue> {
         .collect();
     if let Some(span) = span {
         let (from, to) = ((span.start * 1000.0).round() as u64, (span.end * 1000.0).round() as u64);
-        let shift = if span.from_zero { from } else { 0 };
         cues = cues
             .into_iter()
             .filter(|cue| cue.end > from && cue.start < to)
             .map(|cue| Cue {
-                start: cue.start.max(from) - shift,
-                end: cue.end.min(to) - shift,
+                start: cue.start.max(from),
+                end: cue.end.min(to),
                 text: cue.text,
             })
             .filter(|cue| cue.end > cue.start)
@@ -275,32 +272,17 @@ mod tests {
             cue(9000, 12_000, "out of"),
             cue(20_000, 21_000, "after"),
         ];
-        let span = |from_zero| {
-            Some(Span {
-                start: 3.0,
-                end: 10.0,
-                from_zero,
-            })
-        };
-        // On the video's clock, for the ffmpeg pass to shift with the picture …
+        let span = Some(Span { start: 3.0, end: 10.0 });
+        // On the video's clock, for the ffmpeg pass to shift with the picture.
         assert_eq!(
-            prepare(cues.clone(), span(false)),
+            prepare(cues, span),
             [
                 cue(3000, 4000, "before and into"),
                 cue(5000, 6000, "inside"),
                 cue(9000, 10_000, "out of")
             ]
         );
-        // … or from zero, for a file beside the clip.
-        assert_eq!(
-            prepare(cues, span(true)),
-            [
-                cue(0, 1000, "before and into"),
-                cue(2000, 3000, "inside"),
-                cue(6000, 7000, "out of")
-            ]
-        );
         // A clip with nothing said in it has no subtitles.
-        assert!(prepare(vec![cue(0, 1000, "early")], span(false)).is_empty());
+        assert!(prepare(vec![cue(0, 1000, "early")], span).is_empty());
     }
 }
