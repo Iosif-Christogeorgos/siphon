@@ -7,6 +7,7 @@ pub mod args;
 pub mod errors;
 pub mod metadata;
 pub mod progress;
+pub mod saved;
 pub mod subtitles;
 
 use tokio::process::Command;

@@ -3,11 +3,13 @@
 use std::collections::HashSet;
 use std::ffi::OsString;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
+use super::saved::SavedLookup;
 use super::subtitles::{self, SubtitleTrack};
 use super::{command, errors, validate_url};
 use crate::binaries::BinaryManager;
@@ -50,6 +52,9 @@ pub struct VideoInfo {
     pub live: Option<Live>,
     /// The subtitle tracks it offers, people's first (see `ytdlp::subtitles`).
     pub subtitles: Vec<SubtitleTrack>,
+    /// What the lookup printed, for the download to start from (see `ytdlp::saved`).
+    #[serde(skip)]
+    pub saved: Option<Arc<SavedLookup>>,
 }
 
 /// Where a live stream stands.
@@ -378,7 +383,10 @@ async fn run_json(bins: &BinaryManager, url: &str, cookie_args: &[OsString], ext
     if raw.kind.as_deref() == Some("playlist") {
         Ok(Media::Playlist(playlist(raw, url)))
     } else {
-        video(raw, url).map(|info| Media::Video(Box::new(info)))
+        video(raw, url).map(|mut info| {
+            info.saved = Some(Arc::new(SavedLookup::new(output.stdout)));
+            Media::Video(Box::new(info))
+        })
     }
 }
 
@@ -412,6 +420,7 @@ fn offline(url: &str) -> VideoInfo {
             from_start: None,
         }),
         subtitles: Vec::new(),
+        saved: None,
     }
 }
 
@@ -479,6 +488,7 @@ fn video(raw: RawInfo, requested_url: &str) -> Result<VideoInfo> {
         with_account: false,
         live,
         subtitles: subtitles::read(raw.subtitles.as_ref(), raw.automatic_captions.as_ref()),
+        saved: None,
     })
 }
 

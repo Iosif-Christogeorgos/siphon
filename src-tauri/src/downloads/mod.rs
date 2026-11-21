@@ -278,8 +278,9 @@ enum Stop {
 
 #[derive(Default)]
 struct Job {
-    /// The child process currently working for this job, if any.
-    pid: Option<u32>,
+    /// The child processes working for this job: the download, and beside it
+    /// the subtitles' (see `attempt`). Stopping the job ends them all.
+    pids: Vec<u32>,
     stop: Option<Stop>,
     /// The job's way through the speed limit, while it runs. It goes with the
     /// job (see `end_job`), whether that finished, failed, was paused or was
@@ -721,18 +722,18 @@ impl DownloadManager {
             if job.graceful && stop != Stop::Cancel {
                 // Asked to stop, so it closes its file properly; whoever runs it
                 // waits for that (see `run_child`).
-                if let Some(pid) = job.pid {
+                if let Some(&pid) = job.pids.first() {
                     job.interrupting = Some(interrupt(pid));
                 }
-                None
+                Vec::new()
             } else {
-                job.pid
+                job.pids.clone()
             }
         };
         // Wakes the job if it is still waiting in the queue …
         self.gate_changed.notify_waiters();
-        // … and ends its process if it is running.
-        if let Some(pid) = pid {
+        // … and ends its processes if it is running.
+        for pid in pid {
             process::kill_tree(pid).await;
         }
         true
@@ -768,6 +769,8 @@ impl DownloadManager {
             if self.stop_of(job.id).is_some() {
                 return Err(error);
             }
+            // Why a try failed, retried or not: the user sees only the last error.
+            log::line(job.app, &format!("try failed {url}: {}", failure_summary(&error)));
 
             // The site refused without an account, in a way the sign-in Siphon
             // has could fix: look the video up again and download it with that,
@@ -808,6 +811,10 @@ impl DownloadManager {
             let Some(delay) = retries.next(error.retry) else {
                 return Err(error);
             };
+            // The next try looks the video up again, as every try did when the
+            // download looked it up itself: the stream links the last try had
+            // may be what failed.
+            lookup.refresh = true;
             job.emit(Tracker::retrying());
             if !self.wait_unless_stopped(job.id, delay).await {
                 return Err(error);
@@ -863,14 +870,70 @@ impl DownloadManager {
         let work = work_dir(job.app, job.id)?;
         let fetch_dir = if recipe.needs_ffmpeg_pass() { &work } else { output_dir };
         tokio::fs::create_dir_all(fetch_dir).await?;
-        let downloaded = self
-            .fetch_streams(job, &video.url, video.with_account, &recipe, fetch_dir, &mut tracker)
-            .await?;
-        // On their own, after the video: subtitles that can't be had are
-        // said, never a reason for the video to fail.
+        // Without the work folder there is nowhere for the lookup or subtitles
+        // to go; the video can still be downloaded, and the subtitles say why.
+        let work_ready = tokio::fs::create_dir_all(&work).await.is_ok();
+        let info_json = if work_ready {
+            saved_lookup(&video, &recipe, &work).await
+        } else {
+            None
+        };
+
+        // The subtitles are fetched beside the video, by a yt-dlp of their own:
+        // subtitles that can't be had are said, never a reason for the video to
+        // fail, and with the video in the same run they would be (see
+        // `subtitles`). Side by side rather than after it, they cost the
+        // download no time of its own.
+        let (downloaded, fetched) = {
+            let subtitles_fetch = async {
+                let step = recipe.subtitles.as_ref()?;
+                if !work_ready {
+                    return Some(Ok(Err("Siphon couldn't make a folder for them.".to_string())));
+                }
+                Some(
+                    self.fetch_subtitles(job, &video.url, step, &work, info_json.as_deref())
+                        .await,
+                )
+            };
+            tokio::pin!(subtitles_fetch);
+            let (downloaded, fetched) = {
+                let streams = self.fetch_streams(
+                    job,
+                    &video.url,
+                    video.with_account,
+                    &recipe,
+                    fetch_dir,
+                    info_json.as_deref(),
+                    &mut tracker,
+                );
+                tokio::pin!(streams);
+                let mut fetched = None;
+                let downloaded = loop {
+                    tokio::select! {
+                        result = &mut streams => break result,
+                        result = &mut subtitles_fetch, if fetched.is_none() => fetched = Some(result),
+                    }
+                };
+                (downloaded, fetched)
+            };
+            // A video that failed takes its subtitles with it: dropping their
+            // fetch ends its yt-dlp.
+            let downloaded = downloaded?;
+            let fetched = match fetched {
+                Some(fetched) => fetched,
+                None => {
+                    job.emit(tracker.on_subtitles());
+                    subtitles_fetch.await
+                }
+            };
+            (downloaded, fetched)
+        };
+        if let Some(info_json) = &info_json {
+            let _ = tokio::fs::remove_file(info_json).await;
+        }
         let (subtitles, mut note) = self
-            .subtitles(job, &video, choice, &recipe, &work, &mut tracker)
-            .await?;
+            .subtitles(&video, choice, &recipe, &work, fetched.transpose()?)
+            .await;
 
         let (recipe, source) = if recipe.needs_ffmpeg_pass() {
             (recipe, downloaded)
@@ -919,16 +982,16 @@ impl DownloadManager {
     /// The recipe's subtitles, fetched and made ready to add, or why there
     /// are none: the track couldn't be had, or the video has none in the
     /// language asked for (a playlist's videos differ). The note says so.
+    /// `fetched` is where `fetch_subtitles` put the track, or why it couldn't.
     async fn subtitles(
         &self,
-        job: &JobContext<'_>,
         video: &VideoInfo,
         choice: &Choice,
         recipe: &Recipe,
         work: &Path,
-        tracker: &mut Tracker,
-    ) -> Result<(Option<Prepared>, Option<Note>)> {
-        let Some(step) = &recipe.subtitles else {
+        fetched: Option<std::result::Result<PathBuf, String>>,
+    ) -> (Option<Prepared>, Option<Note>) {
+        let (Some(step), Some(fetched)) = (&recipe.subtitles, fetched) else {
             let missing = choice
                 .subtitles()
                 .filter(|_| video.live.is_none() && plan::subtitles::delivery(choice, recipe).is_some());
@@ -936,25 +999,21 @@ impl DownloadManager {
                 let language = language_name(wanted).unwrap_or(wanted);
                 Note::subtitles(format!("This video has no {language} subtitles."))
             });
-            return Ok((None, note));
+            return (None, note);
         };
-        job.emit(tracker.on_subtitles());
         let without = |why: String| {
             Some(Note::subtitles(format!(
                 "Saved without {} subtitles. {why}",
                 step.title
             )))
         };
-        if let Err(err) = tokio::fs::create_dir_all(work).await {
-            return Ok((None, without(format!("Couldn't write them: {err}."))));
-        }
-        let raw = match self.fetch_subtitles(job, &video.url, step, work).await? {
+        let raw = match fetched {
             Ok(raw) => raw,
-            Err(why) => return Ok((None, without(why))),
+            Err(why) => return (None, without(why)),
         };
         let text = match tokio::fs::read(&raw).await {
             Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
-            Err(err) => return Ok((None, without(format!("Couldn't read them: {err}.")))),
+            Err(err) => return (None, without(format!("Couldn't read them: {err}."))),
         };
         if step.styled {
             // SubStation Alpha goes into Matroska, or into the picture, as it came, styling and all.
@@ -964,7 +1023,7 @@ impl DownloadManager {
                 cues,
                 beside: None,
             };
-            return Ok((Some(prepared), None));
+            return (Some(prepared), None);
         }
         let span = recipe.trim.map(|trim| srt::Span {
             start: trim.start,
@@ -978,7 +1037,7 @@ impl DownloadManager {
             } else {
                 "The site's file was empty."
             };
-            return Ok((None, without(why.into())));
+            return (None, without(why.into()));
         }
         let text = srt::write(&cues);
         let prepared = match step.delivery {
@@ -990,7 +1049,7 @@ impl DownloadManager {
             Delivery::Embed | Delivery::BurnIn => {
                 let track = work.join("subtitles.srt");
                 if let Err(err) = tokio::fs::write(&track, text).await {
-                    return Ok((None, without(format!("Couldn't write them: {err}."))));
+                    return (None, without(format!("Couldn't write them: {err}.")));
                 }
                 Prepared {
                     track: Some(track),
@@ -999,7 +1058,7 @@ impl DownloadManager {
                 }
             }
         };
-        Ok((Some(prepared), None))
+        (Some(prepared), None)
     }
 
     /// Fetches one subtitle track into `work`, and says where it is, or why
@@ -1012,6 +1071,7 @@ impl DownloadManager {
         url: &str,
         step: &SubtitleStep,
         work: &Path,
+        info_json: Option<&Path>,
     ) -> Result<std::result::Result<PathBuf, String>> {
         if let Some(found) = fetched_subtitles(work).await {
             return Ok(Ok(found));
@@ -1027,8 +1087,8 @@ impl DownloadManager {
             self.add_cookies(job.id, &mut cmd);
             cmd.arg("--paths")
                 .arg(work)
-                .args(["--output", &format!("{}.%(ext)s", args::SUBTITLE_SOURCE), "--"])
-                .arg(url);
+                .args(["--output", &format!("{}.%(ext)s", args::SUBTITLE_SOURCE)]);
+            from_lookup(&mut cmd, info_json, url);
             match self.run_child(job.bins, job.id, cmd, |_| {}).await {
                 Ok(_) => {
                     return Ok(fetched_subtitles(work)
@@ -1541,8 +1601,11 @@ impl DownloadManager {
     /// is to use the sign-in doesn't take a copy looked up without it.
     async fn video_info(&self, job: &JobContext<'_>, url: &str, lookup: Lookup) -> Result<Arc<VideoInfo>> {
         let cache = job.app.state::<MediaCache>();
-        let usable =
-            |video: &Arc<VideoInfo>| !lookup.refresh && (lookup.account == Account::Auto || video.with_account);
+        // A lookup old enough for its stream links to have run out is made again.
+        let young = |video: &Arc<VideoInfo>| video.saved.as_ref().is_none_or(|saved| saved.fresh());
+        let usable = |video: &Arc<VideoInfo>| {
+            !lookup.refresh && (lookup.account == Account::Auto || video.with_account) && young(video)
+        };
         if let Some(video) = cache.get(url).filter(usable) {
             return Ok(video);
         }
@@ -1560,7 +1623,9 @@ impl DownloadManager {
         }
     }
 
-    /// Step 2: yt-dlp downloads the recipe's streams and merges or re-wraps them.
+    /// Step 2: yt-dlp downloads the recipe's streams and merges or re-wraps
+    /// them, from the saved lookup `info_json` if there is one.
+    #[allow(clippy::too_many_arguments)]
     async fn fetch_streams(
         &self,
         job: &JobContext<'_>,
@@ -1568,6 +1633,7 @@ impl DownloadManager {
         with_account: bool,
         recipe: &Recipe,
         output_dir: &Path,
+        info_json: Option<&Path>,
         tracker: &mut Tracker,
     ) -> Result<PathBuf> {
         // What an earlier try at this download left: it was paused, or it failed.
@@ -1608,19 +1674,16 @@ impl DownloadManager {
         }
         // Every file carries this download's own marker until it is finished
         // (see `publish`), so nothing already in the folder is ever touched.
-        cmd.arg("--paths")
-            .arg(output_dir)
-            .args([
-                "--output",
-                &args::output_template(
-                    recipe,
-                    // "07 - " in front for a numbered playlist video: digits and a dash, nothing yt-dlp reads as a field.
-                    &format!("{}{}", job.place.prefix(), job.settings.filename_template()),
-                    &args::own_marker(job.id),
-                ),
-                "--",
-            ])
-            .arg(url);
+        cmd.arg("--paths").arg(output_dir).args([
+            "--output",
+            &args::output_template(
+                recipe,
+                // "07 - " in front for a numbered playlist video: digits and a dash, nothing yt-dlp reads as a field.
+                &format!("{}{}", job.place.prefix(), job.settings.filename_template()),
+                &args::own_marker(job.id),
+            ),
+        ]);
+        from_lookup(&mut cmd, info_json, url);
 
         let result = self
             .run_child(job.bins, job.id, cmd, |event| match event {
@@ -1858,10 +1921,17 @@ impl DownloadManager {
         // stop that came just before the process existed is caught here instead of lost.
         let stopped_meanwhile = match self.jobs.lock().unwrap().get_mut(id) {
             Some(job) => {
-                job.pid = child.id();
+                job.pids.extend(child.id());
                 job.stop.is_some()
             }
             None => false,
+        };
+        // Forgets the process however this ends, also if the caller stops
+        // waiting for it (which ends it: see `process::command`).
+        let _registered = Registered {
+            manager: self,
+            id,
+            pid: child.id(),
         };
         if stopped_meanwhile {
             if let Some(pid) = child.id() {
@@ -1891,10 +1961,12 @@ impl DownloadManager {
 
         let status = child.wait().await;
         let log = stderr_log.await.unwrap_or_default();
-        let interrupting = self.jobs.lock().unwrap().get_mut(id).and_then(|job| {
-            job.pid = None;
-            job.interrupting.take()
-        });
+        let interrupting = self
+            .jobs
+            .lock()
+            .unwrap()
+            .get_mut(id)
+            .and_then(|job| job.interrupting.take());
         // Asked to stop gently: what it started (ffmpeg, writing the file) may
         // outlive it by a moment. Nothing is done with the file until it has gone.
         if let Some(interrupting) = interrupting {
@@ -1907,6 +1979,22 @@ impl DownloadManager {
             Ok(log)
         } else {
             Err(Failure::Exited(log))
+        }
+    }
+}
+
+/// A child process on its job's list, taken off when this goes.
+struct Registered<'a> {
+    manager: &'a DownloadManager,
+    id: &'a str,
+    pid: Option<u32>,
+}
+
+impl Drop for Registered<'_> {
+    fn drop(&mut self) {
+        let Some(pid) = self.pid else { return };
+        if let Some(job) = self.manager.jobs.lock().unwrap().get_mut(self.id) {
+            job.pids.retain(|other| *other != pid);
         }
     }
 }
@@ -1947,6 +2035,51 @@ const SUBTITLE_RETRY: Duration = Duration::from_secs(5);
 
 /// The subtitle file yt-dlp fetched into `work`, if there is one:
 /// `subtitles-source.<key>.srt`, or `.ass` kept styled.
+/// An error in one line for the log: its message and yt-dlp's own last error.
+fn failure_summary(error: &AppError) -> String {
+    let said = error
+        .details
+        .as_deref()
+        .unwrap_or_default()
+        .lines()
+        .rev()
+        .find(|line| line.contains("ERROR"))
+        .map(|line| format!(" ({})", line.trim()))
+        .unwrap_or_default();
+    format!("{:?}: {}{said}", error.kind, error.message)
+}
+
+/// Where a download's saved lookup is written for yt-dlp, in its work folder.
+const INFO_JSON: &str = "lookup.info.json";
+
+/// Writes the video's saved lookup into `work` for yt-dlp to start from, if
+/// it is young enough (see `ytdlp::saved`), with a whole YouTube video's
+/// streams in pieces. `None`: yt-dlp looks the video up itself.
+async fn saved_lookup(video: &VideoInfo, recipe: &Recipe, work: &Path) -> Option<PathBuf> {
+    let saved = video.saved.as_ref()?;
+    // A trimmed part is fetched by ffmpeg from the stream's own link, as a plain file.
+    let pieces: Vec<&str> = if recipe.trim.is_none() {
+        let video = recipe.video.as_ref().map(|step| step.format_id.as_str());
+        let audio = recipe.audio.as_ref().and_then(|step| step.format_id.as_deref());
+        video.into_iter().chain(audio).collect()
+    } else {
+        Vec::new()
+    };
+    let json = saved.for_download(&pieces)?;
+    let path = work.join(INFO_JSON);
+    tokio::fs::write(&path, json).await.ok()?;
+    Some(path)
+}
+
+/// Points yt-dlp at what to download: the saved lookup if there is one,
+/// otherwise the link, after `--` so it can't be read as an option.
+fn from_lookup(cmd: &mut Command, info_json: Option<&Path>, url: &str) {
+    match info_json {
+        Some(path) => cmd.arg("--load-info-json").arg(path),
+        None => cmd.arg("--").arg(url),
+    };
+}
+
 async fn fetched_subtitles(work: &Path) -> Option<PathBuf> {
     let mut entries = tokio::fs::read_dir(work).await.ok()?;
     while let Ok(Some(entry)) = entries.next_entry().await {

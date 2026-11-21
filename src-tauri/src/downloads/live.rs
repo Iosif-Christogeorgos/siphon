@@ -978,7 +978,7 @@ impl DownloadManager {
         let Some(job) = jobs.get_mut(id) else { return };
         if job.stop.is_none() {
             job.stop = Some(Stop::Finish);
-            if let Some(pid) = job.pid {
+            if let Some(&pid) = job.pids.first() {
                 job.interrupting = Some(super::interrupt(pid));
             }
         }

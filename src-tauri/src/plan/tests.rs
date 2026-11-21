@@ -78,6 +78,7 @@ fn info(formats: Vec<Format>, seconds: f64) -> VideoInfo {
         with_account: false,
         live: None,
         subtitles: Vec::new(),
+        saved: None,
     }
 }
 

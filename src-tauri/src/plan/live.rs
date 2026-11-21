@@ -296,6 +296,7 @@ mod tests {
                 from_start: None,
             }),
             subtitles: Vec::new(),
+            saved: None,
         }
     }
 

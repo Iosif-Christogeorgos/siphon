@@ -44,6 +44,12 @@ impl MediaCache {
                 cache.videos.remove(&oldest);
             }
         }
+        // A lookup too old to download from no longer needs its JSON kept.
+        for video in cache.videos.values() {
+            if let Some(saved) = &video.saved {
+                saved.drop_if_stale();
+            }
+        }
     }
 }
 
