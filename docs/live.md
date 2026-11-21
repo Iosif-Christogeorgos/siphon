@@ -6,7 +6,7 @@ Paste a live stream (Twitch, YouTube, Kick, or any site yt-dlp records live) and
 
 - **The card** marks the stream LIVE, UPCOMING or OFFLINE, with how long it has been on air, how many watch, or when it starts. Channel listings show live and scheduled streams as rows that open to record.
 - **Presets:** Max quality, Watch and Audio. Share and Edit stay in view but disabled, with a hint that they are for the finished recording; Trim is hidden. The plan's size is **per hour**.
-- **From:** *Now* (the default) or *The start*, offered only where the site keeps what already aired (a second lookup with `--live-from-start`; YouTube, and Twitch channels that keep VODs). From the start, what already aired comes at full speed, then it records in real time; the button says "Catching up · 42 min behind live" until it is within 30 s.
+- **From:** *Now* (the default) or *The start*, offered only where the site keeps what already aired (a second lookup with `--live-from-start`; YouTube, and Twitch channels that keep VODs). yt-dlp records from the start only on YouTube, Twitch, TVer and mellow-fan; elsewhere it refuses ("no formats that can be downloaded from the start") and *From* isn't shown. Kick is one of those sites: checked 2026-11-21 on a live channel. From the start, what already aired comes at full speed, then it records in real time; the button says "Catching up · 42 min behind live" until it is within 30 s.
 - **While recording:** ● REC, the time, the size and the bitrate, and **Stop**. No Pause: a live stream doesn't wait, so a pause would only lose that part. Waiting for a stream shows when it starts, and a way to stop waiting.
 - **Notes behind the ⓘ:** how much room the disk has for this stream; that recordings go first within the speed limit; on Twitch, that its ads are recorded too. (Siphon offers no way to sign in to a site that doesn't ask for it, so the note doesn't suggest a subscribed account.) In view: a warning when the speed limit is below what the stream needs, or the disk has room for less than two hours; and a quiet note when three or more recordings are already running.
 - **Notifications** (when Siphon isn't in front): the stream went live and recording began; the recording is finished; it stopped with an error.
@@ -61,6 +61,7 @@ Measured 2026-11-19, with a 1080p60 Twitch stream (≈ 0.9 MB/s) and a 4K YouTub
 | Scheduled YouTube stream (25 h off) | "Starts in 25 h", waiting state, stop waiting |
 | Four offline Twitch channels | recognised as offline, waiting; none went live during the session |
 | Speed limit below the stream's bitrate, and shared with a download | see Speed limit |
+| Kick, 1 min, Stop (2026-11-21, the owner, installed 0.14.0) | recorded and finished fine; *From* not offered, as yt-dlp can't record Kick from the start |
 
 ## Known limitations
 
@@ -69,4 +70,4 @@ Measured 2026-11-19, with a 1080p60 Twitch stream (≈ 0.9 MB/s) and a 4K YouTub
 - **A crash cuts the last frame:** after a kill or power cut, the very end can show a damaged frame. Stop and closing don't.
 - **Stopped while catching up**, a recording from the start keeps only the stretch it has both picture and sound for (the sound catches up much faster).
 - **Waiting asks the site** every minute or so; many recordings waiting at once may bring on a bot check. Signed-in sites are used as for downloads.
-- **Kick and other sites** go through yt-dlp's generic live path; only Twitch, YouTube and the fake stream were tested.
+- **Other sites** (beyond Twitch, YouTube and Kick) go through yt-dlp's generic live path and weren't tested.
