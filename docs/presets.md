@@ -13,8 +13,8 @@ Two rules apply throughout:
 | --- | --- | --- |
 | Max quality | (one click) | The best streams exactly as the site has them, in a container that needs no re-encoding |
 | Watch | Windows · iPhone / iPad / Mac · Android · TV | The best video and audio the device plays as they are; converted only when nothing native is offered at the chosen quality |
-| Share | Discord · WhatsApp · TikTok / Reels / Shorts | The best quality that fits the upload limit of the chosen tier |
 | Audio | Music · Best audio (original) | MP3 or M4A at a chosen bitrate, or the original track untouched |
+| Share | Discord · WhatsApp · TikTok / Reels / Shorts | The best quality that fits the upload limit of the chosen tier |
 
 **Subtitles**, in a language the user picks, go where each group needs them: a track inside the file for Watch and Max quality (in MKV for Windows, TVs and Max quality, in MP4 for Apple and Android), drawn into the picture for Share, and nowhere for Audio. Which file type shows them where, with the tests and sources, is in [subtitles.md](subtitles.md#where-they-go).
 

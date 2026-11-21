@@ -33,8 +33,8 @@ Presets start from where the video is going. Pick a **group**, then a **target**
 | --- | --- | --- |
 | Max quality | | The best streams exactly as the site has them; may not play everywhere |
 | Watch | Windows · iPhone / iPad / Mac · Android · TV | The best version that plays natively on the device |
-| Share | Discord · WhatsApp · TikTok / Reels / Shorts | The best quality that fits the upload limit of your tier |
 | Audio | Music · Best audio (original) | MP3 or M4A at a chosen bitrate, or the original track untouched |
+| Share | Discord · WhatsApp · TikTok / Reels / Shorts | The best quality that fits the upload limit of your tier |
 
 The **Quality** choice offers **Best** and the resolutions the video actually has. It shows only the current pick until you point at it; it then unfolds across the row, and each resolution shows its estimated size as you point at it (a range when converting, since the size then depends on the picture); a lower one downloads the matching stream, and nothing is upscaled. Music offers bitrates instead; Max quality and Share have no quality row. **Customize** (under the summary) opens the old manual mode, where you choose the streams, file type and codecs yourself, and can save them as a named preset that appears under **My presets**. Siphon remembers the last group, target, quality and Share tier.
 

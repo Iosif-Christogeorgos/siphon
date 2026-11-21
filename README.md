@@ -40,8 +40,8 @@ Pick what the video is for and Siphon works out the rest:
 | --- | --- |
 | **Max quality** | The best streams exactly as the site has them |
 | **Watch** | The best version that plays on Windows, iPhone / iPad / Mac, Android or a TV |
-| **Share** | The best quality that fits Discord, WhatsApp, TikTok, Reels or Shorts |
 | **Audio** | MP3 or M4A with title, artist and cover art, or the original track untouched |
+| **Share** | The best quality that fits Discord, WhatsApp, TikTok, Reels or Shorts |
 
 Original streams are copied whenever the device can play them, because converting is slower and never improves quality. When a conversion is needed, it runs on your graphics card (NVIDIA, Intel or AMD) if it can. Every plan says what it will do before you press Download: **No quality loss**, **Converts**, **Size-optimized** or **May not play everywhere**, with an estimated size.
 
