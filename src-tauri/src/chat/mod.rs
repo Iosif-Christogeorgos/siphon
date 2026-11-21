@@ -10,6 +10,7 @@
 
 pub mod emotes;
 pub mod images;
+pub mod preview;
 pub mod render;
 mod text;
 pub mod twitch;

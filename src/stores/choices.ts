@@ -2,7 +2,18 @@ import { useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 import { create } from "zustand";
 import { ipc } from "@/lib/ipc";
-import type { Choice, Choices, GroupId, ManualOptions, MusicFormat, Registry, Target, TargetId, TierId } from "@/types";
+import type {
+  Choice,
+  Choices,
+  GroupId,
+  ManualOptions,
+  MusicFormat,
+  Placement,
+  Registry,
+  Target,
+  TargetId,
+  TierId,
+} from "@/types";
 
 /** The webview storage an older Siphon kept its choice in. */
 const LEGACY_KEY = "siphon.options";
@@ -23,6 +34,10 @@ interface ChoicesState {
   setMusicFormat: (format: MusicFormat) => void;
   /** The language subtitles are wanted in, for every video that has it; null is none. */
   setSubtitles: (language: string | null) => void;
+  /** Draw a Twitch video's chat into the picture, or not. */
+  setChat: (on: boolean) => void;
+  /** Where the chat goes for a channel's videos. */
+  placeChat: (channel: string, placement: Placement) => void;
   /** Opens the custom settings, starting from the ones last used. */
   customize: () => void;
   setCustom: (changes: Partial<ManualOptions>) => void;
@@ -78,6 +93,9 @@ export const useChoices = create<ChoicesState>((set, get) => {
     setTier: (target, tier) => change((choices) => ({ tiers: { ...choices.tiers, [target]: tier } })),
     setMusicFormat: (music_format) => change(() => ({ music_format })),
     setSubtitles: (subtitles) => change(() => ({ subtitles })),
+    setChat: (chat) => change(() => ({ chat })),
+    placeChat: (channel, placement) =>
+      change((choices) => ({ chat_places: { ...choices.chat_places, [channel]: placement } })),
 
     customize: () =>
       change((choices) => {
@@ -135,8 +153,19 @@ export function currentTarget(registry: Registry, choices: Choices): Target | un
   return group.targets.find((target) => target.id === id) ?? group.targets[0];
 }
 
-/** The choice as the backend plans it. */
-export function toChoice(registry: Registry, choices: Choices): Choice | null {
+/** Down the right edge, mostly clear: mirrors `Placement::DEFAULT` in chat/mod.rs. */
+export const DEFAULT_PLACEMENT: Placement = { x: 0.765, y: 0.3, width: 0.22, height: 0.64, shade: 0.3 };
+
+/** Where the chat goes for `channel`'s videos: where it was placed last, or the default. */
+export function placementFor(choices: Choices, channel: string): Placement {
+  return choices.chat_places[channel] ?? DEFAULT_PLACEMENT;
+}
+
+/**
+ * The choice as the backend plans it. `chatChannel` is the channel of a video
+ * whose chat can be drawn in: with chat on, its placement goes with the choice.
+ */
+export function toChoice(registry: Registry, choices: Choices, chatChannel: string | null = null): Choice | null {
   if (choices.active.kind !== "preset") {
     const options = savedOf(choices)?.options ?? choices.custom;
     return { mode: "custom", ...options, subtitles: choices.subtitles };
@@ -150,12 +179,16 @@ export function toChoice(registry: Registry, choices: Choices): Choice | null {
     tier: choices.tiers[target.id] ?? null,
     music_format: choices.music_format,
     subtitles: choices.subtitles,
+    chat: choices.chat && chatChannel !== null ? placementFor(choices, chatChannel) : null,
   };
 }
 
-/** The current choice, or null while the registry or the choices load. */
-export function useChoice(): Choice | null {
+/** The current choice, or null while the registry or the choices load; see [`toChoice`] for `chatChannel`. */
+export function useChoice(chatChannel: string | null = null): Choice | null {
   const registry = useRegistry();
   const choices = useChoices((state) => state.choices);
-  return useMemo(() => (registry && choices ? toChoice(registry, choices) : null), [registry, choices]);
+  return useMemo(
+    () => (registry && choices ? toChoice(registry, choices, chatChannel) : null),
+    [registry, choices, chatChannel],
+  );
 }

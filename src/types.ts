@@ -165,6 +165,20 @@ export interface VideoInfo {
   live: Live | null;
   /** The subtitle tracks it offers, people's first (`ytdlp/subtitles.rs`). */
   subtitles: SubtitleTrack[];
+  /** Where its chat comes from, if it can be drawn in: Twitch's VODs and streams (`chat/mod.rs`). */
+  chat: ChatSource | null;
+}
+
+/** A Twitch VOD's chat replay, or a channel's chat as it airs. */
+export type ChatSource = { kind: "vod"; id: string; channel: string } | { kind: "live"; channel: string };
+
+/** Where the chat goes on the picture, as shares of the frame (0–1), and how dark its box is (0–1). */
+export interface Placement {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  shade: number;
 }
 
 /** Who made a subtitle track: people, or speech recognition. */
@@ -300,6 +314,8 @@ export type Choice =
       music_format: MusicFormat;
       /** The language subtitles are wanted in ("en", "pt-br"); null is none. */
       subtitles: string | null;
+      /** Draw the chat into the picture, here; null is without chat. */
+      chat: Placement | null;
     }
   | ({ mode: "custom"; subtitles: string | null } & ManualOptions);
 
@@ -346,6 +362,8 @@ export interface PlanSummary {
   blocked: string | null;
   /** How subtitles would reach the file with this choice, in any language; null for audio, which can take none. */
   subtitle_delivery: SubtitleDelivery | null;
+  /** The plan draws the video's chat into the picture. */
+  chat: boolean;
   /** The subtitle track the plan adds (its key), if any. */
   subtitle_track: string | null;
 }
@@ -378,6 +396,10 @@ export interface Choices {
   saved: SavedPreset[];
   /** The language subtitles are wanted in, for every video that has it; null is none. */
   subtitles: string | null;
+  /** Draw a Twitch video's chat into the picture. */
+  chat: boolean;
+  /** Where the chat goes, by channel (Twitch's login). */
+  chat_places: Record<string, Placement>;
 }
 
 // ── settings.rs ────────────────────────────────────────────────────────

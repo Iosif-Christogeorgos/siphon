@@ -115,6 +115,7 @@ export function PlanCard({
           <p className="text-xs text-muted-foreground">
             <span className={cn(badge.accent && "text-primary")}>{badge.label}</span>
             {time && ` · ${time}`}
+            {plan.chat && " · Chat drawn in"}
             {subtitles && ` · ${subtitles}`}
           </p>
         </div>

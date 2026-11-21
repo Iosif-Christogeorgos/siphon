@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Manager};
 
+use crate::chat::Placement;
 use crate::error::{AppError, Result};
 use crate::plan::registry::{Group, MusicFormat, TargetId, TierId};
 use crate::plan::{Content, ManualOptions};
@@ -55,6 +56,11 @@ pub struct Choices {
     /// The language subtitles are wanted in, for every video that has it
     /// ("en", "pt-br"); `None` is none, which is where a new user starts.
     pub subtitles: Option<String>,
+    /// Draw a Twitch video's chat into the picture (see `crate::chat`).
+    pub chat: bool,
+    /// Where the chat goes, by channel (Twitch's login): each streamer's
+    /// layout differs, so the box is placed once per channel.
+    pub chat_places: HashMap<String, Placement>,
 }
 
 impl Default for Choices {
@@ -71,8 +77,18 @@ impl Default for Choices {
             custom: ManualOptions::default(),
             saved: Vec::new(),
             subtitles: None,
+            chat: false,
+            chat_places: HashMap::new(),
         }
     }
+}
+
+/// More channels than this, and the extra places aren't kept.
+const MAX_CHAT_PLACES: usize = 1000;
+
+/// A Twitch login: 1 to 25 letters, digits and underscores.
+fn is_login(login: &str) -> bool {
+    (1..=25).contains(&login.len()) && login.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
 
 /// The longest name a saved preset may have.
@@ -111,6 +127,12 @@ impl Choices {
                 self.active = Active::Custom;
             }
         }
+        self.chat_places = std::mem::take(&mut self.chat_places)
+            .into_iter()
+            .filter(|(login, _)| is_login(login))
+            .map(|(login, place)| (login.to_ascii_lowercase(), place.sanitized()))
+            .take(MAX_CHAT_PLACES)
+            .collect();
         Ok(self)
     }
 }
@@ -361,6 +383,37 @@ mod tests {
         }
         // A new user has none.
         assert_eq!(Choices::default().subtitles, None);
+    }
+
+    #[test]
+    fn chat_places_are_kept_by_channel_and_cleaned() {
+        let wild = Placement {
+            x: 0.9,
+            y: 0.2,
+            width: 0.5,
+            height: 0.5,
+            shade: 3.0,
+        };
+        let choices = Choices {
+            chat: true,
+            chat_places: [
+                ("KaiCenat".to_string(), wild),
+                ("not a login".to_string(), Placement::DEFAULT),
+                ("../../x".to_string(), Placement::DEFAULT),
+            ]
+            .into_iter()
+            .collect(),
+            ..Choices::default()
+        }
+        .sanitized()
+        .unwrap();
+        assert!(choices.chat);
+        assert_eq!(choices.chat_places.len(), 1, "only Twitch logins");
+        assert_eq!(choices.chat_places["kaicenat"], wild.sanitized());
+        // A new user draws no chat, and a file from before chat lacks it: no chat.
+        assert!(!Choices::default().chat);
+        let older: Choices = serde_json::from_str(r#"{"group":"watch"}"#).unwrap();
+        assert!(!older.chat && older.chat_places.is_empty());
     }
 
     #[test]

@@ -3,10 +3,12 @@ import { AnimatePresence, motion, useMotionValue, useTransform } from "motion/re
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Hint } from "@/components/ui/tooltip";
+import { ChatBox } from "@/features/chat/ChatBox";
 import { bestVideoFormat } from "@/lib/formats";
 import { spring } from "@/lib/motion";
 import { formatLength, formatTimecode } from "@/lib/time";
 import { cn } from "@/lib/utils";
+import { placementFor, useChoices } from "@/stores/choices";
 import { useTrim } from "@/stores/trim";
 import type { VideoInfo } from "@/types";
 import type { PlayerHandle } from "./player";
@@ -22,7 +24,18 @@ import { Timeline, type TimelineView } from "./Timeline";
  * , and . step one frame, I and O set the start and end at the playhead.
  * Playback started inside a part stops at its end, so Space previews the clip.
  */
-export function TrimPanel({ video, duration, disabled }: { video: VideoInfo; duration: number; disabled: boolean }) {
+export function TrimPanel({
+  video,
+  duration,
+  disabled,
+  chatChannel = null,
+}: {
+  video: VideoInfo;
+  duration: number;
+  disabled: boolean;
+  /** The channel whose chat is drawn into the clips, shown over the preview as it will be. */
+  chatChannel?: string | null;
+}) {
   const segments = useTrim((state) => state.segments);
   const activeId = useTrim((state) => state.activeId);
   const setRange = useTrim((state) => state.setRange);
@@ -31,6 +44,9 @@ export function TrimPanel({ video, duration, disabled }: { video: VideoInfo; dur
   const removeSegment = useTrim((state) => state.removeSegment);
   const close = useTrim((state) => state.close);
 
+  const chatPlacement = useChoices((state) =>
+    chatChannel && state.choices ? placementFor(state.choices, chatChannel) : null,
+  );
   const panel = useRef<HTMLDivElement>(null);
   const player = useRef<PlayerHandle>(null);
   const [playing, setPlaying] = useState(false);
@@ -96,7 +112,7 @@ export function TrimPanel({ video, duration, disabled }: { video: VideoInfo; dur
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement;
       // Typing in a field or driving a menu takes priority.
-      if (target.closest("input, textarea, [role=listbox], [role=combobox], [role=radiogroup]")) return;
+      if (target.closest("input, textarea, [role=listbox], [role=combobox], [role=radiogroup], [role=group]")) return;
       if (event.ctrlKey || event.metaKey || event.altKey) return;
       const now = time.get();
       const actions: Record<string, () => void> = {
@@ -122,7 +138,7 @@ export function TrimPanel({ video, duration, disabled }: { video: VideoInfo; dur
   return (
     <div ref={panel} className="scroll-my-3 space-y-3 rounded-[1.25rem] border bg-card p-3 shadow-card">
       <div className="overflow-hidden rounded-xl bg-black">
-        <div className="mx-auto max-h-80" style={{ aspectRatio: aspect, maxWidth: `${20 * aspect}rem` }}>
+        <div className="relative mx-auto max-h-80" style={{ aspectRatio: aspect, maxWidth: `${20 * aspect}rem` }}>
           <Preview
             video={video}
             ref={player}
@@ -130,6 +146,15 @@ export function TrimPanel({ video, duration, disabled }: { video: VideoInfo; dur
             onTime={onTime}
             onPlaying={setPlaying}
           />
+          {chatChannel && chatPlacement && (
+            <ChatBox
+              url={video.url}
+              time={time}
+              placement={chatPlacement}
+              onPlace={(placement) => useChoices.getState().placeChat(chatChannel, placement)}
+              disabled={disabled}
+            />
+          )}
         </div>
       </div>
 

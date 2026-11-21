@@ -212,6 +212,7 @@ export const useDownloads = create<DownloadsState>((set, get) => {
             tier: null,
             music_format: "mp3",
             subtitles: null,
+            chat: null,
           },
           trim: null,
           record: { from_start: false },

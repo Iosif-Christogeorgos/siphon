@@ -293,15 +293,42 @@ impl Layer {
     /// of those scrolled out of the box. True if anything arrived.
     fn admit(&mut self, seconds: f64) -> bool {
         let start = self.next;
-        while self.next < self.messages.len() && self.messages[self.next].time <= seconds {
-            let message = self.messages[self.next].clone();
-            self.next += 1;
-            // A burst bigger than the box only shows its last messages.
-            let shown = self.draw_message(&message);
-            self.shown.push_back(shown);
-            self.forget_hidden();
+        let end = start + self.messages[start..].partition_point(|message| message.time <= seconds);
+        if end == start {
+            return false;
         }
-        self.next > start
+        self.next = end;
+        // Newest first, until the box is full: a burst bigger than the box
+        // (a jump in a preview, a clip's first frame) only shows its last
+        // messages, and the others needn't be drawn at all.
+        let room = self.geometry.height as usize;
+        let mut used = self.style.padding() as usize;
+        let mut arrived = Vec::new();
+        for index in (start..end).rev() {
+            if used >= room {
+                break;
+            }
+            let message = self.messages[index].clone();
+            let shown = self.draw_message(&message);
+            used += shown.height;
+            arrived.push(shown);
+        }
+        if used >= room {
+            self.shown.clear();
+        }
+        self.shown.extend(arrived.into_iter().rev());
+        self.forget_hidden();
+        true
+    }
+
+    /// Starts over with `messages`, keeping the fonts and images loaded so
+    /// far: for a preview that jumps about the video.
+    pub fn restart(&mut self, mut messages: Vec<Message>) {
+        messages.sort_by(|a, b| a.time.total_cmp(&b.time));
+        self.messages = messages;
+        self.next = 0;
+        self.shown.clear();
+        self.drawn = false;
     }
 
     fn forget_hidden(&mut self) {
@@ -882,6 +909,24 @@ mod tests {
             "the first message moved up for the second"
         );
         assert_eq!(layer.frame(2.6), &two[..], "nothing new, nothing moved");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_burst_draws_only_what_fits_and_a_restart_starts_over() {
+        let messages: Vec<Message> = (0..500)
+            .map(|i| message(&i.to_string(), 1.0, "all at once, as after a jump"))
+            .collect();
+        let (mut layer, dir) = layer_with(messages, 0.0);
+        let burst = layer.frame(2.0).to_vec();
+        assert!(layer.shown.len() < 40, "{}", layer.shown.len());
+        layer.restart(vec![message("x", 5.0, "a fresh start")]);
+        assert!(
+            layer.frame(1.0).iter().skip(3).step_by(4).all(|alpha| *alpha == 0),
+            "nothing said yet"
+        );
+        assert_ne!(layer.frame(6.0), &burst[..]);
+        assert_eq!(layer.shown.len(), 1);
         let _ = std::fs::remove_dir_all(dir);
     }
 

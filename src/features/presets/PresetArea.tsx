@@ -16,6 +16,9 @@ const PLAYLIST_LADDER = [2160, 1440, 1080, 720, 480, 360];
 /** The group that makes a file from the whole video: not for a stream as it airs. */
 const FINISHED_ONLY = "share";
 
+/** The groups a video's chat can be drawn into: the ones that keep the picture as it is. */
+export const CHAT_GROUPS = new Set(["max", "watch"]);
+
 /**
  * Where the download is going: the group (Max quality, Watch, …) on top, then
  * one row of facets: the target in it, the options that target has, the
@@ -29,6 +32,7 @@ export function PresetArea({
   live = false,
   from,
   subtitles,
+  chat = false,
 }: {
   /** The plan for the current choice; gives the quality facet its options and sizes. */
   summary: PlanSummary | undefined;
@@ -41,6 +45,8 @@ export function PresetArea({
   from?: { start: boolean; onChange: (start: boolean) => void };
   /** The video's subtitle tracks, or "playlist" for videos that each have their own; none for a stream as it airs. */
   subtitles?: SubtitleTrack[] | "playlist";
+  /** The video's chat can be drawn into the picture (Twitch). */
+  chat?: boolean;
 }) {
   const registry = useRegistry();
   const choices = useChoices((state) => state.choices);
@@ -128,6 +134,19 @@ export function PresetArea({
               options={[
                 { id: "now", label: "Now", detail: "As it airs" },
                 { id: "start", label: "The start", detail: "Catches up, then live" },
+              ]}
+            />
+          )}
+          {chat && presetActive && CHAT_GROUPS.has(group.id) && (
+            <Facet
+              label="Chat"
+              group="chat"
+              value={choices.chat ? "with" : "without"}
+              onChange={(id) => useChoices.getState().setChat(id === "with")}
+              disabled={disabled}
+              options={[
+                { id: "without", label: "Without" },
+                { id: "with", label: "With", detail: "Drawn into the picture" },
               ]}
             />
           )}

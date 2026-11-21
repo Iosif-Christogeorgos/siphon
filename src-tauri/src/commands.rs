@@ -12,6 +12,8 @@ use tauri_plugin_opener::OpenerExt;
 use tokio::sync::Semaphore;
 
 use crate::binaries::{BinaryManager, ToolStatus, UpdatePolicy};
+use crate::chat::preview::ChatPreviews;
+use crate::chat::Placement;
 use crate::choices::{self, ChoiceStore, Choices};
 use crate::downloads::{self, DownloadManager, DownloadRequest};
 use crate::error::{AppError, ErrorKind, Result};
@@ -243,6 +245,48 @@ pub fn start_download(
 ) -> Result<()> {
     ensure_ready(&bins)?;
     downloads.start(app, request)
+}
+
+/// The chat box over the preview: the chat of the video at `url` at `at`
+/// seconds, placed by `placement` on a frame of `width` × `height` pixels.
+/// Answers the box's left, top, width and height (four little-endian u32s),
+/// then its pixels as straight RGBA.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn chat_preview(
+    app: AppHandle,
+    cache: State<'_, MediaCache>,
+    previews: State<'_, ChatPreviews>,
+    url: String,
+    at: f64,
+    placement: Placement,
+    width: u32,
+    height: u32,
+) -> Result<tauri::ipc::Response> {
+    let video = cache
+        .get(&url)
+        .ok_or_else(|| AppError::internal("Siphon lost track of this video. Paste the link again."))?;
+    let source = video
+        .chat
+        .clone()
+        .ok_or_else(|| AppError::new(ErrorKind::Unsupported, "Only a Twitch video's chat can be drawn in."))?;
+    let frame = previews
+        .frame(
+            &source,
+            downloads::chat_image_folder(&app)?,
+            at,
+            placement,
+            width,
+            height,
+        )
+        .await?;
+    let geometry = frame.geometry;
+    let mut bytes = Vec::with_capacity(16 + frame.pixels.len());
+    for value in [geometry.x, geometry.y, geometry.width, geometry.height] {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    bytes.extend_from_slice(&frame.pixels);
+    Ok(tauri::ipc::Response::new(bytes))
 }
 
 /// Stops a download for good and deletes its partial files.

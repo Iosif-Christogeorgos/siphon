@@ -8,6 +8,7 @@ import type {
   DownloadEvent,
   DownloadRequest,
   Media,
+  Placement,
   PlanSummary,
   Preview,
   Recovered,
@@ -45,6 +46,12 @@ export const ipc = {
   /** Bytes, looking the video up first if needed (for playlist totals). */
   estimateDownload: (url: string, choice: Choice) => invoke<number | null>("estimate_download", { url, choice }),
   previewSource: (url: string, level: number) => invoke<Preview>("preview_source", { url, level }),
+  /**
+   * The chat box at `at` seconds of the video, placed on a frame `width` × `height`:
+   * its left, top, width and height as four little-endian u32s, then its pixels (RGBA).
+   */
+  chatPreview: (url: string, at: number, placement: Placement, width: number, height: number) =>
+    invoke<ArrayBuffer>("chat_preview", { url, at, placement, width, height }),
   startDownload: (request: DownloadRequest) => invoke<void>("start_download", { request }),
   cancelDownload: (id: string) => invoke<void>("cancel_download", { id }),
   pauseDownload: (id: string) => invoke<void>("pause_download", { id }),

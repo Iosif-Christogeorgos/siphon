@@ -9,6 +9,7 @@ mod chat;
 mod live;
 mod tracker;
 
+pub use chat::image_folder as chat_image_folder;
 pub use live::Recovered;
 
 use std::collections::{HashMap, HashSet, VecDeque};

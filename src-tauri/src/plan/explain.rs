@@ -41,6 +41,8 @@ pub struct PlanSummary {
     pub subtitle_delivery: Option<Delivery>,
     /// The subtitle track the plan adds (its key), if any.
     pub subtitle_track: Option<String>,
+    /// The plan draws the video's chat into the picture.
+    pub chat: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -100,6 +102,7 @@ pub fn summarize(video: &VideoInfo, choice: &Choice, trim: Option<Trim>, caps: &
         blocked: recipe.blocked.clone(),
         subtitle_delivery: subtitles::delivery(choice, &recipe),
         subtitle_track: recipe.subtitles.as_ref().map(|step| step.key.clone()),
+        chat: recipe.chat.is_some(),
     })
 }
 

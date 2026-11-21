@@ -94,6 +94,7 @@ fn main() {
             app.manage(choices::ChoiceStore::load(app.handle())?);
             app.manage(state::MediaCache::default());
             app.manage(state::CapabilityCache::default());
+            app.manage(chat::preview::ChatPreviews::default());
             tauri::async_runtime::spawn(keep_tools_updated(app.handle().clone()));
             Ok(())
         })
@@ -116,6 +117,7 @@ fn main() {
             commands::plan_download,
             commands::estimate_download,
             commands::preview_source,
+            commands::chat_preview,
             commands::start_download,
             commands::cancel_download,
             commands::pause_download,

@@ -1,13 +1,15 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { Scissors } from "lucide-react";
+import { MessageSquareText, Scissors } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ErrorCard } from "@/components/ErrorCard";
 import { Button } from "@/components/ui/button";
+import { Hint } from "@/components/ui/tooltip";
+import { ChatPanel } from "@/features/chat/ChatPanel";
 import { DownloadPanel } from "@/features/download/DownloadPanel";
 import { ManualPanel } from "@/features/options/ManualPanel";
 import { LiveWaitCard, Note, PlanCard } from "@/features/options/PlanCard";
-import { PresetArea } from "@/features/presets/PresetArea";
+import { CHAT_GROUPS, PresetArea } from "@/features/presets/PresetArea";
 import { TrimPanel } from "@/features/trim/TrimPanel";
 import { ipc, toAppError } from "@/lib/ipc";
 import { languageName, subtitleLanguages } from "@/lib/languages";
@@ -39,8 +41,15 @@ function missingSubtitles(wanted: string, video: VideoInfo): string {
 
 /** Everything shown for a loaded video: the card, the trimmer, the choices, the plan and the button. */
 export function VideoPane({ video }: { video: VideoInfo }) {
-  const choice = useChoice();
   const customizing = useChoices((state) => state.choices !== null && state.choices.active.kind !== "preset");
+  // A Twitch VOD's chat can be drawn into the picture, with the presets that keep it as it is.
+  const chatSource = video.chat?.kind === "vod" ? video.chat : null;
+  const chatOffered = useChoices(
+    (state) => chatSource !== null && !customizing && CHAT_GROUPS.has(state.choices?.group ?? ""),
+  );
+  const chatOn = useChoices((state) => state.choices?.chat ?? false) && chatOffered;
+  const choice = useChoice(chatOffered && chatSource ? chatSource.channel : null);
+  const [placingChat, setPlacingChat] = useState(false);
 
   // A live stream is recorded: as it airs, or once it starts.
   const live = video.live;
@@ -81,6 +90,19 @@ export function VideoPane({ video }: { video: VideoInfo }) {
     useChoices.getState().resetForVideo();
     useTrim.getState().reset();
   }, []);
+
+  // A channel whose chat hasn't been placed yet opens the place to put it, once:
+  // each streamer's layout differs (a webcam, a minimap).
+  const chatPlaced = useChoices((state) =>
+    chatSource ? state.choices?.chat_places[chatSource.channel] !== undefined : true,
+  );
+  const offeredPlacing = useRef(false);
+  useEffect(() => {
+    if (!chatOn || chatPlaced || offeredPlacing.current) return;
+    offeredPlacing.current = true;
+    useTrim.getState().close();
+    setPlacingChat(true);
+  }, [chatOn, chatPlaced]);
 
   // One download per selected part. Selecting the whole video is no trim at all.
   const trims = useMemo<(Trim | null)[]>(() => {
@@ -126,7 +148,15 @@ export function VideoPane({ video }: { video: VideoInfo }) {
     : null;
   const subtitlesMissing =
     !live && wantedSubtitles !== null && plan.data?.subtitle_delivery != null && plan.data.subtitle_track === null;
-  const openTrim = () => useTrim.getState().openFor(video.duration ?? 0);
+  // The trimmer and the chat's place each have the preview: one at a time.
+  const openTrim = () => {
+    setPlacingChat(false);
+    useTrim.getState().openFor(video.duration ?? 0);
+  };
+  const togglePlacingChat = () => {
+    if (!placingChat) useTrim.getState().close();
+    setPlacingChat(!placingChat);
+  };
   const blocked = plan.data?.blocked ?? null;
   const canTrim = video.duration && !trimOpen && !live;
   const record = live ? { from_start: recordFromStart } : null;
@@ -136,16 +166,51 @@ export function VideoPane({ video }: { video: VideoInfo }) {
       <VideoCard
         video={video}
         action={
-          canTrim ? (
-            <Button variant="outline" size="sm" disabled={running} onClick={openTrim}>
-              <Scissors /> Trim
-            </Button>
+          chatOn || canTrim ? (
+            <div className="flex gap-1.5">
+              {chatOn && chatSource && (
+                <Hint label={placingChat ? "Done placing the chat" : "Where the chat goes in the picture"}>
+                  <Button
+                    variant={placingChat ? "secondary" : "outline"}
+                    size="sm"
+                    disabled={running}
+                    onClick={togglePlacingChat}
+                  >
+                    <MessageSquareText /> Chat
+                  </Button>
+                </Hint>
+              )}
+              {canTrim && (
+                <Button variant="outline" size="sm" disabled={running} onClick={openTrim}>
+                  <Scissors /> Trim
+                </Button>
+              )}
+            </div>
           ) : null
         }
       />
 
       {/* A channel's link is the same for every stream it records. */}
       {!live && <AlreadyDownloaded url={video.url} exclude={downloadIds} />}
+
+      <AnimatePresence initial={false}>
+        {placingChat && chatOn && chatSource && video.duration && (
+          <motion.div
+            key="chat"
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            exit={{ opacity: 0, height: 0 }}
+            transition={spring}
+          >
+            <ChatPanel
+              video={video}
+              channel={chatSource.channel}
+              disabled={running}
+              onDone={() => setPlacingChat(false)}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <AnimatePresence initial={false}>
         {trimOpen && video.duration && (
@@ -156,7 +221,12 @@ export function VideoPane({ video }: { video: VideoInfo }) {
             exit={{ opacity: 0, height: 0 }}
             transition={spring}
           >
-            <TrimPanel video={video} duration={video.duration} disabled={running} />
+            <TrimPanel
+              video={video}
+              duration={video.duration}
+              disabled={running}
+              chatChannel={chatOn && chatSource ? chatSource.channel : null}
+            />
           </motion.div>
         )}
       </AnimatePresence>
@@ -169,6 +239,7 @@ export function VideoPane({ video }: { video: VideoInfo }) {
           live={live !== null}
           from={fromStartOffered.data ? { start: fromStart, onChange: setFromStart } : undefined}
           subtitles={live ? undefined : video.subtitles}
+          chat={chatSource !== null}
         />
         <AnimatePresence initial={false}>
           {customizing && (
