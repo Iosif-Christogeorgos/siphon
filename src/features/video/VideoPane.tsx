@@ -42,8 +42,8 @@ function missingSubtitles(wanted: string, video: VideoInfo): string {
 /** Everything shown for a loaded video: the card, the trimmer, the choices, the plan and the button. */
 export function VideoPane({ video }: { video: VideoInfo }) {
   const customizing = useChoices((state) => state.choices !== null && state.choices.active.kind !== "preset");
-  // A Twitch VOD's chat can be drawn into the picture, with the presets that keep it as it is.
-  const chatSource = video.chat?.kind === "vod" ? video.chat : null;
+  // A Twitch video's or stream's chat can be drawn into the picture, with the presets that keep it as it is.
+  const chatSource = video.chat;
   const chatOffered = useChoices(
     (state) => chatSource !== null && !customizing && CHAT_GROUPS.has(state.choices?.group ?? ""),
   );
@@ -194,7 +194,7 @@ export function VideoPane({ video }: { video: VideoInfo }) {
       {!live && <AlreadyDownloaded url={video.url} exclude={downloadIds} />}
 
       <AnimatePresence initial={false}>
-        {placingChat && chatOn && chatSource && video.duration && (
+        {placingChat && chatOn && chatSource && (
           <motion.div
             key="chat"
             initial={{ opacity: 0, height: 0 }}

@@ -13,6 +13,8 @@ const REDRAW_EVERY = 80;
 const NUDGE = 0.01;
 /** A redraw that takes longer than this (milliseconds) shows that it is coming. */
 const SLOW = 400;
+/** A live chat's box is drawn again this often (milliseconds), playing or not. */
+const LIVE_EVERY = 1000;
 
 type Corner = "nw" | "ne" | "sw" | "se";
 type Grip = "move" | Corner;
@@ -61,6 +63,7 @@ function draw(canvas: HTMLCanvasElement, answer: ArrayBuffer) {
 export function ChatBox({
   url,
   time,
+  live = false,
   placement,
   onPlace,
   disabled = false,
@@ -69,6 +72,8 @@ export function ChatBox({
   url: string;
   /** The playhead, in seconds. */
   time: MotionValue<number>;
+  /** A stream as it airs: the box shows its chat as it comes, drawn again every second. */
+  live?: boolean;
   placement: Placement;
   /** The box was let go of somewhere new, or resized. */
   onPlace: (placement: Placement) => void;
@@ -119,25 +124,27 @@ export function ChatBox({
     if (!bounds || bounds.width === 0) return;
     const scale = window.devicePixelRatio || 1;
     wanted.current = {
-      // A twentieth of a second is finer than chat moves.
-      at: Math.round(time.get() * 20) / 20,
+      // A twentieth of a second is finer than chat moves; a live box is new every time.
+      at: live ? Date.now() / 1000 : Math.round(time.get() * 20) / 20,
       placement,
       width: Math.round(bounds.width * scale),
       height: Math.round(bounds.height * scale),
     };
     void pump();
-  }, [placement, pump, time]);
+  }, [live, placement, pump, time]);
 
   useEffect(() => {
     request();
     const unsubscribe = time.on("change", request);
     const resized = new ResizeObserver(request);
     if (frame.current) resized.observe(frame.current);
+    const ticking = live ? window.setInterval(request, LIVE_EVERY) : undefined;
     return () => {
       unsubscribe();
       resized.disconnect();
+      window.clearInterval(ticking);
     };
-  }, [request, time]);
+  }, [live, request, time]);
 
   // ── Moving and resizing ──
   const grab = (grip: Grip) => (event: PointerEvent<HTMLElement>) => {

@@ -488,7 +488,8 @@ pub enum Recorded<'a> {
 /// The arguments that make a live recording into the file `recipe`
 /// describes: the streams copied into the preset's container where it can
 /// take them, converted where the preset needs it (see `downloads::live`).
-pub fn finalize_args(recipe: &Recipe, input: Recorded, output: &Path) -> Vec<OsString> {
+/// `chat` is the chat layer, for a recording that draws its chat in.
+pub fn finalize_args(recipe: &Recipe, input: Recorded, output: &Path, chat: Option<&ChatLayer>) -> Vec<OsString> {
     let mut args: Vec<OsString> = Vec::new();
     let mut push = |values: &[&str]| args.extend(values.iter().map(OsString::from));
     push(&["-hide_banner", "-nostdin", "-y", "-loglevel", "error"]);
@@ -503,12 +504,22 @@ pub fn finalize_args(recipe: &Recipe, input: Recorded, output: &Path) -> Vec<OsS
             args.push(list.into());
         }
     }
+    let chat = chat.filter(|_| recipe.encodes_video());
+    if let Some(layer) = chat {
+        args.extend(layer.input_args().into_iter().map(OsString::from));
+    }
     let mut push = |values: &[&str]| args.extend(values.iter().map(OsString::from));
 
     let keeps_audio = recipe.audio.is_some() && !recipe.strip_audio;
     match &recipe.video {
         Some(video) => {
-            push(&["-map", "0:v:0"]);
+            match (chat, recipe.video_encode()) {
+                (Some(layer), Some(encode)) => {
+                    let filters = video_filters(video, encode, None, None);
+                    push(&["-filter_complex", &layer.graph(&filters, 1), "-map", "[v]"]);
+                }
+                _ => push(&["-map", "0:v:0"]),
+            }
             match &video.action {
                 VideoAction::Copy => {
                     push(&["-c:v", "copy"]);
@@ -518,7 +529,7 @@ pub fn finalize_args(recipe: &Recipe, input: Recorded, output: &Path) -> Vec<OsS
                 }
                 VideoAction::Encode(encode) => {
                     let filters = video_filters(video, encode, None, None);
-                    if !filters.is_empty() {
+                    if !filters.is_empty() && chat.is_none() {
                         push(&["-vf", &filters.join(",")]);
                     }
                     for arg in video_encode_args(video, encode, Pass::Only) {
@@ -953,6 +964,7 @@ mod recording_tests {
             &recipe,
             Recorded::File(Path::new("a.ts")),
             Path::new("a.mp4"),
+            None,
         ));
         assert!(
             copy.contains("-i a.ts -map 0:v:0 -c:v copy -map 0:a:0? -c:a copy -sn -dn -shortest a.mp4"),
@@ -963,6 +975,7 @@ mod recording_tests {
             &recipe,
             Recorded::File(Path::new("a.mkv")),
             Path::new("a.mp4"),
+            None,
         ));
         assert!(both.contains("-shortest -t 765.000 a.mp4"), "{both}");
         recipe.duration = None;
@@ -970,6 +983,7 @@ mod recording_tests {
             &recipe,
             Recorded::List(Path::new("parts.txt")),
             Path::new("a.mp4"),
+            None,
         ));
         assert!(joined.contains("-f concat -safe 0 -i parts.txt"), "{joined}");
 
@@ -986,6 +1000,7 @@ mod recording_tests {
             &recipe,
             Recorded::File(Path::new("a.ts")),
             Path::new("a.mp3"),
+            None,
         ));
         assert!(music.contains("-vn -map 0:a:0? -c:a libmp3lame"), "{music}");
     }

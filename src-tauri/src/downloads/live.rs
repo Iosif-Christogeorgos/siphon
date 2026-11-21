@@ -29,12 +29,16 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 
+use super::live_chat::{self, ChatCapture, PartWatch, Stretch};
 use super::tracker::{LiveProgress, Progress, Stage};
 use super::{
     file_size, move_file, partial_path, work_dir, ChildEvent, Done, DownloadEvent, DownloadManager, Failure, Job,
     JobContext, Lookup, Stop, EVENT,
 };
 use crate::binaries::BinaryManager;
+use crate::chat::render::{Geometry, Layer, Style};
+use crate::chat::twitch::Twitch;
+use crate::chat::{images, ChatLog, ChatSource, Placement};
 use crate::error::{AppError, ErrorKind, Result, Retry};
 use crate::ffmpeg::{self, encoders::Hardware, Probed, Recorded};
 use crate::log;
@@ -217,9 +221,60 @@ impl Readings {
 /// How often a recording's folder is looked at for files yt-dlp didn't name.
 const FILE_LOOK: Duration = Duration::from_secs(2);
 
+/// The playlist a recording's video is read from, which says when each of
+/// its segments aired (see `live_chat`).
+fn playlist_of(video: &VideoInfo, recipe: &Recipe) -> Option<String> {
+    let id = &recipe.video.as_ref()?.format_id;
+    video
+        .formats
+        .iter()
+        .chain(
+            video
+                .live
+                .as_ref()
+                .and_then(|live| live.from_start.as_ref())
+                .into_iter()
+                .flatten(),
+        )
+        .find(|format| &format.id == id)?
+        .stream_url
+        .clone()
+}
+
+/// Where each stretch of a recording is in the finished file: one after the
+/// other, each from its file's start to where it ends with picture and sound
+/// both (as `ffmpeg::concat_list` joins them), or the recording's length for
+/// a recording in one stretch.
+fn stretches(numbers: &[usize], probes: &[Option<Probed>], recorded: f64) -> Vec<Stretch> {
+    let mut offset = 0.0;
+    numbers
+        .iter()
+        .zip(probes)
+        .map(|(&number, probed)| {
+            let start = probed.as_ref().and_then(|probed| probed.start).unwrap_or(0.0);
+            let length = if probes.len() == 1 {
+                recorded
+            } else {
+                probed
+                    .as_ref()
+                    .and_then(Probed::common_end)
+                    .map_or(0.0, |end| (end - start).max(0.0))
+            };
+            let stretch = Stretch {
+                number,
+                start,
+                length,
+                offset,
+            };
+            offset += length;
+            stretch
+        })
+        .collect()
+}
+
 /// The files in `dir` whose names carry `needle` (see `args::recording_needle`):
 /// a recording part's own, without what yt-dlp keeps beside them.
-fn recording_files(dir: &Path, needle: &str) -> Vec<PathBuf> {
+pub(super) fn recording_files(dir: &Path, needle: &str) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
@@ -302,6 +357,13 @@ impl DownloadManager {
             flow.reserve(plan::live::reserve(&recipe));
         }
 
+        // The chat, read as it airs into the work folder (see `live_chat`).
+        let mut capture = match recipe.chat.as_ref().map(|step| &step.source) {
+            Some(ChatSource::Live { channel }) => work_dir(job.app, job.id)
+                .ok()
+                .map(|work| ChatCapture::start(job.app, channel, &work)),
+            _ => None,
+        };
         let mut recording = Recording {
             url: video.url.clone(),
             title: video.title.clone(),
@@ -334,6 +396,21 @@ impl DownloadManager {
         let stop = loop {
             let before = recording.bytes();
             let first = recording.parts.is_empty();
+            if let Some(capture) = capture.as_mut() {
+                let number = recording.parts.len() + 1;
+                capture.watch_part(PartWatch {
+                    number,
+                    dir: recording.output_dir.clone(),
+                    needle: args::recording_needle(&args::own_marker(job.id), number),
+                    ffmpeg: job.bins.ffmpeg(),
+                    ffprobe: job.bins.ffprobe(),
+                    playlist: playlist_of(&video, &recording.recipe),
+                    began: (from_start && first)
+                        .then(|| video.live.as_ref().and_then(|live| live.since))
+                        .flatten()
+                        .map(|since| since as f64),
+                });
+            }
             let ended = self
                 .record_part(job, &video, from_start && first, &mut recording, &mut readings)
                 .await;
@@ -377,6 +454,8 @@ impl DownloadManager {
             }
         };
 
+        // The chat stops being read with the recording; what it said is in the work folder.
+        drop(capture);
         match stop {
             Stop::Cancel => {
                 self.forget_recording(job.id, true).await;
@@ -691,8 +770,13 @@ impl DownloadManager {
         let title = &recording.title;
         // One file for each stretch of the stream.
         let mut inputs: Vec<PathBuf> = Vec::new();
+        // Which stretch of the stream each input is (for the chat's timing).
+        let mut numbers: Vec<usize> = Vec::new();
         for (index, files) in recording.parts.iter().enumerate() {
             let files: Vec<PathBuf> = files.iter().filter(|file| file_size(file) > 0).cloned().collect();
+            if !files.is_empty() {
+                numbers.push(index + 1);
+            }
             match files.len() {
                 0 => {}
                 1 => inputs.extend(files),
@@ -733,6 +817,17 @@ impl DownloadManager {
         let stem = recording.stem();
         let mut recipe = recording.recipe.clone();
         recipe.duration = Some(recorded);
+        // The chat, placed on the finished file's clock.
+        let chat: Option<(ChatLog, Placement)> = match &recipe.chat {
+            Some(step) => {
+                let stretches = stretches(&numbers, &probes, recorded);
+                live_chat::chat_for_file(work, &stretches)
+                    .await
+                    .map(|log| (log, step.placement))
+            }
+            None => None,
+        };
+        let chat_missing = recipe.chat.is_some() && chat.is_none();
 
         // A copy needs about as much room again as the recording; a conversion usually less.
         let copies = !(recipe.encodes_video() || recipe.encodes_audio());
@@ -765,12 +860,23 @@ impl DownloadManager {
             job.id,
         );
         let partial = partial_path(&output);
-        let mut made = self.make_file(job, &recipe, input, &partial, recorded).await;
+        let mut made = match &chat {
+            Some((log, placement)) => {
+                self.make_file_with_chat(job, &recipe, input, &partial, recorded, first, log.clone(), placement)
+                    .await
+            }
+            None => self.make_file(job, &recipe, input, &partial, recorded).await,
+        };
         let on_hardware = matches!(&recipe.video, Some(video) if matches!(&video.action, VideoAction::Encode(encode) if encode.hardware != Hardware::Software));
         if made.is_err() && on_hardware && self.stop_of(job.id).is_none() {
-            made = self
-                .make_file(job, &recipe.on_software(), input, &partial, recorded)
-                .await;
+            let software = recipe.on_software();
+            made = match &chat {
+                Some((log, placement)) => {
+                    self.make_file_with_chat(job, &software, input, &partial, recorded, first, log.clone(), placement)
+                        .await
+                }
+                None => self.make_file(job, &software, input, &partial, recorded).await,
+            };
         }
         let checked = match made {
             Ok(()) => self.check_finished(job, &recipe, &partial, recorded).await,
@@ -790,9 +896,11 @@ impl DownloadManager {
                 log::line(job.app, &format!("record {title}: finished, {recorded:.0} s"));
                 Ok(Done {
                     path: output,
-                    note: None,
+                    note: chat_missing.then(|| {
+                        "Saved without the chat: Siphon couldn't read Twitch's chat while it recorded.".to_string()
+                    }),
                     as_recorded: false,
-                    note_label: None,
+                    note_label: chat_missing.then_some("No chat"),
                 })
             }
             Err(why) => {
@@ -820,7 +928,7 @@ impl DownloadManager {
         recorded: f64,
     ) -> Result<()> {
         let mut cmd = process::command(job.bins.ffmpeg());
-        cmd.args(ffmpeg::finalize_args(recipe, input, output));
+        cmd.args(ffmpeg::finalize_args(recipe, input, output, None));
         self.run_tool(job, cmd, |line| {
             if let Some(done) = ffmpeg::parse_progress(line) {
                 let fraction = if recorded > 0.0 {
@@ -830,6 +938,51 @@ impl DownloadManager {
                 };
                 report(job, Stage::Finalizing, fraction, LiveProgress::default());
             }
+        })
+        .await
+    }
+
+    /// Runs the finishing ffmpeg pass with the chat drawn in (see `live_chat`),
+    /// reporting its progress. `first` is the first recorded file, whose
+    /// picture the chat is drawn on.
+    #[allow(clippy::too_many_arguments)]
+    async fn make_file_with_chat(
+        &self,
+        job: &JobContext<'_>,
+        recipe: &Recipe,
+        input: Recorded<'_>,
+        output: &Path,
+        recorded: f64,
+        first: &Path,
+        log: ChatLog,
+        placement: &Placement,
+    ) -> Result<()> {
+        let picture = self.picture(job, first).await?;
+        let fps = picture.fps.unwrap_or(30.0);
+        // No more frames than the chat needs (see `chat::MAX_LAYER_FPS`).
+        let layer_fps = if fps > 31.0 { fps / 2.0 } else { fps };
+        let cache = super::chat::image_folder(job.app)?;
+        let geometry = Geometry::new(placement, picture.width, picture.height);
+        let style = Style::for_width(geometry.width);
+        if let Ok(twitch) = Twitch::new() {
+            let urls = log.images_used(0.0, recorded, style.emote(), style.badge());
+            images::fetch(twitch.http(), &cache, urls).await;
+        }
+        let layer = Layer::new(log, placement, picture.width, picture.height, &cache);
+        let geometry = layer.geometry();
+        let args = ffmpeg::ChatLayer {
+            width: geometry.width,
+            height: geometry.height,
+            fps: layer_fps,
+            x: geometry.x,
+            y: geometry.y,
+            start: 0.0,
+            hd: picture.height >= 720,
+        };
+        let mut cmd = process::command(job.bins.ffmpeg());
+        cmd.args(ffmpeg::finalize_args(recipe, input, output, Some(&args)));
+        self.run_with_layer(job, cmd, layer, 0.0, layer_fps, recorded, &mut |fraction| {
+            report(job, Stage::Finalizing, fraction, LiveProgress::default())
         })
         .await
     }

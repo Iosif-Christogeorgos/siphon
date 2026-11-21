@@ -169,6 +169,17 @@ impl Twitch {
         parse_vod(&data).ok_or_else(|| refused("Twitch doesn't have this video's chat."))
     }
 
+    /// The channel with the login `login`.
+    pub async fn channel(&self, login: &str) -> Result<Channel> {
+        let data = self
+            .query(
+                "query($login:String!){user(login:$login){id login displayName}}",
+                json!({ "login": login }),
+            )
+            .await?;
+        parse_channel(data.get("user")).ok_or_else(|| refused("Twitch has no such channel."))
+    }
+
     /// Everyone's badges and the channel's own (its subscriber and bits
     /// badges), the channel's last so they win where both have one.
     pub async fn badges(&self, channel_id: &str) -> Result<Vec<Badge>> {
@@ -355,6 +366,7 @@ fn timed(comments: Vec<Comment>) -> Vec<Message> {
                 color: c.color,
                 badges: c.badges,
                 parts: c.parts,
+                notice: false,
             }
         })
         .collect();

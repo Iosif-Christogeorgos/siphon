@@ -180,7 +180,7 @@ impl DownloadManager {
 
         let cache = image_folder(job.app)?;
         let placement = step.placement;
-        let mut chat_layer = Layer::new(log, &placement, width, height, &cache);
+        let chat_layer = Layer::new(log, &placement, width, height, &cache);
         let geometry = chat_layer.geometry();
         let args = ChatLayer {
             width: geometry.width,
@@ -191,8 +191,6 @@ impl DownloadManager {
             start: layer_start,
             hd: height >= 720,
         };
-        let (reader, mut writer) = std::io::pipe()
-            .map_err(|err| AppError::internal("Couldn't start drawing the chat.").with_details(err.to_string()))?;
         let mut cmd = process::command(job.bins.ffmpeg());
         cmd.current_dir(work);
         cmd.args(ffmpeg::convert_args_shifted(
@@ -204,15 +202,35 @@ impl DownloadManager {
             subtitles,
             Some(&args),
         ));
-        cmd.stdin(Stdio::from(reader));
+        self.run_with_layer(job, cmd, chat_layer, start, layer_fps, length, &mut on_progress)
+            .await
+    }
 
+    /// Runs ffmpeg (`cmd`, set to read the chat layer from its standard input)
+    /// while a thread draws `layer`'s frames into it: from `start` seconds of
+    /// the chat's clock, `fps` a second, for `length` seconds and one more.
+    /// `on_progress` hears how far ffmpeg has got (0–1).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn run_with_layer(
+        &self,
+        job: &JobContext<'_>,
+        mut cmd: tokio::process::Command,
+        mut layer: Layer,
+        start: f64,
+        fps: f64,
+        length: f64,
+        on_progress: &mut impl FnMut(f64),
+    ) -> Result<()> {
+        let (reader, mut writer) = std::io::pipe()
+            .map_err(|err| AppError::internal("Couldn't start drawing the chat.").with_details(err.to_string()))?;
+        cmd.stdin(Stdio::from(reader));
         // Frames for the whole length and a second more; ffmpeg stops reading
         // when the picture ends, and the thread stops when it can't write.
-        let frames = ((length + 1.0) * layer_fps).ceil() as u64;
+        let frames = ((length + 1.0) * fps).ceil() as u64;
         let drawing = std::thread::spawn(move || {
             for index in 0..frames {
-                let at = start + index as f64 / layer_fps;
-                if writer.write_all(chat_layer.frame(at)).is_err() {
+                let at = start + index as f64 / fps;
+                if writer.write_all(layer.frame(at)).is_err() {
                     break;
                 }
             }
@@ -237,14 +255,14 @@ impl DownloadManager {
             Ok(_) => Err(AppError::internal("Drawing the chat failed.")),
             Err(Failure::Stopped(_)) => Err(AppError::cancelled()),
             Err(Failure::Exited(log)) => {
-                Err(AppError::internal("The video downloaded, but drawing the chat into it failed.").with_details(log))
+                Err(AppError::internal("Drawing the chat into the video failed.").with_details(log))
             }
             Err(Failure::Spawn(error)) => Err(error),
         }
     }
 
     /// The size, frame rate and length of `file`'s picture.
-    async fn picture(&self, job: &JobContext<'_>, file: &Path) -> Result<ffmpeg::Picture> {
+    pub(super) async fn picture(&self, job: &JobContext<'_>, file: &Path) -> Result<ffmpeg::Picture> {
         let mut json = String::new();
         let mut cmd = process::command(job.bins.ffprobe());
         cmd.args(ffmpeg::picture_probe_args(file));

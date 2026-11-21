@@ -18,6 +18,8 @@ use super::{image_for, twitch_emote_images, Badge, BadgeRef, ChatLog, Emote, Mes
 const DESIGN_WIDTH: f64 = 300.0;
 /// The character Parley leaves room for an image at.
 const SLOT: char = '\u{FFFC}';
+/// Twitch's own lines (a sub, a raid) are drawn in its purple, lightened to read over video.
+const NOTICE_INK: Ink = Ink([0xC9, 0xA8, 0xFF]);
 
 /// Where the box is on the frame, in pixels. Even numbers throughout:
 /// 4:2:0 video keeps its colour at half size.
@@ -451,14 +453,17 @@ impl Layer {
                 );
             }
         }
-        let name_start = text.len();
-        text.push_str(&message.name);
-        runs.push(Run {
-            range: name_start..text.len(),
-            ink: name_ink(message),
-            bold: true,
-        });
-        text.push_str(": ");
+        // Twitch's own line (a sub, a raid) has no name: it is about the user.
+        let notice_start = text.len();
+        if !message.notice {
+            text.push_str(&message.name);
+            runs.push(Run {
+                range: notice_start..text.len(),
+                ink: name_ink(message),
+                bold: true,
+            });
+            text.push_str(": ");
+        }
 
         let tokens = {
             let emotes: HashMap<&str, &Emote> =
@@ -494,6 +499,13 @@ impl Layer {
             }
         }
 
+        if message.notice {
+            runs.push(Run {
+                range: notice_start..text.len(),
+                ink: NOTICE_INK,
+                bold: false,
+            });
+        }
         let inner = width as f64 - 2.0 * padding;
         let layout = self
             .typesetter
@@ -757,6 +769,7 @@ mod tests {
             color: Some("#1E90FF".into()),
             badges: Vec::new(),
             parts: vec![Part::Text { text: text.into() }],
+            notice: false,
         }
     }
 

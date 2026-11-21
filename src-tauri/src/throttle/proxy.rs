@@ -100,7 +100,7 @@ async fn open_tunnel(request: &RequestHead<'_>) -> io::Result<(TcpStream, Vec<u8
 }
 
 /// Opens a tunnel to `host:port`, directly or by asking `upstream` for one.
-async fn tunnel_to(host: &str, port: u16, upstream: Option<Upstream>) -> io::Result<TcpStream> {
+pub(super) async fn tunnel_to(host: &str, port: u16, upstream: Option<Upstream>) -> io::Result<TcpStream> {
     let Some(upstream) = upstream else {
         return connect(host, port).await;
     };

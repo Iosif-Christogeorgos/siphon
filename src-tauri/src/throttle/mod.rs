@@ -18,6 +18,12 @@ mod upstream;
 
 pub use upstream::follow_system_proxy;
 
+/// A connection to `host:port` (a TLS port) the way downloads go: through the
+/// system proxy, HTTP or SOCKS, if this PC uses one, or straight there.
+pub async fn connect(host: &str, port: u16) -> std::io::Result<tokio::net::TcpStream> {
+    proxy::tunnel_to(host, port, upstream::for_host(host, true)).await
+}
+
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;

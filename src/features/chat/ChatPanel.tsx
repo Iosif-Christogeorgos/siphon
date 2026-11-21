@@ -46,6 +46,8 @@ export function ChatPanel({
   const panel = useRef<HTMLDivElement>(null);
   const player = useRef<PlayerHandle>(null);
   const [playing, setPlaying] = useState(false);
+  // A stream as it airs has no timeline: the box shows its chat as it comes.
+  const live = video.live !== null;
   const duration = video.duration ?? 0;
   // A moment into the video, where its chat has got going; the box asks for
   // that moment's chat straight away, while the preview loads.
@@ -100,11 +102,20 @@ export function ChatPanel({
           <Preview
             video={video}
             ref={player}
-            onReady={() => seek(time.get())}
+            onReady={() => {
+              if (!live) seek(time.get());
+            }}
             onTime={(seconds) => time.set(seconds)}
             onPlaying={setPlaying}
           />
-          <ChatBox url={video.url} time={time} placement={placement} onPlace={place} disabled={disabled} />
+          <ChatBox
+            url={video.url}
+            time={time}
+            live={live}
+            placement={placement}
+            onPlace={place}
+            disabled={disabled}
+          />
         </div>
       </div>
 
@@ -114,10 +125,16 @@ export function ChatPanel({
             {playing ? <Pause className="fill-current" /> : <Play className="fill-current" />}
           </Button>
         </Hint>
-        <span className="shrink-0 font-mono text-xs text-muted-foreground tabular-nums">
-          <motion.span className="text-foreground">{timeLabel}</motion.span> / {formatTimecode(duration)}
-        </span>
-        <Scrubber duration={duration} time={time} onSeek={seek} />
+        {live ? (
+          <span className="text-xs text-muted-foreground">Live: the box shows the chat as it comes.</span>
+        ) : (
+          <>
+            <span className="shrink-0 font-mono text-xs text-muted-foreground tabular-nums">
+              <motion.span className="text-foreground">{timeLabel}</motion.span> / {formatTimecode(duration)}
+            </span>
+            <Scrubber duration={duration} time={time} onSeek={seek} />
+          </>
+        )}
       </div>
 
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-0.5">
@@ -155,8 +172,8 @@ export function ChatPanel({
         </Button>
       </div>
       <p className="px-1 text-xs text-muted-foreground">
-        Drag the box where the chat should go, and a corner to resize it: the text grows with its width. {channel}’s
-        videos start here next time.
+        Drag the box where the chat should go, and a corner to resize it: the text grows with its width.{" "}
+        {live ? `${channel}’s recordings` : `${channel}’s videos`} start here next time.
       </p>
     </div>
   );

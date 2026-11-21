@@ -427,7 +427,7 @@ fn offline(url: &str) -> VideoInfo {
             from_start: None,
         }),
         subtitles: Vec::new(),
-        chat: None,
+        chat: ChatSource::of_channel_link(url),
         saved: None,
     }
 }

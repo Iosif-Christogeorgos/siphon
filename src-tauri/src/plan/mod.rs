@@ -29,7 +29,7 @@ use std::cmp::Ordering;
 
 use serde::{Deserialize, Serialize};
 
-use crate::chat::{ChatStep, Placement};
+use crate::chat::{ChatSource, ChatStep, Placement};
 use crate::error::{AppError, ErrorKind, Result};
 use crate::ffmpeg::encoders::{Encoders, Hardware};
 use crate::ytdlp::metadata::{Format, FormatKind, VideoInfo};
@@ -751,7 +751,12 @@ pub fn plan(video: &VideoInfo, choice: &Choice, trim: Option<Trim>, caps: &Capab
             Choice::Preset(preset) => Some(preset.target.group()),
             Choice::Custom(_) => None,
         };
-        if matches!(group, Some(Group::Max | Group::Watch)) && video.live.is_none() {
+        // A VOD's replay goes with the video; a channel's chat, with a recording of it.
+        let fits = match source {
+            ChatSource::Vod { .. } => video.live.is_none(),
+            ChatSource::Live { .. } => video.live.is_some(),
+        };
+        if matches!(group, Some(Group::Max | Group::Watch)) && fits {
             planner.draw_chat(
                 &mut recipe,
                 ChatStep {

@@ -10,6 +10,7 @@
 
 pub mod emotes;
 pub mod images;
+pub mod irc;
 pub mod preview;
 pub mod render;
 mod text;
@@ -97,6 +98,35 @@ impl ChatSource {
             _ => None,
         }
     }
+
+    /// The chat of an offline channel's link (`twitch.tv/name`), whose
+    /// stream Siphon waits for: the link is all there is to go on.
+    pub fn of_channel_link(url: &str) -> Option<ChatSource> {
+        let rest = url.split_once("://")?.1;
+        let (host, path) = rest.split_once('/')?;
+        if !matches!(
+            host.to_ascii_lowercase().as_str(),
+            "twitch.tv" | "www.twitch.tv" | "m.twitch.tv"
+        ) {
+            return None;
+        }
+        let path = path.split(['?', '#']).next().unwrap_or_default().trim_end_matches('/');
+        let login = path.to_ascii_lowercase();
+        let reserved = [
+            "videos",
+            "directory",
+            "settings",
+            "search",
+            "downloads",
+            "p",
+            "jobs",
+            "turbo",
+        ];
+        let valid = (1..=25).contains(&login.len())
+            && login.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            && !reserved.contains(&login.as_str());
+        valid.then_some(ChatSource::Live { channel: login })
+    }
 }
 
 /// The chat a recipe draws into its video, and where.
@@ -143,6 +173,10 @@ pub struct Message {
     #[serde(default)]
     pub badges: Vec<BadgeRef>,
     pub parts: Vec<Part>,
+    /// Twitch's own line about something that happened (a sub, a raid),
+    /// drawn in its own colour, without a name.
+    #[serde(default)]
+    pub notice: bool,
 }
 
 /// A run of a message: text, or one of Twitch's own emotes. Third-party
@@ -351,6 +385,18 @@ mod tests {
         );
         assert_eq!(ChatSource::of(Some("TwitchVod"), Some("vabc"), Some("x")), None);
         assert_eq!(ChatSource::of(Some("TwitchVod"), Some("v1"), None), None);
+        assert_eq!(
+            ChatSource::of_channel_link("https://www.twitch.tv/KaiCenat?sr=a"),
+            Some(ChatSource::Live {
+                channel: "kaicenat".into()
+            })
+        );
+        assert_eq!(ChatSource::of_channel_link("https://www.twitch.tv/videos/123"), None);
+        assert_eq!(
+            ChatSource::of_channel_link("https://www.twitch.tv/kaicenat/videos"),
+            None
+        );
+        assert_eq!(ChatSource::of_channel_link("https://kick.com/xqc"), None);
     }
 
     #[test]

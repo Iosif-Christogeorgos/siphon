@@ -313,6 +313,33 @@ mod tests {
     }
 
     #[test]
+    fn a_twitch_recording_can_draw_its_chat_in() {
+        let mut stream = youtube_live();
+        stream.chat = Some(crate::chat::ChatSource::Live {
+            channel: "auronplay".into(),
+        });
+        let Choice::Preset(preset) = preset("windows") else {
+            unreachable!()
+        };
+        let with_chat = Choice::Preset(crate::plan::PresetChoice {
+            chat: Some(crate::chat::Placement::DEFAULT),
+            ..preset
+        });
+        let recipe = plan(&stream, &with_chat, false, &Capabilities::BASIC).unwrap();
+        assert!(recipe.chat.is_some());
+        assert!(recipe.video_encode().is_some_and(|encode| encode.fast));
+        // A VOD's replay never goes with a stream as it airs.
+        stream.chat = Some(crate::chat::ChatSource::Vod {
+            id: "1".into(),
+            channel: "auronplay".into(),
+        });
+        assert!(plan(&stream, &with_chat, false, &Capabilities::BASIC)
+            .unwrap()
+            .chat
+            .is_none());
+    }
+
+    #[test]
     fn a_recording_is_planned_per_hour_from_the_streams_on_air() {
         let recipe = plan(&youtube_live(), &preset("max"), false, &Capabilities::BASIC).unwrap();
         assert_eq!(recipe.format_selector(), "270+234");
