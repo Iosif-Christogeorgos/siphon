@@ -535,6 +535,14 @@ pub fn finalize_args(recipe: &Recipe, input: Recorded, output: &Path, chat: Opti
                     for arg in video_encode_args(video, encode, Pass::Only) {
                         push(&[&arg]);
                     }
+                    // The stream's own frame rate, not the one the recording
+                    // starts with: an MP4 is made at one rate, which ffmpeg
+                    // takes from the start, and a Twitch recording starts with
+                    // a 30-frame ad, so its 60-frame stream lost every other
+                    // frame (found 2026-11-21).
+                    if let Some(fps) = recipe.output_fps() {
+                        push(&["-r", &frame_rate(fps)]);
+                    }
                 }
             }
         }
@@ -573,6 +581,18 @@ pub fn finalize_args(recipe: &Recipe, input: Recorded, output: &Path, chat: Opti
     }
     args.push(output.into());
     args
+}
+
+/// A frame rate as ffmpeg reads it: NTSC's rates exactly (`60000/1001`),
+/// others as a plain number.
+fn frame_rate(fps: f64) -> String {
+    for base in [24_u32, 30, 48, 60, 120] {
+        if (fps - f64::from(base) * 1000.0 / 1001.0).abs() < 0.01 {
+            return format!("{}/1001", base * 1000);
+        }
+    }
+    let text = format!("{fps:.3}");
+    text.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
 /// The concat demuxer's list for a recording in several parts (the stream
@@ -986,6 +1006,36 @@ mod recording_tests {
             None,
         ));
         assert!(joined.contains("-f concat -safe 0 -i parts.txt"), "{joined}");
+
+        // Converted: at the stream's own rate, whatever the recording starts
+        // with (Twitch's ads run at 30 frames a second, its streams at 60).
+        let mut converted = recipe.clone();
+        if let Some(video) = converted.video.as_mut() {
+            video.fps = Some(60.0);
+            video.action = VideoAction::Encode(crate::plan::VideoEncode {
+                codec: VideoCodec::H264,
+                hardware: Hardware::Nvenc,
+                bitrate_kbps: None,
+                scale_lines: None,
+                max_fps: None,
+                fast: true,
+                max_kbps: None,
+            });
+        }
+        let encoded = text(finalize_args(
+            &converted,
+            Recorded::File(Path::new("a.ts")),
+            Path::new("a.mp4"),
+            None,
+        ));
+        assert!(
+            encoded.contains("-c:v h264_nvenc") && encoded.contains(" -r 60 "),
+            "{encoded}"
+        );
+        assert_eq!(frame_rate(59.94), "60000/1001");
+        assert_eq!(frame_rate(29.97), "30000/1001");
+        assert_eq!(frame_rate(25.0), "25");
+        assert_eq!(frame_rate(12.5), "12.5");
 
         recipe.video = None;
         recipe.container = Container::Mp3;
