@@ -15,8 +15,6 @@ use swash::zeno::{Format, Vector};
 
 /// The look of chat: Windows' interface font, as clean as Twitch's own.
 const FAMILY: &str = "Segoe UI";
-/// How dark a glyph's outline is (0–1). It keeps text readable over any picture.
-const OUTLINE_ALPHA: f32 = 0.9;
 
 /// A text colour, the brush Parley carries through a layout.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -111,7 +109,6 @@ struct GlyphKey {
     size: u32,
     /// Quarter-pixel horizontal offset, so glyphs keep their spacing.
     offset: u8,
-    outline: bool,
 }
 
 /// A glyph drawn by swash: an alpha mask, or colour (emoji).
@@ -195,93 +192,77 @@ impl Typesetter {
     }
 
     /// Draws the text of `layout` into `canvas` with its top left at `x`,
-    /// `y`: first every glyph's dark outline, `outline` pixels thick, then the
-    /// glyphs themselves, so an outline never covers a neighbouring letter.
-    pub fn paint(&mut self, layout: &Layout<Ink>, canvas: &mut Canvas, x: f32, y: f32, outline: f32) {
-        for outlined in [true, false] {
-            for line in layout.lines() {
-                for item in line.items() {
-                    let PositionedLayoutItem::GlyphRun(glyph_run) = item else {
-                        continue;
+    /// `y`: plain glyphs in their colour, with no outline or shadow.
+    pub fn paint(&mut self, layout: &Layout<Ink>, canvas: &mut Canvas, x: f32, y: f32) {
+        for line in layout.lines() {
+            for item in line.items() {
+                let PositionedLayoutItem::GlyphRun(glyph_run) = item else {
+                    continue;
+                };
+                let run = glyph_run.run();
+                let font = run.font();
+                let size = run.font_size();
+                let Some(font_ref) = swash::FontRef::from_index(font.data.as_ref(), font.index as usize) else {
+                    continue;
+                };
+                let coords: Vec<i16> = run.normalized_coords().iter().map(|c| c.to_bits()).collect();
+                let ink = glyph_run.style().brush.0.map(|c| f32::from(c) / 255.0);
+                for glyph in glyph_run.positioned_glyphs() {
+                    let gx = x + glyph.x;
+                    let gy = y + glyph.y;
+                    let offset = (gx.fract() * 4.0).floor().clamp(0.0, 3.0) as u8;
+                    let key = GlyphKey {
+                        font: font.data.id(),
+                        index: font.index,
+                        glyph: glyph.id,
+                        size: size.to_bits(),
+                        offset,
                     };
-                    let run = glyph_run.run();
-                    let font = run.font();
-                    let size = run.font_size();
-                    let Some(font_ref) = swash::FontRef::from_index(font.data.as_ref(), font.index as usize) else {
-                        continue;
-                    };
-                    let coords: Vec<i16> = run.normalized_coords().iter().map(|c| c.to_bits()).collect();
-                    let ink = glyph_run.style().brush.0.map(|c| f32::from(c) / 255.0);
-                    for glyph in glyph_run.positioned_glyphs() {
-                        let gx = x + glyph.x;
-                        let gy = y + glyph.y;
-                        let offset = (gx.fract() * 4.0).floor().clamp(0.0, 3.0) as u8;
-                        let key = GlyphKey {
-                            font: font.data.id(),
-                            index: font.index,
-                            glyph: glyph.id,
-                            size: size.to_bits(),
-                            offset,
-                            outline: outlined,
-                        };
-                        let scaler = &mut self.scaler;
-                        let drawn = self.glyphs.entry(key).or_insert_with(|| {
-                            let mut scaler = scaler
-                                .builder(font_ref)
-                                .size(size)
-                                .hint(false)
-                                .normalized_coords(coords.iter())
-                                .build();
-                            let mut render = Render::new(&[
-                                Source::ColorOutline(0),
-                                Source::ColorBitmap(StrikeWith::BestFit),
-                                Source::Outline,
-                            ]);
-                            render
-                                .format(Format::Alpha)
-                                .offset(Vector::new(f32::from(offset) / 4.0, 0.0));
-                            if outlined {
-                                render.embolden(outline * 2.0);
-                            }
-                            let image = render.render(&mut scaler, glyph.id as u16)?;
-                            Some(Glyph {
-                                left: image.placement.left,
-                                top: image.placement.top,
-                                width: image.placement.width as usize,
-                                height: image.placement.height as usize,
-                                color: image.content == Content::Color,
-                                data: image.data,
-                            })
-                        });
-                        let Some(drawn) = drawn else { continue };
-                        // Emoji keep their own colours and need no outline.
-                        if outlined && drawn.color {
-                            continue;
-                        }
-                        let left = gx.floor() as i32 + drawn.left;
-                        let top = gy.round() as i32 - drawn.top;
-                        for row in 0..drawn.height {
-                            for column in 0..drawn.width {
-                                let color = if drawn.color {
-                                    let pixel = &drawn.data[(row * drawn.width + column) * 4..][..4];
-                                    let alpha = f32::from(pixel[3]) / 255.0;
-                                    // swash's colour glyphs are straight RGBA.
-                                    [
-                                        f32::from(pixel[0]) / 255.0 * alpha,
-                                        f32::from(pixel[1]) / 255.0 * alpha,
-                                        f32::from(pixel[2]) / 255.0 * alpha,
-                                        alpha,
-                                    ]
-                                } else {
-                                    let coverage = f32::from(drawn.data[row * drawn.width + column]) / 255.0;
-                                    if outlined {
-                                        [0.0, 0.0, 0.0, coverage * OUTLINE_ALPHA]
-                                    } else {
-                                        [ink[0] * coverage, ink[1] * coverage, ink[2] * coverage, coverage]
-                                    }
-                                };
-                                canvas.blend(left + column as i32, top + row as i32, color);
-                            }
+                    let scaler = &mut self.scaler;
+                    let drawn = self.glyphs.entry(key).or_insert_with(|| {
+                        let mut scaler = scaler
+                            .builder(font_ref)
+                            .size(size)
+                            .hint(false)
+                            .normalized_coords(coords.iter())
+                            .build();
+                        let image = Render::new(&[
+                            Source::ColorOutline(0),
+                            Source::ColorBitmap(StrikeWith::BestFit),
+                            Source::Outline,
+                        ])
+                        .format(Format::Alpha)
+                        .offset(Vector::new(f32::from(offset) / 4.0, 0.0))
+                        .render(&mut scaler, glyph.id as u16)?;
+                        Some(Glyph {
+                            left: image.placement.left,
+                            top: image.placement.top,
+                            width: image.placement.width as usize,
+                            height: image.placement.height as usize,
+                            color: image.content == Content::Color,
+                            data: image.data,
+                        })
+                    });
+                    let Some(drawn) = drawn else { continue };
+                    let left = gx.floor() as i32 + drawn.left;
+                    let top = gy.round() as i32 - drawn.top;
+                    for row in 0..drawn.height {
+                        for column in 0..drawn.width {
+                            let color = if drawn.color {
+                                let pixel = &drawn.data[(row * drawn.width + column) * 4..][..4];
+                                let alpha = f32::from(pixel[3]) / 255.0;
+                                // swash's colour glyphs are straight RGBA.
+                                [
+                                    f32::from(pixel[0]) / 255.0 * alpha,
+                                    f32::from(pixel[1]) / 255.0 * alpha,
+                                    f32::from(pixel[2]) / 255.0 * alpha,
+                                    alpha,
+                                ]
+                            } else {
+                                let coverage = f32::from(drawn.data[row * drawn.width + column]) / 255.0;
+                                [ink[0] * coverage, ink[1] * coverage, ink[2] * coverage, coverage]
+                            };
+                            canvas.blend(left + column as i32, top + row as i32, color);
                         }
                     }
                 }

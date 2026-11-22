@@ -88,10 +88,6 @@ impl Style {
         4.0 * self.scale
     }
 
-    fn outline(&self) -> f64 {
-        (0.9 * self.scale).max(1.0)
-    }
-
     fn corner(&self) -> f64 {
         6.0 * self.scale
     }
@@ -514,8 +510,7 @@ impl Layer {
         let height = layout.height().ceil() as usize + spacing;
         let mut canvas = Canvas::new(width, height, [0.0, 0.0, 0.0, self.shade]);
         let top = spacing as f32;
-        self.typesetter
-            .paint(&layout, &mut canvas, padding as f32, top, style.outline() as f32);
+        self.typesetter.paint(&layout, &mut canvas, padding as f32, top);
 
         let mut moving = Vec::new();
         for placed in Typesetter::slots(&layout) {
