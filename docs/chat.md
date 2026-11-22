@@ -91,4 +91,5 @@ Each comment says the whole seconds into the video, rounded down, and the moment
 - **Not drawn:** 7TV's personal emotes and name paints, and BTTV's emote modifiers.
 - **Tier-3 subscriber badges** (`subscriber/3012`) weren't checked against the channel's badge list.
 - **The size estimate** for a video with chat (the source's size, HEVC three quarters of it) was checked on two Twitch clips only.
+- **A VOD's chat is drawn only once the video has downloaded.** Drawing it on the growing file, with the pieces a recording uses (`live_draw.rs`), would shorten the wait; drawing two pieces at once was only 20–25% faster, as the CPU is the limit.
 - **The first preview frame of a VOD** takes about 10 s in the debug build: the VOD, its emote sets, the chat around the moment and about 180 images are fetched first. Later frames are quick.

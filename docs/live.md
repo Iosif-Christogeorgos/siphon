@@ -87,6 +87,7 @@ Measured 2026-11-19, with a 1080p60 Twitch stream (≈ 0.9 MB/s) and a 4K YouTub
 
 - **"Record when it starts" wasn't seen going live:** waiting was tested on a scheduled YouTube stream and offline Twitch channels, but none started during testing. Going live leads into the same path as recording a stream that is already on air.
 - **Twitch without VODs: what airs during an ad is missing.** Twitch doesn't send it, so the recording jumps over it. No midroll ad came during testing; the jump was tested by taking segments out of a served playlist (see Tested).
+- **Not yet seen in the wild** (2026-11-22): a Twitch stream that drops while it is read from its VOD (the VOD should stop growing, be answered "not found", and the next part be read without the ads), and a recording from the start that reconnects (its next part finds its format by picture size and frame rate). `siphon.log` says what each part read: `part N from the VOD`, `without the ads` or `with the ads (…)`.
 - **Twitch with its ads**, where neither the VOD nor the stream without them can be read: as before, at their joins ffmpeg reports a few decode errors (3 in a 10-minute test), and the file plays through.
 - **A crash cuts the last frame:** after a kill or power cut, the very end can show a damaged frame. Stop and closing don't.
 - **Stopped while catching up**, a recording from the start keeps only the stretch it has both picture and sound for (the sound catches up much faster).
