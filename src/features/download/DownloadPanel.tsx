@@ -202,7 +202,7 @@ function Running({
   onCancel?: () => void;
   onFilled: () => void;
 }) {
-  const { stage, speed, eta } = download.progress;
+  const { stage, speed, eta, heading_for } = download.progress;
   const done = download.status === "finished";
   const fraction = done ? 1 : download.progress.fraction;
 
@@ -221,7 +221,9 @@ function Running({
 
   // No percentage until there is something to measure (a resumed download keeps its own).
   const waiting = isIndeterminate(stage) && fraction === 0;
-  const detail = [formatSpeed(speed), formatEta(eta)].filter(Boolean).join(" · ");
+  // While converting: the size the file is heading for, from what it has written so far.
+  const heading = heading_for != null ? `≈ ${formatBytes(heading_for)}` : null;
+  const detail = [heading, formatSpeed(speed), formatEta(eta)].filter(Boolean).join(" · ");
 
   return (
     <div className="relative flex size-full items-center gap-3 pr-2 pl-5">

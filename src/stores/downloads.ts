@@ -347,6 +347,8 @@ export function useDownloadGroup(ids: string[]): DownloadGroup | undefined {
       progress: {
         ...lead.progress,
         fraction: downloads.reduce((sum, download) => sum + download.progress.fraction, 0) / downloads.length,
+        // One clip's size says nothing about the others'.
+        heading_for: downloads.length === 1 ? lead.progress.heading_for : undefined,
       },
       path: first.path,
       size: sizes.every((size) => size !== null) ? sizes.reduce((sum, size) => sum + size, 0) : null,

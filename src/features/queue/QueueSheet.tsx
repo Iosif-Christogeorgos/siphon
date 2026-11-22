@@ -378,6 +378,7 @@ function statusPieces(download: Download): { key: string; node: ReactNode }[] {
               node: [SHORT_STAGES[progress.stage], percent(download)].filter(Boolean).join(" ") || "Downloading",
             },
             clip,
+              progress.heading_for != null && { key: "heading", node: `≈ ${formatBytes(progress.heading_for)}` },
               formatEta(progress.eta) && { key: "eta", node: formatEta(progress.eta) },
               formatSpeed(progress.speed) && { key: "speed", node: formatSpeed(progress.speed) },
             ];
@@ -411,7 +412,14 @@ function fullStatus(download: Download): string {
                 formatBitrate(live?.bitrate),
                 live?.disk_left != null && `the disk is full in ${formatSpan(live.disk_left)}`,
               ]
-            : [STAGE_LABELS[progress.stage], percent(download), formatSpeed(progress.speed), formatEta(progress.eta), clip];
+            : [
+                STAGE_LABELS[progress.stage],
+                percent(download),
+                progress.heading_for != null && `heading for about ${formatBytes(progress.heading_for)}`,
+                formatSpeed(progress.speed),
+                formatEta(progress.eta),
+                clip,
+              ];
   return parts.filter(Boolean).join(" · ");
 
 }

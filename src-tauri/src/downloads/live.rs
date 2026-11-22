@@ -466,6 +466,7 @@ fn report(job: &JobContext<'_>, stage: Stage, fraction: f64, live: LiveProgress)
         speed: None,
         eta: None,
         live: Some(live),
+        heading_for: None,
     });
 }
 
@@ -1498,7 +1499,7 @@ impl DownloadManager {
         };
         let mut cmd = process::command(job.bins.ffmpeg());
         cmd.args(ffmpeg::finalize_args(recipe, input, output, Some(&args)));
-        self.run_with_layer(job, cmd, layer, 0.0, layer_fps, recorded, &mut |fraction| {
+        self.run_with_layer(job, cmd, layer, 0.0, layer_fps, recorded, &mut |fraction, _| {
             report(job, Stage::Finalizing, fraction, LiveProgress::default())
         })
         .await

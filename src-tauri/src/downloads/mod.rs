@@ -1904,12 +1904,28 @@ impl DownloadManager {
         let audio_shift = self.audio_shift(job, recipe, input).await?;
         if let Some(step) = &recipe.chat {
             return self
-                .draw_chat(job, recipe, step, input, output, work, audio_shift, subtitles, |done| {
-                    job.emit(tracker.on_convert(done))
-                })
+                .draw_chat(
+                    job,
+                    recipe,
+                    step,
+                    input,
+                    output,
+                    work,
+                    audio_shift,
+                    subtitles,
+                    |done, written| {
+                        if let Some(written) = written {
+                            tracker.heading_for(written, done);
+                        }
+                        job.emit(tracker.on_convert(done))
+                    },
+                )
                 .await;
         }
         for (index, pass) in passes.into_iter().enumerate() {
+            // The first of two passes writes no file.
+            let writes = !matches!(pass, Pass::First { .. });
+            let mut written = None;
             let mut cmd = process::command(&ffmpeg);
             // Subtitles drawn into the picture are read from here, by name.
             cmd.current_dir(work);
@@ -1925,7 +1941,13 @@ impl DownloadManager {
             let result = self
                 .run_child(job.bins, job.id, cmd, |event| {
                     if let ChildEvent::Line(line) = event {
+                        if let Some(bytes) = ffmpeg::parse_written(line) {
+                            written = Some(bytes);
+                        }
                         if let (Some(done), Some(total)) = (ffmpeg::parse_progress(line), recipe.duration) {
+                            if let (true, Some(bytes)) = (writes, written) {
+                                tracker.heading_for(bytes, done / total);
+                            }
                             job.emit(tracker.on_convert((index as f64 + done / total) * share));
                         }
                     }

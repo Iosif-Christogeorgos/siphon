@@ -81,6 +81,7 @@ For a Twitch video, a Twitch channel's videos or a Twitch stream, with Max quali
 Every download joins a queue. A set number run at once (three by default) and the rest wait their turn, in order. The **Downloads** button in the title bar opens the list, where each download can be paused, resumed, cancelled, retried, opened or shown in its folder.
 
 - **Pause** stops the download but keeps what it has fetched; **Resume** carries on from there.
+- While Siphon converts a video, its row and the bar under Download say the size the file is heading for ("≈ 103 MB"), worked out from what it has written so far.
 - **Cancel** stops it and deletes the partial files.
 - A download that fails because the connection dropped or the site refused it is tried again on its own: twice, after 2 and 10 seconds. A site that is limiting requests (HTTP 429) gets one more try, after 30 seconds. The download shows "Trying again in a moment" while it waits.
 - Every new try, automatic or with **Try again**, carries on from what the last one fetched instead of starting over.

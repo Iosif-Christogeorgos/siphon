@@ -52,6 +52,10 @@ pub struct Progress {
     /// A live recording's own readings, in place of a fraction and time left.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub live: Option<LiveProgress>,
+    /// While Siphon's ffmpeg makes the file: the size it is heading for, in
+    /// bytes, from what it has written so far (see `Tracker::heading_for`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub heading_for: Option<u64>,
 }
 
 /// How a live recording is going.
@@ -88,6 +92,11 @@ const SPEED_WINDOW: Duration = Duration::from_secs(3);
 /// Readings needed before a speed is shown at all, or the first burst reads as the speed.
 const SPEED_WARMUP: Duration = Duration::from_millis(500);
 
+/// How much of a conversion is done before the size it is heading for is
+/// worked out from what it has written: before that, the file's header and
+/// the encoder's first frames weigh too much.
+const HEADING_FROM: f64 = 0.02;
+
 #[derive(Debug)]
 pub struct Tracker {
     plan: Vec<PlannedStream>,
@@ -117,6 +126,7 @@ impl Tracker {
                 speed: None,
                 eta: None,
                 live: None,
+                heading_for: None,
             },
             samples: VecDeque::new(),
             pass_stage: Stage::Converting,
@@ -131,6 +141,7 @@ impl Tracker {
     /// What a job reports while it fetches subtitles after the video.
     pub fn on_subtitles(&mut self) -> Progress {
         self.progress.stage = Stage::Subtitles;
+        self.progress.heading_for = None;
         self.progress.fraction = self.progress.fraction.max(self.download_share);
         self.progress.speed = None;
         self.progress.eta = None;
@@ -140,6 +151,7 @@ impl Tracker {
     /// What a job reports while it fetches the chat after the video.
     pub fn on_chat(&mut self) -> Progress {
         self.progress.stage = Stage::Chat;
+        self.progress.heading_for = None;
         self.progress.fraction = self.progress.fraction.max(self.download_share);
         self.progress.speed = None;
         self.progress.eta = None;
@@ -154,6 +166,7 @@ impl Tracker {
             speed: None,
             eta: None,
             live: None,
+            heading_for: None,
         }
     }
 
@@ -165,6 +178,7 @@ impl Tracker {
             speed: None,
             eta: None,
             live: None,
+            heading_for: None,
         }
     }
 
@@ -176,6 +190,7 @@ impl Tracker {
             speed: None,
             eta: None,
             live: None,
+            heading_for: None,
         }
     }
 
@@ -211,6 +226,7 @@ impl Tracker {
             self.finished_streams += 1;
         }
 
+        self.progress.heading_for = None;
         self.progress.stage = match (tick.has_video, tick.has_audio) {
             (true, false) => Stage::DownloadingVideo,
             (false, true) => Stage::DownloadingAudio,
@@ -246,6 +262,7 @@ impl Tracker {
             0.0
         };
         self.progress.stage = Stage::Downloading;
+        self.progress.heading_for = None;
         self.progress.fraction = self.progress.fraction.max(within * self.download_share);
         self.measure(written, Some(expected), now);
         self.current()
@@ -288,6 +305,7 @@ impl Tracker {
             "VideoRemuxer" | "VideoConvertor" | "ExtractAudio" => Stage::Converting,
             _ => Stage::Finishing,
         };
+        self.progress.heading_for = None;
         self.progress.fraction = self.progress.fraction.max(self.download_share);
         self.progress.speed = None;
         self.progress.eta = None;
@@ -295,13 +313,28 @@ impl Tracker {
     }
 
     /// Progress of the ffmpeg conversion, 0–1, mapped onto the rest of the bar.
+    /// A conversion that starts (again) has written nothing yet.
     pub fn on_convert(&mut self, done: f64) -> Progress {
         let overall = self.download_share + (1.0 - self.download_share) * done.clamp(0.0, 1.0);
+        if done <= 0.0 {
+            self.progress.heading_for = None;
+        }
         self.progress.stage = self.pass_stage;
         self.progress.fraction = self.progress.fraction.max(overall);
         self.progress.speed = None;
         self.progress.eta = None;
         self.current()
+    }
+
+    /// The conversion has written `written` bytes of its file with `done`
+    /// (0–1) of it made: the size the file is heading for is that scaled to
+    /// the whole, once enough of it is done to go by. Exact at the end, and
+    /// within a few percent from about a tenth of the way, unless the rest of
+    /// the video is much busier or calmer than what came before.
+    pub fn heading_for(&mut self, written: u64, done: f64) {
+        if done >= HEADING_FROM && written > 0 {
+            self.progress.heading_for = Some((written as f64 / done.min(1.0)) as u64);
+        }
     }
 
     /// How much of the download share stream `index` accounts for: by size
@@ -444,6 +477,24 @@ mod tests {
         assert_eq!(again.speed, None);
         let again = tracker.on_tick_at(&tick(true, 1_000_000, 10_000_000, true), at(2100));
         assert!((again.speed.unwrap() - 1_000_000.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn a_conversion_says_what_size_it_is_heading_for() {
+        let mut tracker = Tracker::new(true);
+        tracker.on_convert(0.0);
+        // Too little done to go by.
+        tracker.heading_for(200_000, 0.01);
+        assert_eq!(tracker.on_convert(0.01).heading_for, None);
+        // A quarter of the way, 30 MB written: about 120 MB in all.
+        tracker.heading_for(30_000_000, 0.25);
+        assert_eq!(tracker.on_convert(0.25).heading_for, Some(120_000_000));
+        // A conversion that starts again (Share, a little smaller) has written nothing yet.
+        assert_eq!(tracker.on_convert(0.0).heading_for, None);
+        tracker.heading_for(50_000_000, 0.5);
+        assert_eq!(tracker.current().heading_for, Some(100_000_000));
+        // The next stage has no such thing.
+        assert_eq!(tracker.on_postprocess("Finishing").heading_for, None);
     }
 
     #[test]

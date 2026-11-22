@@ -965,6 +965,17 @@ pub fn parse_progress(line: &str) -> Option<f64> {
     (micros >= 0.0).then_some(micros / 1_000_000.0)
 }
 
+/// Reads one line of `-progress` output. Returns how many bytes of the file
+/// ffmpeg has written so far. It comes just before the line with the time in
+/// each report.
+pub fn parse_written(line: &str) -> Option<u64> {
+    line.trim()
+        .strip_prefix("total_size=")?
+        .parse()
+        .ok()
+        .filter(|bytes| *bytes > 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -974,6 +985,10 @@ mod tests {
         assert_eq!(parse_progress("out_time_us=12500000"), Some(12.5));
         assert_eq!(parse_progress("out_time_us=N/A"), None);
         assert_eq!(parse_progress("frame=120"), None);
+        assert_eq!(parse_written("total_size=1048624"), Some(1_048_624));
+        assert_eq!(parse_written("total_size=N/A"), None);
+        assert_eq!(parse_written("total_size=0"), None);
+        assert_eq!(parse_written("out_time_us=12500000"), None);
     }
 }
 

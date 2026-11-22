@@ -147,7 +147,7 @@ impl DownloadManager {
         work: &Path,
         audio_shift: Option<f64>,
         subtitles: Option<&Path>,
-        mut on_progress: impl FnMut(f64),
+        mut on_progress: impl FnMut(f64, Option<u64>),
     ) -> Result<()> {
         let log = ChatLog::load(&work.join(CHAT_FILE))
             .await
@@ -206,7 +206,8 @@ impl DownloadManager {
     /// Runs ffmpeg (`cmd`, set to read the chat layer from its standard input)
     /// while a thread draws `layer`'s frames into it: from `start` seconds of
     /// the chat's clock, `fps` a second, for `length` seconds.
-    /// `on_progress` hears how far ffmpeg has got (0–1).
+    /// `on_progress` hears how far ffmpeg has got (0–1), and how many bytes
+    /// of the file it has written by then.
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn run_with_layer(
         &self,
@@ -216,7 +217,7 @@ impl DownloadManager {
         start: f64,
         fps: f64,
         length: f64,
-        on_progress: &mut impl FnMut(f64),
+        on_progress: &mut impl FnMut(f64, Option<u64>),
     ) -> Result<()> {
         let (reader, mut writer) = std::io::pipe()
             .map_err(|err| AppError::internal("Couldn't start drawing the chat.").with_details(err.to_string()))?;
@@ -234,12 +235,16 @@ impl DownloadManager {
                 }
             }
         });
+        let mut written = None;
         let result = self
             .run_child(job.bins, job.id, cmd, |event| {
                 if let ChildEvent::Line(line) = event {
+                    if let Some(bytes) = ffmpeg::parse_written(line) {
+                        written = Some(bytes);
+                    }
                     if let Some(done) = ffmpeg::parse_progress(line) {
                         if length > 0.0 {
-                            on_progress((done / length).clamp(0.0, 1.0));
+                            on_progress((done / length).clamp(0.0, 1.0), written);
                         }
                     }
                 }

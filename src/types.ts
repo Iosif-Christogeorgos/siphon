@@ -486,6 +486,8 @@ export interface Progress {
   eta: number | null;
   /** A recording's own readings, in place of a fraction and time left. */
   live?: LiveProgress;
+  /** While Siphon converts: the size the file is heading for, in bytes, from what it has written so far. */
+  heading_for?: number;
 }
 
 /** How a recording is going (`tracker::LiveProgress`). */
