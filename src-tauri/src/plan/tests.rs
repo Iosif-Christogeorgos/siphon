@@ -33,6 +33,7 @@ fn video(id: &str, vcodec: &str, height: u32, fps: f64, kbps: f64) -> Format {
         segmented: false,
         stream_url: None,
         http_chunk_size: None,
+        http_headers: Vec::new(),
         note: None,
         video_codec: None,
         audio_codec: None,
@@ -80,6 +81,7 @@ fn info(formats: Vec<Format>, seconds: f64) -> VideoInfo {
         subtitles: Vec::new(),
         chat: None,
         saved: None,
+        sizes: Default::default(),
     }
 }
 
@@ -631,7 +633,10 @@ fn a_cut_copied_stream_is_smart_cut_in_its_own_codec() {
     let edges = part.cut_encode.as_ref().unwrap();
     assert_eq!((edges.codec, edges.hardware), (VideoCodec::H264, Hardware::Nvenc));
     assert_eq!(part.badge, Badge::Lossless);
-    assert_eq!(part.estimated_size().unwrap(), whole / 10);
+    // Its share of the whole, and the padding the cut leaves where room was
+    // kept for the MP4's index: 60 s of 30 fps video with AAC.
+    let padding = crate::ffmpeg::smart_cut::Index::unused(60 * 30, 60 * 47);
+    assert_eq!(part.estimated_size().unwrap(), whole / 10 + padding);
     // Its fallback re-encodes the whole part, the same way.
     let full = part.with_full_cut();
     assert_eq!(encoded_to(&full), Some(VideoCodec::H264));
@@ -646,6 +651,122 @@ fn a_cut_copied_stream_is_smart_cut_in_its_own_codec() {
     assert!(summary.convert_seconds.is_some_and(|seconds| seconds < 30.0));
     // Without a trim nothing changes.
     assert!(!plan_for(&x_4k(), TargetId::Windows).smart_cut());
+}
+
+// ── Sizes measured on the video ─────────────────────────────────────────
+
+/// `video` with its streams readable, as a lookup gives them.
+fn readable(mut video: VideoInfo) -> VideoInfo {
+    for format in &mut video.formats {
+        format.stream_url = Some(format!("https://example.com/{}", format.id));
+    }
+    video
+}
+
+#[test]
+fn a_clip_goes_by_its_bytes_and_its_ends_once_measured() {
+    use super::sizes::{SizeFacts, Span};
+    let trim = Some(Trim {
+        start: 120.0,
+        end: 150.0,
+    });
+    let choice = Choice::Preset(PresetChoice {
+        quality: Some(1080),
+        ..preset(TargetId::Windows)
+    });
+    let mut video = readable(youtube_4k());
+    let before = plan(&video, &choice, trim, &nvidia()).unwrap();
+    assert!(before.smart_cut());
+    // The part's bytes of both streams, and what the cut's ends add, are wanted.
+    let wanted = video.sizes.wanted(&before, &video);
+    assert_eq!(wanted.parts, ["137", "140"]);
+    assert_eq!(wanted.span, Some(Span::of(trim)));
+    assert!(wanted.cut_ends && !wanted.encode);
+
+    let mut facts = SizeFacts::default();
+    facts.add_part("137", Span::of(trim), 30_000_000);
+    facts.add_part("140", Span::of(trim), 500_000);
+    facts.add_cut_ends("137", Span::of(trim), 4_000_000);
+    video.sizes.merge(&facts);
+    let after = plan(&video, &choice, trim, &nvidia()).unwrap();
+    let padding = crate::ffmpeg::smart_cut::Index::unused(30 * 30, 30 * 47);
+    assert_eq!(after.estimated_size(), Some(30_000_000 + 4_000_000 + padding + 500_000));
+    // What yt-dlp fetches: the streams' bytes, without what the cut adds.
+    assert_eq!(after.estimated_source_bytes(), Some(30_500_000));
+    assert!(video.sizes.wanted(&after, &video).is_empty());
+    // Another part is another measurement.
+    let other = Some(Trim {
+        start: 200.0,
+        end: 230.0,
+    });
+    let elsewhere = plan(&video, &choice, other, &nvidia()).unwrap();
+    assert_eq!(video.sizes.wanted(&elsewhere, &video).parts, ["137", "140"]);
+}
+
+#[test]
+fn only_what_can_be_read_and_isnt_stated_is_measured() {
+    let trim = Some(Trim { start: 0.0, end: 60.0 });
+    let choice = Choice::Preset(preset(TargetId::Windows));
+    // Streams yt-dlp gave no link for can't be read.
+    let unreadable = youtube_4k();
+    let recipe = plan(&unreadable, &choice, trim, &nvidia()).unwrap();
+    assert!(unreadable.sizes.wanted(&recipe, &unreadable).is_empty());
+    // A whole video's stated sizes are its sizes: nothing to measure but a conversion.
+    let video = readable(x_4k());
+    let whole = plan(&video, &choice, None, &nvidia()).unwrap();
+    assert!(video.sizes.wanted(&whole, &video).is_empty());
+    // A stream whose size is only its bitrate times its length (Twitch's) is measured whole.
+    let mut twitch = readable(x_4k());
+    for format in &mut twitch.formats {
+        format.segmented = true;
+        format.filesize_estimated = true;
+    }
+    let whole = plan(&twitch, &Choice::Preset(preset(TargetId::Max)), None, &nvidia()).unwrap();
+    assert_eq!(twitch.sizes.wanted(&whole, &twitch).parts, ["http-10368"]);
+    // Never a stream as it airs.
+    let mut live = readable(x_4k());
+    live.live = Some(crate::ytdlp::metadata::Live {
+        status: crate::ytdlp::metadata::LiveStatus::Live,
+        since: None,
+        viewers: None,
+        from_start: None,
+    });
+    assert!(live.sizes.wanted(&whole, &live).is_empty());
+}
+
+#[test]
+fn a_measured_conversion_is_one_size_and_lends_its_measure_to_the_others() {
+    use super::sizes::SizeFacts;
+    let mut video = readable(youtube_4k());
+    let tv = Choice::Preset(preset(TargetId::Tv));
+    let recipe = plan(&video, &tv, None, &nvidia()).unwrap();
+    assert!(recipe.encodes_video());
+    let guess = recipe.estimate().unwrap();
+    assert!(guess.is_uncertain());
+    assert!(video.sizes.wanted(&recipe, &video).encode);
+    // It came to one and a half times the rule of thumb.
+    let rule = recipe.rule_of_thumb_video().unwrap();
+    let mut facts = SizeFacts::default();
+    facts.add_encode(&recipe, 1.5);
+    video.sizes.merge(&facts);
+    let measured = plan(&video, &tv, None, &nvidia()).unwrap();
+    assert!(measured.measured.encode_exact);
+    let estimate = measured.estimate().unwrap();
+    assert!(!estimate.is_uncertain());
+    let audio = guess.likely - rule as u64;
+    assert_eq!(estimate.likely, (rule * 1.5) as u64 + audio);
+    assert!(!video.sizes.wanted(&measured, &video).encode);
+    // The same encoder on a part of it goes by it too, a little less sure.
+    let part = plan(&video, &tv, Some(Trim { start: 0.0, end: 60.0 }), &nvidia()).unwrap();
+    assert!(part.encodes_video());
+    assert_eq!(part.measured.encode, Some(1.5));
+    assert!(!part.measured.encode_exact);
+    let narrower = part.estimate().unwrap();
+    let guessed = plan(&youtube_4k(), &tv, Some(Trim { start: 0.0, end: 60.0 }), &nvidia())
+        .unwrap()
+        .estimate()
+        .unwrap();
+    assert!(narrower.high - narrower.low < (guessed.high - guessed.low) / 2);
 }
 
 #[test]

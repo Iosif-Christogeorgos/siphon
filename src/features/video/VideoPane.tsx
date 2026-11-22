@@ -19,6 +19,7 @@ import { isActive, useDownloadGroup, useDownloads } from "@/stores/downloads";
 import { useTrim } from "@/stores/trim";
 import type { SubtitleDelivery, Trim, VideoInfo } from "@/types";
 import { AlreadyDownloaded } from "./AlreadyDownloaded";
+import { useMeasuredSize } from "./useMeasuredSize";
 import { VideoCard } from "./VideoCard";
 
 /** Several recordings at once are fine; past this many, the sites may start to wonder. */
@@ -140,6 +141,8 @@ export function VideoPane({ video }: { video: VideoInfo }) {
     // Keep showing the last plan while the next one is computed, so the layout doesn't jump.
     placeholderData: keepPreviousData,
   });
+  // Where the plan could only estimate the size, it is measured on the video meanwhile.
+  const measuring = useMeasuredSize(video.url, choice, shownTrim, plan.data, running);
   // What the plan does with subtitles, and whether the language asked for is missing here.
   const wantedSubtitles = useChoices((state) => state.choices?.subtitles ?? null);
   const subtitleTrack = video.subtitles.find((track) => track.key === plan.data?.subtitle_track);
@@ -271,6 +274,7 @@ export function VideoPane({ video }: { video: VideoInfo }) {
           onTrim={canTrim ? openTrim : undefined}
           perHour={live !== null}
           subtitles={subtitleLabel}
+          measuring={measuring}
         />
       )}
 

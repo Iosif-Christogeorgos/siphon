@@ -368,7 +368,14 @@ export interface PlanSummary {
   chat: boolean;
   /** The subtitle track the plan adds (its key), if any. */
   subtitle_track: string | null;
+  /** Measuring the video would tell its size better: the window asks for it (`useMeasuredSize`). */
+  measurable: boolean;
+  /** The size of this conversion was measured on the video itself. */
+  measured: boolean;
 }
+
+/** How a size measurement went (`sizing::Measure`). */
+export type Measure = "found" | "nothing" | "stopped";
 
 /** Inside the file as a track, or drawn into the picture (`plan/subtitles.rs`). */
 export type SubtitleDelivery = "embed" | "burn";

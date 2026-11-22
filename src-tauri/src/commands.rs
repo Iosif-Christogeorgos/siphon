@@ -25,6 +25,7 @@ use crate::sessions::browsers::{self, Browser};
 use crate::sessions::sign_in::{self, Outcome};
 use crate::sessions::{Account, Method, Mode, Sessions, SiteSession};
 use crate::settings::{Settings, SettingsStore};
+use crate::sizing::{Measure, Sizing};
 use crate::state::{CapabilityCache, MediaCache};
 use crate::throttle::Throttle;
 use crate::ytdlp::metadata::{self, LiveStatus, Media};
@@ -241,10 +242,54 @@ pub fn start_download(
     app: AppHandle,
     bins: Binaries<'_>,
     downloads: Downloads<'_>,
+    sizing: State<'_, Sizing>,
     request: DownloadRequest,
 ) -> Result<()> {
     ensure_ready(&bins)?;
+    // The download goes first: measuring its size is no longer worth the connection.
+    sizing.stop();
     downloads.start(app, request)
+}
+
+/// Measures in the background what the plan for `choice` could only estimate
+/// (see `crate::sizing`). A new measurement, a download starting, or
+/// `stop_measuring` ends the one before; what it found by then is kept.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn measure_size(
+    app: AppHandle,
+    bins: Binaries<'_>,
+    cache: State<'_, MediaCache>,
+    caps: State<'_, CapabilityCache>,
+    throttle: State<'_, Arc<Throttle>>,
+    sizing: State<'_, Sizing>,
+    url: String,
+    choice: Choice,
+    trim: Option<Trim>,
+) -> Result<Measure> {
+    ensure_ready(&bins)?;
+    let video = cache
+        .get(&url)
+        .ok_or_else(|| AppError::internal("Siphon lost track of this video. Paste the link again."))?;
+    let caps = caps.get(&bins).await;
+    sizing
+        .measure(
+            &bins,
+            &throttle,
+            &video,
+            &choice,
+            trim,
+            &caps,
+            |facts| cache.add_sizes(&url, facts),
+            |text| crate::log::line(&app, text),
+        )
+        .await
+}
+
+/// Ends the size measurement running now, if any (the video was left).
+#[tauri::command]
+pub fn stop_measuring(sizing: State<'_, Sizing>) {
+    sizing.stop();
 }
 
 /// The chat box over the preview: the chat of the video at `url` at `at`

@@ -15,6 +15,7 @@ mod preview;
 mod process;
 mod sessions;
 mod settings;
+mod sizing;
 mod srt;
 mod state;
 mod throttle;
@@ -94,6 +95,7 @@ fn main() {
             app.manage(choices::ChoiceStore::load(app.handle())?);
             app.manage(state::MediaCache::default());
             app.manage(state::CapabilityCache::default());
+            app.manage(sizing::Sizing::default());
             app.manage(chat::preview::ChatPreviews::default());
             tauri::async_runtime::spawn(keep_tools_updated(app.handle().clone()));
             Ok(())
@@ -119,6 +121,8 @@ fn main() {
             commands::preview_source,
             commands::chat_preview,
             commands::start_download,
+            commands::measure_size,
+            commands::stop_measuring,
             commands::cancel_download,
             commands::pause_download,
             commands::stop_recording,

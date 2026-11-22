@@ -360,7 +360,7 @@ pub fn rewrap_args(
 /// frames, subtitles drawn in, scaled down, the frame rate capped. `burn`:
 /// the name of a subtitle file in ffmpeg's folder to draw into the picture,
 /// on the video's own clock like the frames it is drawn on.
-fn video_filters(video: &VideoStep, encode: &VideoEncode, cut: Option<Trim>, burn: Option<&str>) -> Vec<String> {
+pub fn video_filters(video: &VideoStep, encode: &VideoEncode, cut: Option<Trim>, burn: Option<&str>) -> Vec<String> {
     let mut filters: Vec<String> = Vec::new();
     if let Some(cut) = cut {
         // Keep exactly the frames inside the selection (times are absolute, thanks to -copyts).
@@ -394,7 +394,7 @@ fn video_filters(video: &VideoStep, encode: &VideoEncode, cut: Option<Trim>, bur
 }
 
 /// The encoder and its settings.
-fn video_encode_args(video: &VideoStep, encode: &VideoEncode, pass: Pass) -> Vec<String> {
+pub fn video_encode_args(video: &VideoStep, encode: &VideoEncode, pass: Pass) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
     let mut push = |values: &[&str]| args.extend(values.iter().map(|value| value.to_string()));
 
@@ -1113,6 +1113,7 @@ mod recording_tests {
             cut_encode: None,
             subtitles: None,
             chat: None,
+            measured: Default::default(),
         };
         let text = |args: Vec<OsString>| {
             args.iter()

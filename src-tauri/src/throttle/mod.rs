@@ -101,6 +101,21 @@ impl Throttle {
     /// Each flow listens on a port of its own, which Windows picks, on the
     /// loopback address only: nothing outside this computer can reach it.
     pub async fn flow(&self) -> Result<Flow> {
+        self.open(Arc::clone(&self.shared)).await
+    }
+
+    /// A flow that keeps to the limit like any, but whose bytes aren't in
+    /// the total speed shown: measuring a video's size (see `crate::sizing`)
+    /// is no download, and the title bar would say one was running.
+    pub async fn quiet_flow(&self) -> Result<Flow> {
+        self.open(Arc::new(proxy::Shared {
+            limiter: Arc::clone(&self.shared.limiter),
+            meter: Arc::new(Meter::default()),
+        }))
+        .await
+    }
+
+    async fn open(&self, shared: Arc<proxy::Shared>) -> Result<Flow> {
         let failed = |err: std::io::Error| {
             AppError::internal("Couldn't prepare the download.").with_details(format!("local proxy: {err}"))
         };
@@ -109,7 +124,7 @@ impl Throttle {
         let id = self.next_flow.fetch_add(1, Ordering::Relaxed);
         // The task owns the listener and every connection it accepted, so
         // aborting it (see `Drop`) closes them all.
-        let server = tokio::spawn(proxy::serve(listener, id, Arc::clone(&self.shared)));
+        let server = tokio::spawn(proxy::serve(listener, id, shared));
         Ok(Flow {
             id,
             address,
@@ -138,6 +153,14 @@ impl Flow {
         // ffmpeg would go around the proxy for the sites these name. The
         // proxy honours them itself when it picks the way to the site.
         cmd.env_remove("NO_PROXY").env_remove("no_proxy");
+    }
+
+    /// Sends an ffmpeg or ffprobe that reads a stream itself through this
+    /// flow: both take their proxy from `http_proxy`, for HTTPS too (as a tunnel).
+    pub fn route_ffmpeg(&self, cmd: &mut Command) {
+        cmd.env("http_proxy", format!("http://{}", self.address))
+            .env_remove("NO_PROXY")
+            .env_remove("no_proxy");
     }
 
     /// Lets this download go first for up to `bytes_per_second` (a live

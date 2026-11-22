@@ -40,6 +40,8 @@ The **Quality** choice offers **Best** and the resolutions the video actually ha
 
 The presets are defined once, in `src-tauri/src/plan/registry.rs`, and the interface reads them from the backend. The planner in `src-tauri/src/plan` turns a choice into a recipe from the formats the video really offers: the same Apple preset copies X's 4K H.264 file but converts YouTube's 4K VP9 to HEVC. It copies original streams whenever the target can play them, because converting is slower and never improves quality. The summary above the Download button is generated from the same recipe that builds the commands, so the app cannot describe one thing and do another. It marks each plan **No quality loss**, **Converts** (with a rough time), **Size-optimized** or **May not play everywhere**.
 
+**Sizes.** The summary's size is near-exact for anything copied as the site states it, a Share file, or audio at a set bitrate. A conversion's depends on the picture, so it starts as a range from a rule of thumb, and a trimmed part's from its share of the whole. Meanwhile Siphon measures them on the video itself, in the background: the part's bytes, read from the stream's index; the frames a smart cut re-encodes; a dozen 4-second stretches encoded exactly as the download will encode them. Within seconds (about 20 for a 4K conversion), the range becomes one figure, within about a tenth. Nothing waits for it: Download starts at once and ends it. How, and what was measured, is in [decisions.md](decisions.md#size-estimates).
+
 When a conversion is needed, Siphon runs its own ffmpeg pass with a hardware encoder (NVENC, Quick Sync or AMF) if a short test encode shows it works on your machine, and falls back to software otherwise. The downloaded source waits in a work folder until the finished file is written and checked, so a failed conversion can be tried again without downloading again.
 
 **Share** works out the bitrate from the limit and the length (the trimmed length, if you trimmed), picks the size and frame rate that look best for it (a clean 720p30 rather than a blocky 1080p60), and checks the finished file, encoding again a little smaller if it came out over. An original that already fits is copied as it is. A video too long to look decent under the limit isn't made at all: Siphon suggests trimming it instead.
@@ -163,7 +165,9 @@ src/                     React + TypeScript frontend
 src-tauri/               Rust backend (Tauri 2)
   src/binaries/          Download, verify, install and update the managed tools
   src/ytdlp/             Command building, metadata, the subtitles a video offers, progress parsing, error classification
-  src/plan/              The preset registry, codec rules and the planner (choice → recipe → summary), and where subtitles go
+  src/plan/              The preset registry, codec rules and the planner (choice → recipe → summary), where subtitles go,
+                         and the sizes measured on a video (sizes.rs)
+  src/sizing/            Measuring a download's size in the background: a part's bytes, a smart cut's ends, a conversion's stretches
   src/srt.rs             Reading, cleaning, cutting and writing SubRip subtitles
   src/choices.rs         The remembered choice and saved presets (choices.json), and migrating old ones
   src/ffmpeg/            Hardware encoder detection and conversion arguments

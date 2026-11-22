@@ -389,6 +389,7 @@ async fn run(
     on_progress: &mut impl FnMut(f64),
     stopped: &(dyn Fn() -> bool + Sync),
 ) -> Result<(), String> {
+    let _encoding = super::Encoding::begin();
     let (reader, mut writer) = std::io::pipe().map_err(|err| err.to_string())?;
     let mut cmd = process::command(ffmpeg_path);
     cmd.args(args)

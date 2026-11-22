@@ -16,6 +16,7 @@ use crate::binaries::BinaryManager;
 use crate::chat::ChatSource;
 use crate::error::{AppError, ErrorKind, Result};
 use crate::plan::codecs::{AudioCodec, VideoCodec};
+use crate::plan::sizes::SizeFacts;
 use crate::process;
 
 const FETCH_TIMEOUT: Duration = Duration::from_secs(90);
@@ -59,6 +60,9 @@ pub struct VideoInfo {
     /// What the lookup printed, for the download to start from (see `ytdlp::saved`).
     #[serde(skip)]
     pub saved: Option<Arc<SavedLookup>>,
+    /// Sizes measured on the video since (see `plan::sizes`).
+    #[serde(skip)]
+    pub sizes: SizeFacts,
 }
 
 /// Where a live stream stands.
@@ -140,6 +144,10 @@ pub struct Format {
     /// playback speed when more is asked for at once.
     #[serde(skip)]
     pub http_chunk_size: Option<u64>,
+    /// The headers yt-dlp sends with the stream's requests (its user agent,
+    /// sometimes a referrer), for fetching a piece of it directly.
+    #[serde(skip)]
+    pub http_headers: Vec<(String, String)>,
     pub note: Option<String>,
 }
 
@@ -289,6 +297,8 @@ struct RawFormat {
     /// How the site wants the stream fetched, e.g. `{"http_chunk_size": 10485760}`.
     #[serde(default)]
     downloader_options: Option<Value>,
+    #[serde(default)]
+    http_headers: Option<Value>,
 }
 
 /// A number, or a string holding one; anything else becomes `None`.
@@ -444,6 +454,7 @@ fn offline(url: &str) -> VideoInfo {
         subtitles: Vec::new(),
         chat: ChatSource::of_channel_link(url),
         saved: None,
+        sizes: SizeFacts::default(),
     }
 }
 
@@ -518,6 +529,7 @@ fn video(raw: RawInfo, requested_url: &str) -> Result<VideoInfo> {
         subtitles: subtitles::read(raw.subtitles.as_ref(), raw.automatic_captions.as_ref()),
         chat,
         saved: None,
+        sizes: SizeFacts::default(),
     })
 }
 
@@ -583,6 +595,17 @@ fn format(raw: RawFormat) -> Option<Format> {
             .and_then(|options| options.get("http_chunk_size"))
             .and_then(Value::as_u64)
             .filter(|size| *size > 0),
+        http_headers: raw
+            .http_headers
+            .as_ref()
+            .and_then(Value::as_object)
+            .map(|headers| {
+                headers
+                    .iter()
+                    .filter_map(|(name, value)| Some((name.clone(), value.as_str()?.to_string())))
+                    .collect()
+            })
+            .unwrap_or_default(),
         video_codec: None,
         audio_codec: None,
     };

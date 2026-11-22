@@ -1358,6 +1358,7 @@ impl DownloadManager {
         output: &Path,
         recorded: f64,
     ) -> Result<()> {
+        let _encoding = recipe.encodes_video().then(super::Encoding::begin);
         let mut cmd = process::command(job.bins.ffmpeg());
         cmd.args(ffmpeg::finalize_args(recipe, input, output, None));
         self.run_tool(job, cmd, |line| {
@@ -1497,6 +1498,7 @@ impl DownloadManager {
             end: None,
             rate: None,
         };
+        let _encoding = super::Encoding::begin();
         let mut cmd = process::command(job.bins.ffmpeg());
         cmd.args(ffmpeg::finalize_args(recipe, input, output, Some(&args)));
         self.run_with_layer(job, cmd, layer, 0.0, layer_fps, recorded, &mut |fraction, _| {

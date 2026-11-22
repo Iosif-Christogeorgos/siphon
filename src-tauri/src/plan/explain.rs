@@ -43,6 +43,11 @@ pub struct PlanSummary {
     pub subtitle_track: Option<String>,
     /// The plan draws the video's chat into the picture.
     pub chat: bool,
+    /// Measuring the video would tell its size better (see `crate::sizing`):
+    /// the window asks for it, and plans again once it is done.
+    pub measurable: bool,
+    /// The size of this conversion was measured on the video itself.
+    pub measured: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -103,6 +108,8 @@ pub fn summarize(video: &VideoInfo, choice: &Choice, trim: Option<Trim>, caps: &
         subtitle_delivery: subtitles::delivery(choice, &recipe),
         subtitle_track: recipe.subtitles.as_ref().map(|step| step.key.clone()),
         chat: recipe.chat.is_some(),
+        measurable: !video.with_account && !video.sizes.wanted(&recipe, video).is_empty(),
+        measured: recipe.measured.encode_exact,
     })
 }
 

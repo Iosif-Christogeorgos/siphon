@@ -19,6 +19,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -1889,6 +1890,7 @@ impl DownloadManager {
         subtitles: Option<&Path>,
     ) -> Result<()> {
         let ffmpeg = job.bins.ffmpeg();
+        let _encoding = recipe.encodes_video().then(Encoding::begin);
         let log = work.join("passlog");
         let passes = if recipe.video_encode().is_some_and(|encode| encode.two_pass()) {
             vec![Pass::First { log: &log }, Pass::Second { log: &log }]
@@ -2173,6 +2175,32 @@ async fn fetched_subtitles(work: &Path) -> Option<PathBuf> {
     None
 }
 
+/// How many of Siphon's own encodes are running: conversions, and chat
+/// being drawn in. Measuring a video's size (see `crate::sizing`) waits
+/// until none is, rather than slow one down on the same encoder.
+static ENCODING: AtomicUsize = AtomicUsize::new(0);
+
+/// Counts an encode for as long as it is kept.
+pub(crate) struct Encoding;
+
+impl Encoding {
+    pub(crate) fn begin() -> Self {
+        ENCODING.fetch_add(1, Ordering::SeqCst);
+        Encoding
+    }
+}
+
+impl Drop for Encoding {
+    fn drop(&mut self) {
+        ENCODING.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// True while any of Siphon's own encodes runs.
+pub fn encoding_now() -> bool {
+    ENCODING.load(Ordering::SeqCst) > 0
+}
+
 /// Bytes free for the current user on the disk `dir` is on.
 pub fn free_space(dir: &Path) -> Option<u64> {
     use std::os::windows::ffi::OsStrExt;
@@ -2331,6 +2359,7 @@ mod tests {
             cut_encode: None,
             subtitles: None,
             chat: None,
+            measured: Default::default(),
         }
     }
 

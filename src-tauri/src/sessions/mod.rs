@@ -656,6 +656,7 @@ mod tests {
             subtitles: Vec::new(),
             chat: None,
             saved: None,
+            sizes: Default::default(),
         }))
     }
 

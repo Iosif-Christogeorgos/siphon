@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use crate::binaries::BinaryManager;
 use crate::ffmpeg::{self, encoders};
+use crate::plan::sizes::SizeFacts;
 use crate::plan::{Capabilities, WindowsCodecs};
 use crate::process;
 use crate::ytdlp::metadata::VideoInfo;
@@ -32,8 +33,23 @@ impl MediaCache {
     }
 
     /// Stores a video under its canonical URL and the URL the user pasted.
+    /// A video looked up again keeps the sizes measured on it (see
+    /// `plan::sizes`): its streams are the same.
     pub fn insert(&self, requested_url: &str, video: Arc<VideoInfo>) {
         let mut cache = self.0.lock().unwrap();
+        let measured = [requested_url, video.url.as_str()]
+            .into_iter()
+            .find_map(|key| cache.videos.get(key))
+            .filter(|old| old.id == video.id && !old.sizes.is_empty() && video.sizes.is_empty())
+            .map(|old| old.sizes.clone());
+        let video = match measured {
+            Some(sizes) => {
+                let mut video = (*video).clone();
+                video.sizes = sizes;
+                Arc::new(video)
+            }
+            None => video,
+        };
         for key in [requested_url.to_string(), video.url.clone()] {
             if cache.videos.insert(key.clone(), Arc::clone(&video)).is_none() {
                 cache.order.push_back(key);
@@ -48,6 +64,25 @@ impl MediaCache {
         for video in cache.videos.values() {
             if let Some(saved) = &video.saved {
                 saved.drop_if_stale();
+            }
+        }
+    }
+}
+
+impl MediaCache {
+    /// Adds what was measured on the video at `url` to it, under every link
+    /// it is kept by. Nothing if it was let go meanwhile.
+    pub fn add_sizes(&self, url: &str, facts: &SizeFacts) {
+        let mut cache = self.0.lock().unwrap();
+        let Some(video) = cache.videos.get(url).cloned() else {
+            return;
+        };
+        let mut updated = (*video).clone();
+        updated.sizes.merge(facts);
+        let updated = Arc::new(updated);
+        for kept in cache.videos.values_mut() {
+            if Arc::ptr_eq(kept, &video) {
+                *kept = Arc::clone(&updated);
             }
         }
     }

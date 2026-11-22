@@ -7,6 +7,7 @@ import type {
   Choices,
   DownloadEvent,
   DownloadRequest,
+  Measure,
   Media,
   Placement,
   PlanSummary,
@@ -41,6 +42,11 @@ export const ipc = {
   /** For a live stream, what recording it does (`fromStart`: from the start), sized per hour. */
   planDownload: (url: string, choice: Choice, trim: Trim | null, fromStart = false) =>
     invoke<PlanSummary>("plan_download", { url, choice, trim, fromStart }),
+  /** Measures in the background what the plan could only estimate; the plan says more once it's found. */
+  measureSize: (url: string, choice: Choice, trim: Trim | null) =>
+    invoke<Measure>("measure_size", { url, choice, trim }),
+  /** Ends the size measurement running now, if any. */
+  stopMeasuring: () => invoke<void>("stop_measuring"),
   /** Whether a live stream can be recorded from its start (a lookup of a few seconds). */
   liveFromStart: (url: string) => invoke<boolean>("live_from_start", { url }),
   /** Bytes, looking the video up first if needed (for playlist totals). */

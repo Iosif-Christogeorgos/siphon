@@ -498,33 +498,9 @@ pub fn matching_args(params: &StreamParams, hardware: Hardware) -> Result<Vec<St
         _ => None,
     };
 
-    let mut args: Vec<String> = vec!["-c:v".into(), hardware.encoder(codec).into()];
+    let mut args = edge_encoder(codec, hardware);
     let mut push = |values: &[&str]| args.extend(values.iter().map(|value| value.to_string()));
-    // Visually lossless, no reordered frames, one key frame at the start.
-    match (hardware, codec) {
-        (Hardware::Nvenc, _) => push(&["-preset", "p5", "-tune", "hq", "-rc", "vbr", "-cq", "17", "-b:v", "0"]),
-        (Hardware::Qsv, _) => push(&["-preset", "medium", "-global_quality", "17"]),
-        (Hardware::Amf, _) => push(&["-quality", "quality", "-rc", "cqp", "-qp_i", "16", "-qp_p", "16"]),
-        (Hardware::Software, VideoCodec::Hevc) => push(&[
-            "-preset",
-            "fast",
-            "-crf",
-            "16",
-            "-x265-params",
-            "bframes=0:log-level=error",
-        ]),
-        (Hardware::Software, _) => push(&["-preset", "fast", "-crf", "15"]),
-    }
-    push(&[
-        "-bf",
-        "0",
-        "-g",
-        "9999",
-        "-profile:v",
-        profile,
-        "-pix_fmt",
-        pixel_format,
-    ]);
+    push(&["-profile:v", profile, "-pix_fmt", pixel_format]);
     if let Some(level) = &level {
         push(&["-level:v", level]);
     }
@@ -544,6 +520,30 @@ pub fn matching_args(params: &StreamParams, hardware: Hardware) -> Result<Vec<St
         }
     }
     Ok(args)
+}
+
+/// The encoder that re-encodes the edges, and what sets its size: visually
+/// lossless, no reordered frames, one key frame at the start. Measuring a
+/// clip's size encodes its edges with this too (see `crate::sizing`).
+pub fn edge_encoder(codec: VideoCodec, hardware: Hardware) -> Vec<String> {
+    let mut args: Vec<String> = vec!["-c:v".into(), hardware.encoder(codec).into()];
+    let mut push = |values: &[&str]| args.extend(values.iter().map(|value| value.to_string()));
+    match (hardware, codec) {
+        (Hardware::Nvenc, _) => push(&["-preset", "p5", "-tune", "hq", "-rc", "vbr", "-cq", "17", "-b:v", "0"]),
+        (Hardware::Qsv, _) => push(&["-preset", "medium", "-global_quality", "17"]),
+        (Hardware::Amf, _) => push(&["-quality", "quality", "-rc", "cqp", "-qp_i", "16", "-qp_p", "16"]),
+        (Hardware::Software, VideoCodec::Hevc) => push(&[
+            "-preset",
+            "fast",
+            "-crf",
+            "16",
+            "-x265-params",
+            "bframes=0:log-level=error",
+        ]),
+        (Hardware::Software, _) => push(&["-preset", "fast", "-crf", "15"]),
+    }
+    push(&["-bf", "0", "-g", "9999"]);
+    args
 }
 
 /// "4.2", or "5" rather than "5.0", the way encoders name levels.
@@ -674,6 +674,15 @@ impl Index {
     /// twice that, and a megabyte, leaves room to spare.
     pub fn room_for(video: usize, audio: usize) -> Index {
         Index::Reserve(1_048_576 + 32 * (video + audio) as u64)
+    }
+
+    /// What is left of that room once the index is in, as padding in the
+    /// file: a 30 s clip at 60 fps had 1.15 MB of it (2026-11-22).
+    pub fn unused(video: usize, audio: usize) -> u64 {
+        match Index::room_for(video, audio) {
+            Index::Reserve(bytes) => bytes.saturating_sub(17 * (video + audio) as u64),
+            Index::Rewrite => 0,
+        }
     }
 }
 

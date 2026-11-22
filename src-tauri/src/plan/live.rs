@@ -266,6 +266,7 @@ mod tests {
             segmented: true,
             stream_url: None,
             http_chunk_size: None,
+            http_headers: Vec::new(),
             note: note.map(str::to_string),
         }
     }
@@ -298,6 +299,7 @@ mod tests {
             subtitles: Vec::new(),
             chat: None,
             saved: None,
+            sizes: Default::default(),
         }
     }
 

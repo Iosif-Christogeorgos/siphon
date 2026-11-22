@@ -38,6 +38,7 @@ export function PlanCard({
   onTrim,
   perHour = false,
   subtitles,
+  measuring = false,
 }: {
   plan: PlanSummary | undefined;
   clips: number;
@@ -50,6 +51,8 @@ export function PlanCard({
   perHour?: boolean;
   /** What the plan does with subtitles, in a few words: "English subtitles". */
   subtitles?: string | null;
+  /** The size is being measured on the video, for a closer figure. */
+  measuring?: boolean;
 }) {
   if (!plan) {
     return (
@@ -124,9 +127,24 @@ export function PlanCard({
           {plan.estimated_size != null ? (
             <span className="text-[15px] font-medium tabular-nums">
               {plan.size_range ? (
-                // A conversion's size depends on the picture: say how far it can go.
-                <Hint label={`Most likely about ${formatBytes(plan.estimated_size)}; it depends on the picture.`}>
-                  <span>{formatBytesRange(plan.size_range[0], plan.size_range[1])}</span>
+                // A conversion's size depends on the picture: say how far it can go, until it's measured.
+                <Hint
+                  label={
+                    measuring
+                      ? `Most likely about ${formatBytes(plan.estimated_size)}. Measuring this video for a closer figure…`
+                      : `Most likely about ${formatBytes(plan.estimated_size)}; it depends on the picture.`
+                  }
+                >
+                  <span className={cn(measuring && "animate-pulse motion-reduce:animate-none")}>
+                    {formatBytesRange(plan.size_range[0], plan.size_range[1])}
+                  </span>
+                </Hint>
+              ) : plan.measured ? (
+                <Hint label="Measured on this video: within about a tenth.">
+                  <span>
+                    <span className="text-muted-foreground">≈ </span>
+                    <AnimatedBytes bytes={plan.estimated_size} />
+                  </span>
                 </Hint>
               ) : (
                 <>

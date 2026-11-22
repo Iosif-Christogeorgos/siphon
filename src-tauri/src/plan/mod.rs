@@ -22,6 +22,7 @@ pub mod explain;
 pub mod live;
 pub mod registry;
 mod share;
+pub mod sizes;
 pub mod subtitles;
 mod watch;
 
@@ -211,6 +212,10 @@ pub struct Recipe {
     /// The chat drawn into the picture (see `crate::chat`).
     #[serde(default)]
     pub chat: Option<ChatStep>,
+    /// What measuring the video found out about this recipe's size (see
+    /// [`sizes`]): nothing until it has been measured.
+    #[serde(skip)]
+    pub measured: sizes::Measured,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -458,18 +463,23 @@ impl Recipe {
         })
     }
 
-    /// Bytes yt-dlp will fetch: the chosen streams, scaled to the trimmed part.
+    /// Bytes yt-dlp will fetch: the chosen streams, as measured in the
+    /// trimmed part, or scaled to it.
     pub fn estimated_source_bytes(&self) -> Option<u64> {
-        let video = self.video.as_ref().map_or(Some(0), |step| step.size)?;
+        let scaled = |size: Option<u64>| size.map(|size| (size as f64 * self.source_fraction) as u64);
+        let video = match &self.video {
+            Some(step) => self.measured.video.or_else(|| scaled(step.size))?,
+            None => 0,
+        };
         let audio = match &self.audio {
             Some(AudioStep {
                 format_id: Some(_),
                 size,
                 ..
-            }) => (*size)?,
+            }) => self.measured.audio.or_else(|| scaled(*size))?,
             _ => 0,
         };
-        Some(((video + audio) as f64 * self.source_fraction) as u64)
+        Some(video + audio)
     }
 
     /// Best guess at the finished file's size in bytes (the likely value of [`Recipe::estimate`]).
@@ -479,21 +489,27 @@ impl Recipe {
 
     /// The finished file's size: the likely value, and how far either way it
     /// can reasonably land. Copies and size-targeted encodes are near-certain;
-    /// a constant-quality encode depends on the picture, so it gets a range.
+    /// a constant-quality encode depends on the picture, so it gets a range,
+    /// until it has been measured on the video (see [`sizes`]).
     pub fn estimate(&self) -> Option<SizeEstimate> {
         let duration = self.duration;
         let bitrate = |kbps: f64| duration.map(|d| kbps * 1000.0 / 8.0 * d);
         let video = match &self.video {
             None => Some(SizeEstimate::exact(0.0)),
             Some(step) => match &step.action {
-                VideoAction::Copy => step
-                    .size
-                    .map(|size| SizeEstimate::exact(size as f64 * self.source_fraction)),
+                VideoAction::Copy => self
+                    .measured
+                    .video
+                    .map(|bytes| bytes as f64)
+                    .or_else(|| step.size.map(|size| size as f64 * self.source_fraction))
+                    // A smart cut re-encodes its ends, visually lossless: larger
+                    // than what they replace; and in MP4, it leaves padding
+                    // where room was kept for the index.
+                    .map(|bytes| bytes + self.measured.cut_ends.unwrap_or(0) as f64 + self.smart_cut_padding() as f64)
+                    .map(|bytes| SizeEstimate::exact(bytes.max(0.0))),
                 VideoAction::Encode(encode) => match (encode.codec, encode.bitrate_kbps) {
                     (_, Some(kbps)) => bitrate(f64::from(kbps)).map(SizeEstimate::exact),
-                    (_, None) => self.quality_encode_kbps(step, encode).and_then(|(kbps, low, high)| {
-                        bitrate(kbps).map(|likely| SizeEstimate::spread(likely, low, high))
-                    }),
+                    (_, None) => self.quality_encode_estimate(step, encode),
                 },
             },
         }?;
@@ -503,7 +519,11 @@ impl Recipe {
             Some(step) => match step.action {
                 // Audio inside a muxed stream is already counted with the video.
                 AudioAction::Copy if step.format_id.is_none() => Some(0.0),
-                AudioAction::Copy => step.size.map(|size| size as f64 * self.source_fraction),
+                AudioAction::Copy => self
+                    .measured
+                    .audio
+                    .map(|bytes| bytes as f64)
+                    .or_else(|| step.size.map(|size| size as f64 * self.source_fraction)),
                 AudioAction::Encode {
                     codec: AudioCodec::Pcm, ..
                 } => bitrate(1536.0),
@@ -515,6 +535,55 @@ impl Recipe {
             },
         }?;
         Some(video.plus(audio))
+    }
+
+    /// A constant-quality encode's size: by the rule of thumb below, with a
+    /// range, or as measured on the video. Measured on this very encode, it
+    /// is near-certain (within about a tenth, docs/decisions.md#size-estimates);
+    /// measured on another of the same video by the same encoder, close.
+    fn quality_encode_estimate(&self, step: &VideoStep, encode: &VideoEncode) -> Option<SizeEstimate> {
+        let duration = self.duration?;
+        let (kbps, low, high) = self.quality_encode_kbps(step, encode)?;
+        let bytes = |kbps: f64| kbps * 1000.0 / 8.0 * duration;
+        let likely = bytes(kbps);
+        let Some(factor) = self.measured.encode else {
+            return Some(SizeEstimate::spread(likely, low, high));
+        };
+        let mut measured = likely * factor;
+        if let Some(max) = encode.max_kbps {
+            // Held under a cap: never more than the cap allows.
+            measured = measured.min(bytes(f64::from(max)));
+        }
+        Some(if self.measured.encode_exact {
+            SizeEstimate::exact(measured)
+        } else {
+            let (low, high) = sizes::RELATED;
+            SizeEstimate::spread(measured, low, high)
+        })
+    }
+
+    /// The padding a smart cut leaves in an MP4 or MOV (see
+    /// `smart_cut::Index::unused`); one into another file type is copied out
+    /// of it, without.
+    fn smart_cut_padding(&self) -> u64 {
+        let mp4 = matches!(self.container, Container::Mp4 | Container::Mov);
+        let (Some(duration), true, true) = (self.duration, self.smart_cut(), mp4) else {
+            return 0;
+        };
+        let fps = self.video.as_ref().and_then(|video| video.fps).unwrap_or(30.0);
+        // AAC at 48 kHz: 47 packets a second.
+        let audio = if self.audio_codec().is_some() { 47.0 } else { 0.0 };
+        crate::ffmpeg::smart_cut::Index::unused((duration * fps) as usize, (duration * audio) as usize)
+    }
+
+    /// What the rule of thumb takes a constant-quality encode of the video to
+    /// come to, in bytes, before anything was measured: what a measurement
+    /// is set against (see [`sizes::Measured::encode`]).
+    pub fn rule_of_thumb_video(&self) -> Option<f64> {
+        let step = self.video.as_ref()?;
+        let encode = self.video_encode().filter(|encode| encode.bitrate_kbps.is_none())?;
+        let (kbps, _, _) = self.quality_encode_kbps(step, encode)?;
+        Some(kbps * 1000.0 / 8.0 * self.duration?)
     }
 
     /// What a constant-quality encode is likely to spend, in kbit/s, with the
@@ -794,6 +863,8 @@ pub fn plan(video: &VideoInfo, choice: &Choice, trim: Option<Trim>, caps: &Capab
         fallback.section_request_size = recipe.section_request_size;
     }
     recipe.badge = badge(&recipe, choice);
+    // What was measured on this video, if anything (see `sizes`).
+    video.sizes.apply(&mut recipe);
     Ok(recipe)
 }
 
@@ -1009,6 +1080,7 @@ impl<'a> Planner<'a> {
             cut_encode: None,
             subtitles: None,
             chat: None,
+            measured: sizes::Measured::default(),
         }
     }
 
