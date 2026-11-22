@@ -272,6 +272,7 @@ pub async fn chat_preview(
         .ok_or_else(|| AppError::new(ErrorKind::Unsupported, "Only a Twitch video's chat can be drawn in."))?;
     let frame = previews
         .frame(
+            &app,
             &source,
             downloads::chat_image_folder(&app)?,
             at,
