@@ -333,7 +333,8 @@ pub async fn send(request: impl Fn() -> reqwest::RequestBuilder) -> reqwest::Res
         Ok(response) => {
             response.status().is_server_error() || response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
         }
-        Err(_) => true,
+        // A request that couldn't even be made would fail the same again.
+        Err(error) => !error.is_builder(),
     };
     let mut sent = request().send().await;
     for wait in RETRY_AFTER {
