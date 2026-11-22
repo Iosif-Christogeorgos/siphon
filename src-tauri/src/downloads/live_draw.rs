@@ -295,7 +295,8 @@ async fn draw_piece(
     // Pieces are joined as they are: one that starts late or overlaps the
     // next would show in the finished file, so it isn't used.
     let times = frame_times(&part.ffprobe, &piece).await;
-    piece_fits(&times, from, until, fps)
+    let opens = from <= start;
+    piece_fits(&times, from, until, fps, opens)
 }
 
 /// When each frame of `file` is shown, in order.
@@ -329,20 +330,31 @@ async fn frame_times(ffprobe: &Path, file: &Path) -> Vec<f64> {
 /// `ffmpeg::ChatLayer::rate`) and each cut keeps the frame nearest it, so
 /// the first is within half a frame of `from` and the last within half a
 /// frame of one frame before `until`: a frame lost or doubled at either end
-/// is a whole frame out, and fails.
-fn piece_fits(times: &[f64], from: f64, until: Option<f64>, fps: f64) -> Result<(), String> {
+/// is a whole frame out, and fails. A piece that `opens` its stretch joins
+/// nothing before it: it starts where the recording's picture does, which
+/// can be a frame or two after the file's first timestamp (its sound's).
+fn piece_fits(times: &[f64], from: f64, until: Option<f64>, fps: f64, opens: bool) -> Result<(), String> {
     /// Leeway for times printed to the microsecond.
     const PRINTED: f64 = 1e-4;
+    /// How long after the sound a recording's picture may begin.
+    const PICTURE_LATE: f64 = 1.0;
     let frame = 1.0 / fps;
     let near = |time: f64, at: f64| (time - at).abs() <= frame / 2.0 + PRINTED;
     let (Some(&first), Some(&last)) = (times.first(), times.last()) else {
         return Err("the piece has no picture".to_string());
     };
-    if !near(first, from) {
+    let starts_right = if opens {
+        first >= from - frame / 2.0 - PRINTED && first <= from + PICTURE_LATE
+    } else {
+        near(first, from)
+    };
+    if !starts_right {
         return Err(format!("the piece starts at {first:.4} s, not {from:.4} s"));
     }
     if let Some(until) = until {
-        let wanted = ((until - from) * fps).round() as usize;
+        // From where it starts: an opening piece's picture may begin late.
+        let counted_from = if opens { first.max(from) } else { from };
+        let wanted = ((until - counted_from) * fps).round() as usize;
         if !near(last, until - frame) || times.len().abs_diff(wanted) > 1 {
             return Err(format!(
                 "the piece has {} frames to {last:.4} s, not {wanted} to just before {until:.4} s",
@@ -604,25 +616,50 @@ mod tests {
         let frames = |from: f64, count: usize| -> Vec<f64> { (0..count).map(|i| from + i as f64 / 60.0).collect() };
         // Two minutes at 60 frames a second, from 121.467 s.
         assert_eq!(
-            piece_fits(&frames(121.466_667, 7200), 121.467, Some(241.467), 60.0),
+            piece_fits(&frames(121.466_667, 7200), 121.467, Some(241.467), 60.0, false),
             Ok(())
         );
         // Ten frames late (a seek past a key frame), or two frames too many (the overlap at a join).
-        assert!(piece_fits(&frames(121.633_333, 7190), 121.467, Some(241.467), 60.0).is_err());
-        assert!(piece_fits(&frames(121.466_667, 7202), 121.467, Some(241.467), 60.0).is_err());
+        assert!(piece_fits(&frames(121.633_333, 7190), 121.467, Some(241.467), 60.0, false).is_err());
+        assert!(piece_fits(&frames(121.466_667, 7202), 121.467, Some(241.467), 60.0, false).is_err());
         // One frame lost at the start, or at the end, as a cut after the
         // overlay lost it at every join of a Twitch recording from the start.
-        assert!(piece_fits(&frames(121.483_333, 7199), 121.467, Some(241.467), 60.0).is_err());
-        assert!(piece_fits(&frames(121.466_667, 7199), 121.467, Some(241.467), 60.0).is_err());
+        assert!(piece_fits(&frames(121.483_333, 7199), 121.467, Some(241.467), 60.0, false).is_err());
+        assert!(piece_fits(&frames(121.466_667, 7199), 121.467, Some(241.467), 60.0, false).is_err());
         // Cuts off the rate's grid keep the frame nearest them.
         let off_grid = 121.467 + 0.4 / 60.0;
         assert_eq!(
-            piece_fits(&frames(121.466_667, 7200), off_grid, Some(off_grid + 120.0), 60.0),
+            piece_fits(
+                &frames(121.466_667, 7200),
+                off_grid,
+                Some(off_grid + 120.0),
+                60.0,
+                false
+            ),
             Ok(())
         );
         // The last piece runs to the end of what was recorded.
-        assert_eq!(piece_fits(&frames(241.466_667, 500), 241.467, None, 60.0), Ok(()));
-        assert!(piece_fits(&[], 1.0, None, 60.0).is_err());
+        assert_eq!(
+            piece_fits(&frames(241.466_667, 500), 241.467, None, 60.0, false),
+            Ok(())
+        );
+        assert!(piece_fits(&[], 1.0, None, 60.0, false).is_err());
+        // A stretch's first piece starts where its picture does: two frames
+        // after the file's first timestamp (its sound's) on a Twitch recording
+        // from the start (2026-11-22), and so fewer frames to its end.
+        assert_eq!(
+            piece_fits(&frames(1.433_333, 7198), 1.4, Some(121.4), 60.0, true),
+            Ok(())
+        );
+        assert!(piece_fits(&frames(1.433_333, 7198), 1.4, Some(121.4), 60.0, false).is_err());
+        assert!(
+            piece_fits(&frames(1.433_333, 7197), 1.4, Some(121.4), 60.0, true).is_err(),
+            "one lost at its end"
+        );
+        assert!(
+            piece_fits(&frames(3.0, 7104), 1.4, Some(121.4), 60.0, true).is_err(),
+            "its picture over a second late"
+        );
     }
 
     #[tokio::test]
