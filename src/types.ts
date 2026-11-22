@@ -226,6 +226,8 @@ export interface PlaylistInfo {
   url: string;
   channel: string | null;
   entries: PlaylistEntry[];
+  /** A Twitch channel's videos: the channel (its login), whose chat they can be saved with. */
+  chat_channel: string | null;
 }
 
 export type Media = ({ type: "video" } & VideoInfo) | ({ type: "playlist" } & PlaylistInfo);

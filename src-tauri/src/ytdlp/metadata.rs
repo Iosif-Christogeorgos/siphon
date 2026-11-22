@@ -150,6 +150,9 @@ pub struct PlaylistInfo {
     pub url: String,
     pub channel: Option<String>,
     pub entries: Vec<PlaylistEntry>,
+    /// The Twitch channel (its login) of a channel's list of videos, whose
+    /// chat they can be saved with (see `crate::chat`).
+    pub chat_channel: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -601,12 +604,19 @@ fn playlist(raw: RawInfo, requested_url: &str) -> PlaylistInfo {
     let mut seen = HashSet::new();
     collect_entries(raw.entries.unwrap_or_default(), &title, None, &mut entries, &mut seen);
 
+    // A Twitch channel's videos are listed under the channel's login.
+    let chat_channel = (raw.extractor_key.as_deref() == Some("TwitchVideos"))
+        .then(|| raw.id.clone())
+        .flatten()
+        .map(|login| login.to_ascii_lowercase())
+        .filter(|login| !login.is_empty() && login.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'));
     PlaylistInfo {
         id: raw.id.unwrap_or_default(),
         url: raw.webpage_url.unwrap_or_else(|| requested_url.to_string()),
         channel: raw.channel.or(raw.uploader),
         title,
         entries,
+        chat_channel,
     }
 }
 
@@ -770,6 +780,22 @@ mod tests {
 
     fn listed(json: &str) -> PlaylistInfo {
         playlist(serde_json::from_str(json).unwrap(), "https://example.com/list")
+    }
+
+    #[test]
+    fn a_twitch_channels_videos_can_have_its_chat() {
+        // As yt-dlp lists twitch.tv/hasanabi/videos (2026-11-21).
+        let videos = listed(
+            r#"{"_type": "playlist", "id": "hasanabi", "title": "hasanabi - All Videos sorted by Date",
+                "extractor_key": "TwitchVideos", "entries": [
+                {"_type": "url", "ie_key": "TwitchVod", "id": "v2936407922", "title": "Stream",
+                 "url": "https://www.twitch.tv/videos/2936407922"}]}"#,
+        );
+        assert_eq!(videos.chat_channel.as_deref(), Some("hasanabi"));
+        let other = listed(
+            r#"{"_type": "playlist", "id": "PLx", "title": "A list", "extractor_key": "YoutubeTab", "entries": []}"#,
+        );
+        assert_eq!(other.chat_channel, None);
     }
 
     #[test]

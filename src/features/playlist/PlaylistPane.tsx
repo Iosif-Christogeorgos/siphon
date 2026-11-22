@@ -53,7 +53,8 @@ type Have = "downloaded" | "queued";
  * what's new.
  */
 export function PlaylistPane({ playlist, onOpen }: { playlist: PlaylistInfo; onOpen: (url: string) => void }) {
-  const choice = useChoice();
+  // A Twitch channel's videos can have their chat drawn in, placed as the channel's are.
+  const choice = useChoice(playlist.chat_channel);
   const start = useDownloads((state) => state.start);
   const openPanel = useUi((state) => state.openPanel);
 
@@ -310,7 +311,13 @@ export function PlaylistPane({ playlist, onOpen }: { playlist: PlaylistInfo; onO
           </div>
 
           <div className="pt-1">
-            <PresetArea summary={undefined} disabled={false} playlist subtitles="playlist" />
+            <PresetArea
+              summary={undefined}
+              disabled={false}
+              playlist
+              subtitles="playlist"
+              chat={playlist.chat_channel !== null}
+            />
           </div>
           <p className="px-1 text-[13px] text-pretty text-muted-foreground">
             The best streams and format for each video are worked out from what it offers when its turn comes.
