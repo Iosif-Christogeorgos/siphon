@@ -582,6 +582,19 @@ impl Recipe {
         recipe
     }
 
+    /// The same recipe for a picture already encoded as it says (a recording
+    /// whose chat was drawn in as it recorded): the picture copied as it is.
+    pub fn with_video_encoded(&self) -> Recipe {
+        let mut recipe = self.clone();
+        if let Some(video) = recipe.video.as_mut() {
+            if let VideoAction::Encode(encode) = &video.action {
+                video.source = encode.codec;
+                video.action = VideoAction::Copy;
+            }
+        }
+        recipe
+    }
+
     /// Share: the same recipe aiming lower, after an encode came out at
     /// `actual` bytes, over the limit. `None` when there is nothing to lower.
     pub fn shrunk(&self, actual: u64) -> Option<Recipe> {

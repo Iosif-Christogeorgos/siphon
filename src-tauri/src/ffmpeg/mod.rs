@@ -65,6 +65,19 @@ pub struct ChatLayer {
     pub start: f64,
     /// High definition video, whose colours are BT.709 rather than BT.601.
     pub hd: bool,
+    /// Where the picture ends on its clock, when that is known exactly (a
+    /// clip, a piece of a recording): the output is cut there. The overlay
+    /// goes on for as long as either of its inputs does, so a layer that
+    /// lasted longer than the picture added the picture's last frame, frozen
+    /// and silent, until the layer ended (found 2026-11-21: a 30 s clip came
+    /// out with 31 s of picture).
+    pub end: Option<f64>,
+    /// The output's frame rate, made in the graph before the cut at `end`,
+    /// so that the cut is exact. Made after the graph (`-r`), it added a
+    /// frame or two past the cut, and pieces drawn as a stream records
+    /// overlapped, which lost the next piece's first frames when they were
+    /// joined (found 2026-11-22). `None`: as the output's options say.
+    pub rate: Option<f64>,
 }
 
 impl ChatLayer {
@@ -102,7 +115,12 @@ impl ChatLayer {
             self.start
         );
         let overlay = format!("overlay=x={}:y={}:format=yuv420:eof_action=repeat", self.x, self.y);
-        format!("[0:v]{base}[base];[{input}:v]{chat}[chat];[base][chat]{overlay}[v]")
+        let rate = self
+            .rate
+            .map(|fps| format!(",fps={}", frame_rate(fps)))
+            .unwrap_or_default();
+        let cut = self.end.map(|end| format!(",trim=end={end:.6}")).unwrap_or_default();
+        format!("[0:v]{base}[base];[{input}:v]{chat}[chat];[base][chat]{overlay}{rate}{cut}[v]")
     }
 }
 
@@ -583,6 +601,94 @@ pub fn finalize_args(recipe: &Recipe, input: Recorded, output: &Path, chat: Opti
     args
 }
 
+/// The arguments that draw the chat into a piece of a recording while it
+/// records (see `downloads::live_draw`): the picture of `input` from `from`
+/// to `until` (the end of what is there, if `None`), on the file's own
+/// timestamps, encoded as `recipe` says with the chat layer from
+/// Siphon (`chat.start` is `from`), and the audio packets whose middle falls
+/// in the piece copied, all kept on the recording's timestamps in MPEG-TS.
+/// Pieces drawn back to back and joined byte for byte make the recording,
+/// drawn: every frame and every audio packet once (tested 2026-11-21).
+pub fn draw_piece_args(
+    recipe: &Recipe,
+    input: &Path,
+    from: f64,
+    until: Option<f64>,
+    chat: &ChatLayer,
+    output: &Path,
+) -> Vec<OsString> {
+    let mut args: Vec<OsString> = Vec::new();
+    let mut push = |values: &[&str]| args.extend(values.iter().map(OsString::from));
+    push(&[
+        "-hide_banner",
+        "-y",
+        "-loglevel",
+        "error",
+        "-progress",
+        "pipe:1",
+        "-nostats",
+    ]);
+    // Read from well before: MPEG-TS has no index of key frames, so a seek
+    // can land just after one, and decoding then starts at the next. Three
+    // seconds back was not always enough (a piece began a sixth of a second
+    // late, 2026-11-22). The trim keeps exactly the piece.
+    push(&[
+        "-copyts",
+        "-ss",
+        &format!("{:.3}", (from - PIECE_LEAD_IN).max(0.0)),
+        "-i",
+    ]);
+    args.push(input.into());
+    args.extend(chat.input_args().into_iter().map(OsString::from));
+    let mut push = |values: &[&str]| args.extend(values.iter().map(OsString::from));
+    let trim = match until {
+        Some(until) => format!("trim=start={from:.6}:end={until:.6}"),
+        None => format!("trim=start={from:.6}"),
+    };
+    if let (Some(video), Some(encode)) = (&recipe.video, recipe.video_encode()) {
+        let mut filters = vec![trim];
+        filters.extend(video_filters(video, encode, None, None));
+        push(&["-filter_complex", &chat.graph(&filters, 1), "-map", "[v]"]);
+        for arg in video_encode_args(video, encode, Pass::Only) {
+            push(&[&arg]);
+        }
+        // The rate is made in the graph (see `ChatLayer::rate`): every frame as it comes.
+        push(&["-fps_mode", "passthrough"]);
+    }
+    if recipe.audio.is_some() && !recipe.strip_audio {
+        // As recorded, packet by packet: the finished file converts it if its preset says so.
+        let middle = "pts*tb+duration*tb/2";
+        let drop = match until {
+            Some(until) => format!("noise=drop=lt({middle}\\,{from:.6})+gte({middle}\\,{until:.6})"),
+            None => format!("noise=drop=lt({middle}\\,{from:.6})"),
+        };
+        push(&["-map", "0:a:0?", "-c:a", "copy", "-bsf:a", &drop]);
+    } else {
+        push(&["-an"]);
+    }
+    // Each piece's packets start a count of their own: marked, so that read
+    // one after another the first packet after a join isn't taken for a
+    // damaged one, which could cost the join a frame (found 2026-11-22).
+    push(&[
+        "-sn",
+        "-dn",
+        "-f",
+        "mpegts",
+        "-muxdelay",
+        "0",
+        "-muxpreload",
+        "0",
+        "-mpegts_flags",
+        "+initial_discontinuity",
+    ]);
+    args.push(output.into());
+    args
+}
+
+/// How far before a piece drawn as a stream records its recording is read
+/// from, in seconds (see `draw_piece_args`).
+const PIECE_LEAD_IN: f64 = 10.0;
+
 /// A frame rate as ffmpeg reads it: NTSC's rates exactly (`60000/1001`),
 /// others as a plain number.
 fn frame_rate(fps: f64) -> String {
@@ -680,7 +786,7 @@ pub fn picture_probe_args(file: &Path) -> Vec<OsString> {
         "-select_streams",
         "v:0",
         "-show_entries",
-        "stream=width,height,avg_frame_rate,r_frame_rate:format=duration",
+        "stream=width,height,avg_frame_rate,r_frame_rate,duration:format=duration",
         "-of",
         "json",
     ]
@@ -714,7 +820,12 @@ impl Picture {
             width: u32::try_from(stream["width"].as_u64()?).ok()?,
             height: u32::try_from(stream["height"].as_u64()?).ok()?,
             fps: rate(&stream["avg_frame_rate"]).or_else(|| rate(&stream["r_frame_rate"])),
-            duration: value["format"]["duration"].as_str().and_then(|d| d.parse().ok()),
+            // The picture's own length where the file says, not the file's,
+            // which runs on to the end of the sound.
+            duration: stream["duration"]
+                .as_str()
+                .or_else(|| value["format"]["duration"].as_str())
+                .and_then(|d| d.parse().ok()),
         })
         .filter(|picture| picture.width > 0 && picture.height > 0)
     }
@@ -1031,6 +1142,66 @@ mod recording_tests {
         assert!(
             encoded.contains("-c:v h264_nvenc") && encoded.contains(" -r 60 "),
             "{encoded}"
+        );
+        // A piece drawn as it records: the recording's own timestamps, exactly
+        // its frames, the audio packets in it as recorded, in MPEG-TS.
+        let layer = ChatLayer {
+            width: 420,
+            height: 520,
+            fps: 30.0,
+            x: 1480,
+            y: 20,
+            start: 121.4,
+            hd: true,
+            end: Some(241.4),
+            rate: Some(60.0),
+        };
+        let piece = text(draw_piece_args(
+            &converted,
+            Path::new("a.ts"),
+            121.4,
+            Some(241.4),
+            &layer,
+            Path::new("a.drawn1.piece.ts"),
+        ));
+        assert!(piece.contains("-copyts -ss 111.400 -i a.ts"), "{piece}");
+        assert!(
+            piece.contains("[0:v]trim=start=121.400000:end=241.400000[base]"),
+            "{piece}"
+        );
+        assert!(piece.contains("setpts=PTS-STARTPTS+121.4/TB"), "{piece}");
+        // Cut where the piece ends, however long the layer lasts.
+        assert!(
+            piece.contains("eof_action=repeat,fps=60,trim=end=241.400000[v]"),
+            "{piece}"
+        );
+        assert!(
+            piece.contains(" -fps_mode passthrough ") && !piece.contains(" -r "),
+            "{piece}"
+        );
+        assert!(
+            piece.contains(
+                r"-c:a copy -bsf:a noise=drop=lt(pts*tb+duration*tb/2\,121.400000)+gte(pts*tb+duration*tb/2\,241.400000)"
+            ),
+            "{piece}"
+        );
+        assert!(
+            piece.ends_with(
+                "-f mpegts -muxdelay 0 -muxpreload 0 -mpegts_flags +initial_discontinuity a.drawn1.piece.ts"
+            ),
+            "{piece}"
+        );
+        let last = text(draw_piece_args(
+            &converted,
+            Path::new("a.ts"),
+            1.0,
+            None,
+            &layer,
+            Path::new("p.ts"),
+        ));
+        assert!(
+            last.contains("-ss 0.000 ") && last.contains("trim=start=1.000000[base]"),
+            "{last}"
         );
         assert_eq!(frame_rate(59.94), "60000/1001");
         assert_eq!(frame_rate(29.97), "30000/1001");

@@ -190,6 +190,9 @@ impl DownloadManager {
             y: geometry.y,
             start: layer_start,
             hd: height >= 720,
+            // A clip ends exactly where it was cut; a whole video, where its picture does.
+            end: recipe.cut().is_some().then_some(end),
+            rate: None,
         };
         let mut cmd = process::command(job.bins.ffmpeg());
         cmd.current_dir(work);
@@ -208,7 +211,7 @@ impl DownloadManager {
 
     /// Runs ffmpeg (`cmd`, set to read the chat layer from its standard input)
     /// while a thread draws `layer`'s frames into it: from `start` seconds of
-    /// the chat's clock, `fps` a second, for `length` seconds and one more.
+    /// the chat's clock, `fps` a second, for `length` seconds.
     /// `on_progress` hears how far ffmpeg has got (0–1).
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn run_with_layer(
@@ -224,9 +227,11 @@ impl DownloadManager {
         let (reader, mut writer) = std::io::pipe()
             .map_err(|err| AppError::internal("Couldn't start drawing the chat.").with_details(err.to_string()))?;
         cmd.stdin(Stdio::from(reader));
-        // Frames for the whole length and a second more; ffmpeg stops reading
-        // when the picture ends, and the thread stops when it can't write.
-        let frames = ((length + 1.0) * fps).ceil() as u64;
+        // Frames for no longer than the picture lasts: the overlay goes on for
+        // as long as the layer does (see `ffmpeg::ChatLayer::end`), and should
+        // the layer end a frame early, its last frame stays. The thread stops
+        // when it has drawn them all, or ffmpeg ends first.
+        let frames = (length * fps).floor().max(1.0) as u64;
         let drawing = std::thread::spawn(move || {
             for index in 0..frames {
                 let at = start + index as f64 / fps;

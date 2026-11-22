@@ -8,6 +8,7 @@
 mod chat;
 mod live;
 mod live_chat;
+mod live_draw;
 mod tracker;
 
 pub use chat::image_folder as chat_image_folder;

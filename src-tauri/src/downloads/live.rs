@@ -30,6 +30,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 
 use super::live_chat::{self, ChatCapture, PartWatch, Stretch};
+use super::live_draw::{self, DrawPart};
 use super::tracker::{LiveProgress, Progress, Stage};
 use super::{
     file_size, move_file, partial_path, work_dir, ChildEvent, Done, DownloadEvent, DownloadManager, Failure, Job,
@@ -218,6 +219,11 @@ impl Readings {
     }
 }
 
+/// How much of finishing a recording whose chat was drawn in as it recorded
+/// is drawing what was left (the rest is copying it into its file), for the
+/// progress shown.
+const DRAWING_SHARE: f64 = 0.7;
+
 /// How often a recording's folder is looked at for files yt-dlp didn't name.
 const FILE_LOOK: Duration = Duration::from_secs(2);
 
@@ -296,6 +302,12 @@ pub(super) fn recording_files(dir: &Path, needle: &str) -> Vec<PathBuf> {
 async fn remove_recorded(recording: &Recording) {
     let files: Vec<PathBuf> = recording.files().cloned().collect();
     super::remove_partial_files(&files).await;
+    // And the chat drawn in as it recorded, beside each stretch (see `live_draw`).
+    for (index, part) in recording.parts.iter().enumerate() {
+        for file in part {
+            live_draw::remove(file, index + 1).await;
+        }
+    }
 }
 
 fn unix_now() -> u64 {
@@ -413,6 +425,26 @@ impl DownloadManager {
                     playlist: playlist_of(&video, &recording.recipe),
                     began: stream_began.filter(|_| from_start && first),
                 });
+                // Drawn in as it records, so Stop leaves only the last minutes to draw.
+                if let (Some(step), true, Ok(images)) = (
+                    recording.recipe.chat.as_ref(),
+                    recording.recipe.encodes_video(),
+                    super::chat::image_folder(job.app),
+                ) {
+                    let part = DrawPart {
+                        app: job.app.clone(),
+                        work: capture.work().to_path_buf(),
+                        number,
+                        dir: recording.output_dir.clone(),
+                        needle: args::recording_needle(&args::own_marker(job.id), number),
+                        ffmpeg: job.bins.ffmpeg(),
+                        ffprobe: job.bins.ffprobe(),
+                        recipe: recording.recipe.clone(),
+                        placement: step.placement,
+                        images,
+                    };
+                    capture.draw_part(part);
+                }
             }
             let ended = self
                 .record_part(job, &video, from_start && first, &mut recording, &mut readings)
@@ -863,23 +895,60 @@ impl DownloadManager {
             job.id,
         );
         let partial = partial_path(&output);
-        let mut made = match &chat {
-            Some((log, placement)) => {
-                self.make_file_with_chat(job, &recipe, input, &partial, recorded, first, log.clone(), placement)
-                    .await
+        // With its chat, drawn in as it recorded but for its last minutes (see
+        // `live_draw`): those are drawn now and the drawn stretches copied into
+        // the preset's file. Should that fail, the chat is drawn into what was
+        // recorded, as it would have been anyway.
+        let mut drew = false;
+        let mut made = Err(AppError::internal("Not made yet."));
+        if let Some((_, placement)) = &chat {
+            if let Some(files) = self
+                .finish_drawing(job, work, &numbers, &inputs, &recipe, *placement)
+                .await
+            {
+                made = self
+                    .make_from_drawn(job, &recipe, &files, &probes, work, &partial, recorded)
+                    .await;
+                drew = made.is_ok();
+                if let Err(error) = &made {
+                    log::line(
+                        job.app,
+                        &format!(
+                            "record {title}: the chat drawn as it recorded couldn't be used ({}); drawing it again",
+                            error.details.as_deref().unwrap_or(&error.message)
+                        ),
+                    );
+                }
             }
-            None => self.make_file(job, &recipe, input, &partial, recorded).await,
-        };
-        let on_hardware = matches!(&recipe.video, Some(video) if matches!(&video.action, VideoAction::Encode(encode) if encode.hardware != Hardware::Software));
-        if made.is_err() && on_hardware && self.stop_of(job.id).is_none() {
-            let software = recipe.on_software();
+        }
+        if !drew && self.stop_of(job.id).is_none() {
             made = match &chat {
                 Some((log, placement)) => {
-                    self.make_file_with_chat(job, &software, input, &partial, recorded, first, log.clone(), placement)
+                    self.make_file_with_chat(job, &recipe, input, &partial, recorded, first, log.clone(), placement)
                         .await
                 }
-                None => self.make_file(job, &software, input, &partial, recorded).await,
+                None => self.make_file(job, &recipe, input, &partial, recorded).await,
             };
+            let on_hardware = matches!(&recipe.video, Some(video) if matches!(&video.action, VideoAction::Encode(encode) if encode.hardware != Hardware::Software));
+            if made.is_err() && on_hardware && self.stop_of(job.id).is_none() {
+                let software = recipe.on_software();
+                made = match &chat {
+                    Some((log, placement)) => {
+                        self.make_file_with_chat(
+                            job,
+                            &software,
+                            input,
+                            &partial,
+                            recorded,
+                            first,
+                            log.clone(),
+                            placement,
+                        )
+                        .await
+                    }
+                    None => self.make_file(job, &software, input, &partial, recorded).await,
+                };
+            }
         }
         let checked = match made {
             Ok(()) => self.check_finished(job, &recipe, &partial, recorded).await,
@@ -945,6 +1014,90 @@ impl DownloadManager {
         .await
     }
 
+    /// Draws what is left of the chat drawn in as the recording recorded (see
+    /// `live_draw`), reporting its progress as the first part of finishing:
+    /// the drawn stretches, or `None` if they can't be had.
+    async fn finish_drawing(
+        &self,
+        job: &JobContext<'_>,
+        work: &Path,
+        numbers: &[usize],
+        inputs: &[PathBuf],
+        recipe: &Recipe,
+        placement: Placement,
+    ) -> Option<Vec<PathBuf>> {
+        if !recipe.encodes_video() || numbers.len() != inputs.len() {
+            return None;
+        }
+        let images = super::chat::image_folder(job.app).ok()?;
+        let id = job.id.to_string();
+        live_draw::finish(
+            job.app,
+            work,
+            numbers,
+            inputs,
+            &job.bins.ffmpeg(),
+            &job.bins.ffprobe(),
+            recipe,
+            placement,
+            &images,
+            &mut |fraction| {
+                report(
+                    job,
+                    Stage::Finalizing,
+                    fraction * DRAWING_SHARE,
+                    LiveProgress::default(),
+                )
+            },
+            &|| self.stop_of(&id).is_some(),
+        )
+        .await
+    }
+
+    /// Makes the recording's file from its stretches drawn as it recorded
+    /// (see `live_draw`): the picture copied as drawn, the sound as the
+    /// preset says, each stretch ended where the recorded one is.
+    #[allow(clippy::too_many_arguments)]
+    async fn make_from_drawn(
+        &self,
+        job: &JobContext<'_>,
+        recipe: &Recipe,
+        files: &[PathBuf],
+        probes: &[Option<Probed>],
+        work: &Path,
+        output: &Path,
+        recorded: f64,
+    ) -> Result<()> {
+        let copy = recipe.with_video_encoded();
+        let list = work.join("drawn.txt");
+        let input = match files {
+            [file] => Recorded::File(file),
+            _ => {
+                let parts: Vec<(&Path, Option<&Probed>)> = files
+                    .iter()
+                    .zip(probes)
+                    .map(|(file, probed)| (file.as_path(), probed.as_ref()))
+                    .collect();
+                tokio::fs::write(&list, ffmpeg::concat_list(&parts).0).await?;
+                Recorded::List(&list)
+            }
+        };
+        let mut cmd = process::command(job.bins.ffmpeg());
+        cmd.args(ffmpeg::finalize_args(&copy, input, output, None));
+        self.run_tool(job, cmd, |line| {
+            if let Some(done) = ffmpeg::parse_progress(line) {
+                let fraction = if recorded > 0.0 {
+                    (done / recorded).min(1.0)
+                } else {
+                    0.0
+                };
+                let fraction = DRAWING_SHARE + fraction * (1.0 - DRAWING_SHARE);
+                report(job, Stage::Finalizing, fraction, LiveProgress::default());
+            }
+        })
+        .await
+    }
+
     /// Runs the finishing ffmpeg pass with the chat drawn in (see `live_chat`),
     /// reporting its progress. `first` is the first recorded file, whose
     /// picture the chat is drawn on.
@@ -982,6 +1135,9 @@ impl DownloadManager {
             y: geometry.y,
             start: 0.0,
             hd: picture.height >= 720,
+            // Cut at the recording's length anyway (`-t`).
+            end: None,
+            rate: None,
         };
         let mut cmd = process::command(job.bins.ffmpeg());
         cmd.args(ffmpeg::finalize_args(recipe, input, output, Some(&args)));

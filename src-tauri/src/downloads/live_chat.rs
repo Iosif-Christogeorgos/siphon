@@ -71,7 +71,7 @@ const MATCH_FOR: Duration = Duration::from_secs(10 * 60);
 const MATCH_WINDOW: f64 = 40.0;
 /// A timed-out user's messages from this long before go with them, as in
 /// Twitch's own chat, which takes away what is still on screen.
-const CLEARED_SPAN: f64 = 120.0;
+pub(super) const CLEARED_SPAN: f64 = 120.0;
 /// A message is shown this long before the moment it was sent aired, as
 /// Twitch's own replay of the stream shows it: the replay counts from when
 /// the VOD was created, a few seconds after the stream's first frame aired
@@ -164,7 +164,7 @@ fn now() -> f64 {
         .map_or(0.0, |since| since.as_secs_f64())
 }
 
-fn aired_file(work: &Path, number: usize) -> PathBuf {
+pub(super) fn aired_file(work: &Path, number: usize) -> PathBuf {
     work.join(format!("aired-{number}.json"))
 }
 
@@ -281,6 +281,17 @@ impl ChatCapture {
         self.tasks
             .push(tokio::spawn(async move { find_aired(&app, &work, watch).await }));
     }
+
+    /// Draws a stretch's chat in while it is recorded (see `live_draw`), in the background.
+    pub(super) fn draw_part(&mut self, part: super::live_draw::DrawPart) {
+        self.tasks
+            .push(tokio::spawn(super::live_draw::draw_while_recording(part)));
+    }
+
+    /// The work folder its files are kept in.
+    pub(super) fn work(&self) -> &Path {
+        &self.work
+    }
 }
 
 /// Places the stretch: a guess as soon as its file appears, then the frame match.
@@ -359,14 +370,14 @@ async fn save_aired(target: &Path, aired: &Aired) {
 
 /// Writes `value` to `target` whole: beside it first, then renamed over it,
 /// so a crash never leaves half a file.
-async fn save_json(target: &Path, value: &impl Serialize) -> std::io::Result<()> {
+pub(super) async fn save_json(target: &Path, value: &impl Serialize) -> std::io::Result<()> {
     let json = serde_json::to_vec(value)?;
     let partial = target.with_extension("part");
     tokio::fs::write(&partial, json).await?;
     tokio::fs::rename(&partial, target).await
 }
 
-async fn load_json<T: serde::de::DeserializeOwned>(file: &Path) -> Option<T> {
+pub(super) async fn load_json<T: serde::de::DeserializeOwned>(file: &Path) -> Option<T> {
     serde_json::from_slice(&tokio::fs::read(file).await.ok()?).ok()
 }
 
@@ -447,8 +458,17 @@ async fn match_frame(
 ) -> Option<Aired> {
     // The third newest: old enough to be in the recording already.
     let segment = live.iter().rev().nth(2).or_else(|| live.first())?;
-    let bytes = http.get(&segment.url).send().await.ok()?.bytes().await.ok()?;
-    let local = work.join("frame.ts");
+    // A fragmented MP4 segment is read after its initialisation segment.
+    let mut bytes = Vec::new();
+    if let Some(init) = &segment.init {
+        bytes.extend_from_slice(&http.get(init).send().await.ok()?.bytes().await.ok()?);
+    }
+    bytes.extend_from_slice(&http.get(&segment.url).send().await.ok()?.bytes().await.ok()?);
+    let local = work.join(if segment.init.is_some() {
+        "frame.mp4"
+    } else {
+        "frame.ts"
+    });
     tokio::fs::write(&local, &bytes).await.ok()?;
     let wanted = first_frame_md5(ffmpeg, &local).await;
     let _ = tokio::fs::remove_file(&local).await;
@@ -473,29 +493,47 @@ struct Segment {
     url: String,
     /// The stream itself, not one of the ads Twitch stitches in.
     live: bool,
+    /// Its initialisation segment, which has to come first for it to be
+    /// read: Twitch sends some channels' streams as fragmented MP4 (CMAF),
+    /// whose segments are only pieces without it (found 2026-11-22).
+    init: Option<String>,
 }
 
 /// The segments of a media playlist that say when they aired. Twitch marks
 /// the stream's own as `live` (`#EXTINF:2.000,live`); its ads carry the
 /// advertiser's name.
 fn segments(playlist: &str, base: &str) -> Vec<Segment> {
+    let absolute = |link: &str| {
+        if link.starts_with("http") {
+            link.to_string()
+        } else {
+            let dir = base.rsplit_once('/').map_or(base, |(dir, _)| dir);
+            format!("{dir}/{link}")
+        }
+    };
     let mut segments = Vec::new();
     let mut aired = None;
     let mut live = false;
+    let mut init = None;
     for line in playlist.lines().map(str::trim) {
         if let Some(date) = line.strip_prefix("#EXT-X-PROGRAM-DATE-TIME:") {
             aired = parse_timestamp(date);
         } else if let Some(info) = line.strip_prefix("#EXTINF:") {
             live = info.split_once(',').is_some_and(|(_, title)| title == "live");
+        } else if let Some(map) = line.strip_prefix("#EXT-X-MAP:") {
+            // `URI="…"`, perhaps with a byte range after it.
+            init = map
+                .split_once("URI=\"")
+                .and_then(|(_, rest)| rest.split_once('"'))
+                .map(|(link, _)| absolute(link));
         } else if !line.is_empty() && !line.starts_with('#') {
             if let Some(aired) = aired.take() {
-                let url = if line.starts_with("http") {
-                    line.to_string()
-                } else {
-                    let dir = base.rsplit_once('/').map_or(base, |(dir, _)| dir);
-                    format!("{dir}/{line}")
-                };
-                segments.push(Segment { aired, url, live });
+                segments.push(Segment {
+                    aired,
+                    url: absolute(line),
+                    live,
+                    init: init.clone(),
+                });
             }
         }
     }
@@ -504,7 +542,7 @@ fn segments(playlist: &str, base: &str) -> Vec<Segment> {
 
 /// Where a file's timestamps start and how long it is, as ffprobe reads it
 /// (a recording still growing too).
-async fn file_span(ffprobe: &Path, file: &Path) -> Option<(f64, f64)> {
+pub(super) async fn file_span(ffprobe: &Path, file: &Path) -> Option<(f64, f64)> {
     let mut cmd = process::command(ffprobe);
     cmd.args([
         "-v",
@@ -538,7 +576,22 @@ async fn frame_md5s(ffmpeg: &Path, file: &Path, from: f64) -> Vec<(f64, String)>
     let mut cmd = process::command(ffmpeg);
     cmd.args(["-v", "error", "-nostdin", "-copyts", "-ss", &format!("{from:.3}"), "-i"])
         .arg(file)
-        .args(["-map", "0:v:0", "-f", "framemd5", "-"]);
+        // Every frame, at its own time. Otherwise ffmpeg makes the frames even
+        // at the rate the recording starts with, which is that of Twitch's ad
+        // (30 a second): every other frame of a 60-frame stream was left out,
+        // the one looked for among them, and its time was rounded to 1/30 s
+        // (found 2026-11-22: no match in ten minutes).
+        .args([
+            "-map",
+            "0:v:0",
+            "-fps_mode",
+            "passthrough",
+            "-enc_time_base",
+            "demux",
+            "-f",
+            "framemd5",
+            "-",
+        ]);
     let Ok(Some(output)) = process::output_within(cmd, Duration::from_secs(120)).await else {
         return Vec::new();
     };
@@ -609,6 +662,40 @@ pub(super) async fn chat_for_file(app: &AppHandle, work: &Path, stretches: &[Str
     let snapshot = ChatLog::load(&work.join(SNAPSHOT)).await.unwrap_or_default();
     let messages = arrange(said(&events), before, placed);
     (!messages.is_empty()).then_some(ChatLog { messages, ..snapshot })
+}
+
+/// The chat of stretch `number` of a recording that is still going on, on
+/// the stretch file's own clock (its first timestamp `start`), for drawing it
+/// in as it records (see `live_draw`); `None` without its timing or any
+/// message. As `chat_for_file` places it, but each stretch on its own.
+pub(super) async fn chat_for_stretch(work: &Path, number: usize, start: f64) -> Option<ChatLog> {
+    let events = tokio::fs::read_to_string(work.join(EVENTS)).await.unwrap_or_default();
+    let before = load_json::<Before>(&work.join(BEFORE)).await;
+    let aired = load_json::<Aired>(&aired_file(work, number)).await?;
+    let stretch = Stretch {
+        number,
+        start,
+        // Not over yet: everything after its start.
+        length: f64::INFINITY,
+        // On its own clock.
+        offset: start,
+    };
+    let messages = arrange(said(&events), before, vec![(stretch, aired)]);
+    let snapshot = ChatLog::load(&work.join(SNAPSHOT)).await.unwrap_or_default();
+    (!messages.is_empty()).then_some(ChatLog { messages, ..snapshot })
+}
+
+/// When stretch `number` aired, once that is as known as it will be: the
+/// frame match found it, or gave up. For a stretch that is the VOD from its
+/// start, once the replay is in, if there is one (see `arrange`).
+pub(super) async fn timing_settled(work: &Path, number: usize) -> Option<Aired> {
+    let aired = load_json::<Aired>(&aired_file(work, number)).await?;
+    let settled = if aired.vod_start {
+        work.join(BEFORE).exists()
+    } else {
+        aired.exact
+    };
+    settled.then_some(aired)
 }
 
 /// The chat on the finished file's clock: what IRC caught, and the replay's
@@ -730,6 +817,29 @@ mod tests {
             found[2].url, "https://usher.example/v1/playlist/b.ts",
             "relative to the playlist"
         );
+        assert!(found.iter().all(|segment| segment.init.is_none()));
+
+        // Fragmented MP4, as Twitch sent some channels on 2026-11-22: each
+        // segment goes with the initialisation segment before it.
+        let cmaf = "#EXTM3U
+#EXT-X-VERSION:6
+#EXT-X-MAP:URI=\"https://cdn.example/ad-init.mp4\"
+            #EXT-X-PROGRAM-DATE-TIME:2026-11-21T23:05:08.017Z
+#EXTINF:2.000,Amazon|2474283100495.0
+            https://cdn.example/ad.mp4
+#EXT-X-DISCONTINUITY
+#EXT-X-MAP:URI=\"init.mp4\",BYTERANGE=\"720@0\"
+            #EXT-X-PROGRAM-DATE-TIME:2026-11-21T23:05:40.017Z
+#EXTINF:2.000,live
+live.mp4
+";
+        let found = segments(cmaf, "https://usher.example/v1/playlist/x.m3u8");
+        assert_eq!(found[0].init.as_deref(), Some("https://cdn.example/ad-init.mp4"));
+        assert_eq!(
+            found[1].init.as_deref(),
+            Some("https://usher.example/v1/playlist/init.mp4")
+        );
+        assert!(found[1].live);
     }
 
     #[test]

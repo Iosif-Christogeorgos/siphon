@@ -1224,6 +1224,8 @@ fn the_chat_layer_is_read_from_standard_input_and_laid_over_the_picture() {
         y: 324,
         start: 600.0,
         hd: true,
+        end: Some(660.0),
+        rate: None,
     };
     let args = strings(ffmpeg::convert_args_shifted(
         &recipe,
@@ -1244,7 +1246,7 @@ fn the_chat_layer_is_read_from_standard_input_and_laid_over_the_picture() {
         graph,
         "[0:v]trim=start=600:end=660[base];\
          [1:v]setpts=PTS-STARTPTS+600/TB,scale=out_color_matrix=bt709:out_range=tv,format=yuva420p[chat];\
-         [base][chat]overlay=x=1468:y=324:format=yuv420:eof_action=repeat[v]"
+         [base][chat]overlay=x=1468:y=324:format=yuv420:eof_action=repeat,trim=end=660.000000[v]"
     );
     assert!(joined.contains("-map [v] -map 0:a:0?"), "{joined}");
     assert!(!args.contains(&"-vf".to_string()), "the cut is in the graph");
