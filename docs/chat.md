@@ -1,0 +1,88 @@
+# Chat
+
+A Twitch video, or a Twitch stream as it is recorded, can be saved with its chat drawn into the picture, as it looked on Twitch: names in their colours, badges, and every emote (Twitch's own, 7TV, BTTV and FFZ, animated ones moving). The code is in `src-tauri/src/chat/` (reading, timing and drawing the chat), `src-tauri/src/downloads/chat.rs` (a video's), `src-tauri/src/downloads/live_chat.rs` and `live_draw.rs` (a recording's), and `src/features/chat/` (where it goes).
+
+## What the user sees
+
+- **The choice.** For a Twitch video, a Twitch channel's list of videos, or a Twitch stream (on air or not yet), with **Max quality** or **Watch**, a **Chat** choice sits beside the others: *With* or *Without*. Siphon remembers it (`chat` in `choices.json`). Audio has no picture to draw it on, and Share doesn't offer it.
+- **Where it goes.** **Chat** on the video's card opens the placement view: the video's preview with the box over it, showing the real chat at that moment. Drag the box to move it, drag a corner to resize it (the text grows with its width), or use the arrow keys; *Right*, *Top right* and *Bottom left* are quick spots; **Background** sets how dark the box is, from 0 to 80% (30% to begin with). The place is kept for the channel (`chat_places`, by login), so its next video starts there, and the view opens by itself the first time a channel's video is opened with chat on, since every streamer's layout differs (a webcam, a minimap). **Done** keeps the place even where it started. For a stream as it airs, the view shows a still of the stream (Twitch's live thumbnail, the whole frame, at most five minutes old) with the chat as it comes, read only while the view is open; a channel that isn't on air yet shows an empty frame. The trim panel shows the box on its preview too.
+- **The plan** says *Converts · Chat drawn in*: drawing the chat in means encoding the picture, and the ⓘ says so ("because the chat is drawn into the picture"). The size is estimated at the source's size (HEVC at three quarters of it), between half and one and a half times it.
+- **While it downloads:** *Fetching the chat* (no percentage), then *Drawing in the chat* with its progress. A recording shows its usual ● REC; its chat is read and drawn in alongside, and after Stop, *Finishing the recording*.
+- **When the chat can't be had** (Twitch refuses, or nobody wrote anything), the video is still saved, without it, with a note saying why ("Saved without the chat. …"), and its row says **No chat**.
+
+## How it looks
+
+The box is mostly transparent and slightly darkened, so the stream shows through; the text is readable over anything because every glyph has a black outline, rather than because the box is dark. Its corners are rounded and its top fades out, so messages scroll away rather than being cut. Sizes come from a design width of 300 units: text 15, emotes 28, badges 18, all scaling with the box. The font is Segoe UI, with Windows' fallbacks for other scripts and emoji. Twitch's own lines about a subscription, a gift or a raid are drawn in Twitch's purple, lightened to read over video, without a name.
+
+Each message is laid out once (Parley, about 42 µs), drawn over the shade into a bitmap of its own, and a frame is those bitmaps' rows copied into place bottom up, with animated emotes blended in; a frame where nothing moved is the last one again. A busy chat draws at about 2,300 frames a second on one core (release build). The layer runs at the video's frame rate up to 31 a second (30 for 60-frame video): chat moves no faster. ffmpeg reads it as raw RGBA on its standard input, converts it with the video's own colour matrix, and lays it over the picture as it encodes. The layer is fed for as long as the picture lasts and no longer: ffmpeg's overlay goes on for as long as either input does, and fed a second longer "to be safe", a 30 s clip came out with a last second of frozen, silent picture (found and fixed 2026-11-21; should the layer end a frame early, its last frame stays). A clip is also cut where it ends.
+
+The encode is the fastest setting at the same quality (NVENC's p1, x264's veryfast), capped at one and a half times the source's bitrate: measured on Twitch 1080p60, p1 against p5 at the same quality setting scored VMAF 97.18 against 97.27, with files about 27% larger, 2.75 times faster (H.264). Twitch encodes at a fixed bitrate, so its busiest scenes are starved, and keeping their every artefact uncapped took 2.3 times the source's bitrate (17.6 against 7.6 Mbit/s, VMAF 96.6); capped, 10.2 Mbit/s and VMAF 94.8. Calm footage stays well under the cap (4.7 Mbit/s, VMAF 97.1).
+
+| Drawing and encoding (RTX 5080, Ryzen 7 9850X3D, Twitch 1080p60) | Speed |
+| --- | --- |
+| CPU decode and overlay, NVENC H.264 p1 | 902 frames/s (15× real time) |
+| The same to HEVC | 1083 frames/s (18×) |
+| All on the GPU (`overlay_cuda`) | 564 frames/s (slower) |
+| Decoding alone | 2,400–2,700 frames/s |
+| Two halves at once | 20–25% faster only: the CPU is the limit |
+| x264 veryfast / medium (no GPU) | 644 / 272 frames/s |
+
+## Emotes and badges
+
+- **Twitch's own** emotes come with each message (the replay names them; IRC gives their places, counted in characters). Badges are Twitch's global ones and the channel's own (subscriber and bits), the channel's winning where both have one.
+- **7TV, BTTV and FFZ** (`chat/emotes.rs`): 7TV's v3 API (it answers 404 for a streamer without 7TV), BTTV's, and FFZ through BTTV's cache of it (FFZ's own API timed out; the cache answers in about 30 ms). Where two share a name, the channel's 7TV wins, then BTTV, then FFZ, then the global sets in the same order. Zero-width emotes (7TV's set flag 1 or emote flag 256) are drawn over the emote before them; BTTV's modifiers are left out. 7TV's personal emotes and name paints are not drawn.
+- **Images** are fetched at the size the box draws them and kept for every download in `<app cache>/chat-images/`, by the hash of their address. PNG, APNG, GIF and WebP are read, animated ones frame by frame; a frame shown for 10 ms or less counts as 100 ms, as browsers do.
+
+## A video's chat
+
+Twitch's chat replay is read from its GraphQL API with the web player's public client ID, as yt-dlp does (`chat/twitch.rs`); yt-dlp no longer lists a `rechat` track. Paging by cursor fails without a browser token ("failed integrity check"); paging by offset works. Every offset in the same three seconds gives the same page, of about 50–74 comments starting a little before it, so a stretch of video is covered by pages that overlap: a probe every 30 seconds, then pages in between wherever two neighbours don't meet. A pair that still doesn't meet a bucket apart is counted as a gap and logged. Up to 35 pages go in one request (36 is refused), eight requests at once: about 44 pages a second.
+
+**Twitch keeps at most 15 messages a second in a replay.** On a 56k-viewer channel, IRC carried 45 in one second where the replay has 14 or 15; a video's chat is thinned in its busiest moments, and a recording, read live, keeps everything.
+
+Each comment says the whole seconds into the video, rounded down, and the moment it was sent; the video's start, as the replay counts it, is the earliest "sent minus seconds in" over all comments, which places every message to the millisecond. The chat is fetched beside the video, like subtitles, from a minute before a clip starts so its first frame shows the chat as it was then.
+
+## A recording's chat
+
+**Reading it.** As the stream records, its chat is read over Twitch's IRC without an account (as `justinfan…`, as Twitch's own embeds do), over TLS on port 443 through the system proxy like downloads, connecting again after a growing pause if the connection drops (`chat/irc.rs`). Messages, subs and raids, deleted messages and timeouts are written to the recording's work folder as they come (`chat.jsonl`), with the channel's emotes and badges as the recording began (`chat.json`), so a crash or Siphon closing loses none of it. Deleted messages are left out, and so are a timed-out user's messages from the two minutes before, as Twitch's own chat takes away what is still on screen. Anonymous IRC carried 344 messages in 25 s on a 56k-viewer channel.
+
+**When it aired.** A message's moment is when it was sent; to place it in the file, Siphon needs to know when each moment of the recording aired. The stream's playlist says when each two-second segment aired (its program date), so the first frame of a recent segment is decoded and looked for among the recording's last frames: decoding is exact, so the frame decodes the same in both, whatever ads Twitch stitched into either. Twitch opens a new playlist with an ad for viewers without an account, about 30 s long, which only plays out while the playlist is read as a player reads it (read every 15 s, a playlist was still on its ad after five minutes), so the playlist is read every two seconds until the match is found. Some channels' streams come as fragmented MP4 (CMAF), whose segments can only be read after the playlist's initialisation segment (`#EXT-X-MAP`), so that goes first. The recording's frames are read every one at its own time (`-fps_mode passthrough`): otherwise ffmpeg evens them out at the rate the recording starts with, the 30 a second of Twitch's ad, and every other frame of a 60-frame stream was left out, often the one looked for. Until the match is found a recording is placed by when its file appeared, less 8 seconds; the match came within 0.2–2 s of that guess, 40–60 s into each test recording. If it isn't found within ten minutes, the guess stands. Twitch's segments also carry their ingest time in a data track, but keeping it made ffmpeg stop at the switch from an ad to the stream (timestamps out of order), so it isn't used.
+
+**Where it shows.** Placed by when each moment aired, chat came 4–6 s later than on Twitch's own replay of the same stream. The replay counts from when the VOD was created, a few seconds after the stream's first frame aired, which is also about how far behind viewers watch a stream; reactions then come just after what they react to. So messages are shown 5 s before the moment they were sent aired (`REPLAY_LEAD`). Measured by finding a live segment's first frame in the stream's VOD: the replay shows chat 4.3, 5.0 and 5.8 s earlier than when it aired, on three channels; and checked frame by frame against the VOD of a recorded stream: the recording and the replay had the same 219 of 220 messages, each within 0.81 s of the other.
+
+**From the start.** yt-dlp records a Twitch stream from its start from the stream's VOD, so such a recording is on the VOD's clock (matched frame by frame within 0.034 s on a 39-minute recording), and its chat is placed exactly as the VOD's replay places it. When it begins, the VOD is looked up (Twitch stops naming a stream's VOD once the stream ends) and kept in the work folder (`vod.json`); two minutes in, once the replay has caught up, what was said before Record is fetched from it in the background (`replay.json`), and IRC keeps everything after. They are joined at IRC's first message, a message both have kept once.
+
+**Drawn as it records.** Drawing runs at about 14 times real time, so finishing a three-hour stream after Stop took about 13 minutes. Instead, each stretch of the recording is drawn in pieces of two minutes while it records, each once its chat has settled (two minutes and a quarter after it aired, by when a deletion or timeout has come), into a drawn file beside the recorded one: the picture encoded with the chat drawn in, and the audio packets copied as recorded, all on the recording's own timestamps, piece after piece (`ffmpeg::draw_piece_args`). Four things make the joins exact, each found by a join that wasn't: the recording is read from 10 s before a piece (MPEG-TS has no index of key frames, and from 3 s before, a seek could land just past one, so the piece began at the next, a sixth of a second late); the picture is made into the stream's frame rate inside the filter graph, before the cut at the piece's end (made after it, with `-r`, a frame or two went past the cut, and the next piece's first frames were lost where the two overlapped); the chat layer is never fed longer than the piece (see How it looks); and each piece's packets are marked as starting afresh (`-mpegts_flags +initial_discontinuity`), as HLS segments are, since otherwise the first packet after a join was taken for a damaged one. Each piece is checked before it is added: its first frame where it starts, its last before the next piece's, none missing. After Stop only the rest is drawn, then the drawn files are copied into the preset's file. How far each stretch is drawn is kept in the work folder (`drawn-N.json`), with the drawn file's size then, so a piece cut short is cut off again. If drawing can't go on, or the result can't be used, the recording is finished from what was recorded, its chat drawn in then, as before. Tested on a 6½-minute recording of a 49k-viewer channel: two pieces drawn while it recorded, the last 148 s after Stop in 11.4 s, finished 14 s after Stop, with all 23,276 frames (60 a second) and 18,183 audio packets in place, none missing or twice at the joins.
+
+**Closing and crashes.** Everything is in the work folder, which survives until the recording is finished: a recording closed or cut short is finished at the next start (**Recovered**) with its chat, drawing what wasn't drawn yet.
+
+## Tested
+
+2026-11-21 and 22, in the dev build, driven over the DevTools protocol, on Twitch channels with 15–60k viewers; files checked with ffprobe and frame by frame.
+
+| Case | Result |
+| --- | --- |
+| A VOD clip with chat (60 s, 1080p60, earlier session) | Downloaded in 4 s, chat ready at 6 s, drawn and encoded about 13 s later |
+| Recording with chat, 164 s, Stop | Chat drawn in; frame match 41 s in, 0.19 s from the guess; finished 12 s after Stop (before drawing as it records) |
+| The same stream's VOD, compared | 910 of 918 messages read over IRC are in the replay; IRC's `tmi-sent-ts` and the replay's `createdAt` agree to the millisecond |
+| Recording with chat, then Siphon closed | Nothing left running; recording and chat kept; finished with chat at the next start, marked Recovered |
+| Recording from the start, 33 minutes into a stream (39 min) | 10,767 messages from before Record fetched in 16.8 s; the box showed the replay's messages at 600 s and IRC's at 2,300 s exactly; no gap or repeat at the handover |
+| A recording's frame rate | 60 frames a second, 60 different ones in each, after its 30-frame ad |
+| The live placement view | A still of the stream with its chat as it comes; nothing downloaded in the background |
+| An offline channel's link, Record when it starts | Waits, chat on; placement over an empty frame |
+| A 30 s VOD clip with chat, before and after the layer was fed only the picture's length | 30.98 s of picture against 30.0 s of sound; then 29.98 against 29.99 |
+| Drawn as it records: 19 minutes, nine pieces (before the joins were exact) | Sound in place at every join; 10–11 frames missing at each, which led to reading from 10 s before a piece and making the rate in the graph |
+| Drawn as it records: 6½ minutes, two pieces, final build | Finished 14 s after Stop; all 23,276 frames and 18,183 audio packets, none missing or twice |
+| A channel served as fragmented MP4 (CMAF) | Frame match 5–41 s in; before reading its initialisation segment, never |
+| A Twitch channel's list of videos | The Chat choice shows; a whole video wasn't downloaded (they are hours long) |
+
+**Unit tests:** IRC lines (messages, emotes counted in characters, subs, deletions, timeouts, a cleared chat, actions, escapes); what a recording's chat keeps; placing messages in each stretch, and from the start by the replay; the replay's pages, gaps and timing; a playlist's segments and ads; frame checksums; pieces drawn as it records (their arguments, appending after a piece cut short, when a stretch has settled); a Twitch channel's list of videos.
+
+## Known limitations
+
+- **A video's chat is thinned** to Twitch's 15 messages a second in its busiest moments (see above), and so is a recording's from before Record.
+- **Twitch's ads are recorded**, with the chat over them: about 30 s at the start of every recording without an account, and any the streamer runs. Leaving them out is parked.
+- **From the start, Siphon says "Catching up · 44 s behind live" to the end:** Twitch's VOD runs about 45 s behind the stream, so the recording never gets within the 30 s that counts as caught up.
+- **Not drawn:** 7TV's personal emotes and name paints, and BTTV's emote modifiers.
+- **Tier-3 subscriber badges** (`subscriber/3012`) weren't checked against the channel's badge list.
+- **The size estimate** for a video with chat (the source's size, HEVC three quarters of it) was checked on two Twitch clips only.
+- **The first preview frame of a VOD** takes about 10 s in the debug build: the VOD, its emote sets, the chat around the moment and about 180 images are fetched first. Later frames are quick.

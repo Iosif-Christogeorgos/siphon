@@ -10,6 +10,7 @@ Paste a live stream (Twitch, YouTube, Kick, or any site yt-dlp records live) and
 - **While recording:** ● REC, the time, the size and the bitrate, and **Stop**. No Pause: a live stream doesn't wait, so a pause would only lose that part. Waiting for a stream shows when it starts, and a way to stop waiting.
 - **Notes behind the ⓘ:** how much room the disk has for this stream; that recordings go first within the speed limit; on Twitch, that its ads are recorded too. (Siphon offers no way to sign in to a site that doesn't ask for it, so the note doesn't suggest a subscribed account.) In view: a warning when the speed limit is below what the stream needs, or the disk has room for less than two hours; and a quiet note when three or more recordings are already running.
 - **Notifications** (when Siphon isn't in front): the stream went live and recording began; the recording is finished; it stopped with an error.
+- **Chat** (Twitch, with Max quality or Watch): the stream's chat drawn into the picture, read as it airs and drawn in as it records, so the file is ready moments after Stop; from the start, with what was said before Record. See [chat.md](chat.md).
 
 ## How a recording runs
 
@@ -69,5 +70,6 @@ Measured 2026-11-19, with a 1080p60 Twitch stream (≈ 0.9 MB/s) and a 4K YouTub
 - **Twitch ads** are recorded for viewers without a subscription; Siphon doesn't remove them. At their joins ffmpeg reports a few decode errors (3 in the 10-minute test); the file plays through.
 - **A crash cuts the last frame:** after a kill or power cut, the very end can show a damaged frame. Stop and closing don't.
 - **Stopped while catching up**, a recording from the start keeps only the stretch it has both picture and sound for (the sound catches up much faster).
+- **Twitch from the start says "Catching up · 44 s behind live" to the end:** yt-dlp records it from the stream's VOD, which runs about 45 s behind the stream, so it never gets within the 30 s that counts as caught up (seen 2026-11-21).
 - **Waiting asks the site** every minute or so; many recordings waiting at once may bring on a bot check. Signed-in sites are used as for downloads.
 - **Other sites** (beyond Twitch, YouTube and Kick) go through yt-dlp's generic live path and weren't tested.

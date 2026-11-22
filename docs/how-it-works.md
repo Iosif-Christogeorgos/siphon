@@ -1,6 +1,6 @@
 # How Siphon works
 
-What each part of Siphon does and why, in more depth than the [README](../README.md). The reasons behind the harder choices, with what was measured, are in [decisions.md](decisions.md); what each preset assumes, with sources, is in [presets.md](presets.md); signing in to sites is in [sign-in.md](sign-in.md); subtitles are in [subtitles.md](subtitles.md). Building and releasing are in [development.md](development.md).
+What each part of Siphon does and why, in more depth than the [README](../README.md). The reasons behind the harder choices, with what was measured, are in [decisions.md](decisions.md); what each preset assumes, with sources, is in [presets.md](presets.md); signing in to sites is in [sign-in.md](sign-in.md); subtitles are in [subtitles.md](subtitles.md); Twitch chat is in [chat.md](chat.md). Building and releasing are in [development.md](development.md).
 
 ## Managed binaries
 
@@ -71,6 +71,10 @@ Every smart cut is checked before it is kept: every frame at its time, the sound
 **Subtitles** beside the other choices picks a language (or Off, where a new user starts), and Siphon remembers the language, so every video that has it gets it. The list has the video's languages, Windows' language first; typing jumps to one. People's subtitles come before speech recognition; YouTube's machine translations aren't offered, since YouTube refuses them. A video without the language is saved without subtitles and says so, never with another language in its place.
 
 Where they go depends on the preset: a track inside the file for Watch and Max quality (MKV for Windows, TVs and Max quality, because Windows' own players don't show subtitle tracks in MP4 or WebM; MP4 timed text for Apple and Android), and drawn into the picture for Share, since chat apps show no tracks. The track is fetched by a yt-dlp run of its own beside the video's, so subtitles that can't be had never cost the video; a clip gets only the part inside it. How, why, and what was tested is in [subtitles.md](subtitles.md).
+
+## Chat
+
+For a Twitch video, a Twitch channel's videos or a Twitch stream, with Max quality or Watch, **Chat** (*With* or *Without*) draws the chat into the picture, the way it looked on Twitch. **Chat** on the video's card opens the preview with the chat box over it, showing the real chat at that moment (for a stream on air, a still of the stream with the chat as it comes): drag it, resize it, set how dark it is; the place is kept for the channel. A video's chat comes from Twitch's replay, fetched beside the video; a recording's is read as the stream airs, placed in the file where Twitch's own replay shows it, and drawn in as it records, so the file is ready moments after Stop. How it is read, timed and drawn, what was measured, and its limits are in [chat.md](chat.md).
 
 ## Queue, playlists and settings
 

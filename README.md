@@ -86,6 +86,10 @@ Paste a playlist or channel link to pick the videos you want, with an estimated 
 
 Paste a live stream from Twitch, YouTube, Kick and more, and press **Record**, or **Record when it starts** for a scheduled stream or an offline channel. Siphon records from now or, where the site allows, from the start, keeps going through short dropouts, and makes it into a file that plays everywhere when you press Stop or the stream ends. A crash or power cut never loses what was recorded: Siphon finishes it the next time it starts.
 
+### Twitch chat in the picture
+
+Save a Twitch video, or record a Twitch stream, with its chat drawn into the picture as it looked on Twitch: names in their colours, badges, and every emote, from Twitch, 7TV, BTTV and FFZ, animated ones moving. Drag the box where it doesn't cover anything on the preview, and resize it; Siphon remembers the place for each channel. A recording reads the chat as the stream airs and draws it in as it goes, so when you press Stop the file is ready within moments. Recorded from the start, it gets the chat from before you pressed Record too.
+
 ### Sign in only when a video needs it
 
 Age-restricted, members-only or account-only videos can be downloaded with your own account. That unlocks only what your account can already watch. Siphon tries every video without an account first, tells you how likely signing in is to help, and keeps each site's sign-in encrypted for your Windows account. It doesn't bypass DRM: protected videos get a clear message instead.
@@ -123,6 +127,7 @@ Press **Trim** on the video card to download only part of it. In the trim panel,
 | [Signing in](docs/sign-in.md) | How sign-in works, what is kept where, and what it can't do |
 | [Live recording](docs/live.md) | How recording works, what was tested, and its limits |
 | [Subtitles](docs/subtitles.md) | Which subtitles a download gets, where each preset puts them, and what was tested |
+| [Chat](docs/chat.md) | Twitch chat drawn into the picture: how it is read, timed and drawn, what was measured, and its limits |
 | [Decisions](docs/decisions.md) | Why things work the way they do, what was measured, and known issues |
 | [Development](docs/development.md) | Running from source, checks, building an installer and releasing |
 
