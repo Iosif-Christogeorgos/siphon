@@ -346,16 +346,28 @@ pub async fn fetch_with(bins: &BinaryManager, url: &str, cookie_args: &[OsString
 /// keeps the part that already aired. Its own lookup, because yt-dlp lists
 /// other formats for it (YouTube: DASH instead of HLS), and only on request.
 pub async fn fetch_from_start(bins: &BinaryManager, url: &str, cookies: Option<&Path>) -> Result<Vec<Format>> {
+    Ok(lookup_from_start(bins, url, cookies)
+        .await?
+        .map(|video| video.formats)
+        .unwrap_or_default())
+}
+
+/// The lookup that records a stream on air from its start (`--live-from-start`):
+/// on Twitch, the stream's VOD, whose id it carries (`v…`). `None` if the
+/// stream can't be recorded so.
+pub async fn lookup_from_start(bins: &BinaryManager, url: &str, cookies: Option<&Path>) -> Result<Option<VideoInfo>> {
     let url = validate_url(url)?;
     let mut cookie_args: Vec<OsString> = Vec::new();
     if let Some(cookies) = cookies {
         cookie_args.extend(["--cookies".into(), cookies.into()]);
     }
-    match run_json(bins, url, &cookie_args, &["--live-from-start"]).await? {
-        Media::Video(video) if video.live.as_ref().is_some_and(|live| live.status == LiveStatus::Live) => {
-            Ok(video.formats)
+    match run_json(bins, url, &cookie_args, &["--live-from-start"]).await {
+        Ok(Media::Video(video)) if video.live.as_ref().is_some_and(|live| live.status == LiveStatus::Live) => {
+            Ok(Some(*video))
         }
-        _ => Ok(Vec::new()),
+        Ok(_) => Ok(None),
+        Err(error) if errors::not_kept_from_start(error.details.as_deref().unwrap_or_default()) => Ok(None),
+        Err(error) => Err(error),
     }
 }
 
@@ -921,6 +933,11 @@ mod live_tests {
         ));
         assert!(!errors::is_offline("ERROR: [youtube] abc: Video unavailable"));
         assert!(!errors::is_scheduled("ERROR: [youtube] abc: Video unavailable"));
+        // A Twitch channel that keeps no VODs, asked for its stream from the start (2026-11-22).
+        assert!(errors::not_kept_from_start(
+            "ERROR: [twitch:stream] 319690780916: --live-from-start is passed, but there are no formats that can be downloaded from the start. If you want to download from the current time, use --no-live-from-start"
+        ));
+        assert!(!errors::not_kept_from_start("ERROR: [youtube] abc: Video unavailable"));
     }
 
     #[test]

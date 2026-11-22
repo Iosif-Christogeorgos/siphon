@@ -237,20 +237,6 @@ impl Twitch {
         })
     }
 
-    /// The VOD a live channel's stream is being saved to, if it keeps them.
-    pub async fn live_vod(&self, login: &str) -> Result<Option<String>> {
-        let data = self
-            .query(
-                "query($login:String!){user(login:$login){stream{archiveVideo{id}}}}",
-                json!({ "login": login }),
-            )
-            .await?;
-        Ok(data
-            .pointer("/user/stream/archiveVideo/id")
-            .and_then(Value::as_str)
-            .map(str::to_string))
-    }
-
     /// Covers `start` to `end` seconds with pages that overlap: a probe
     /// every 30 seconds, then pages in between wherever two neighbours
     /// don't meet. Returns every comment seen, and how many gaps couldn't be

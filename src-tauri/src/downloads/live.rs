@@ -20,6 +20,11 @@
 //! A stream that stops sending (the streamer's connection dropped) is looked
 //! at again for a few minutes; if it comes back, the recording carries on in
 //! a new file, and the files are joined at the end.
+//!
+//! Twitch from now is read from a playlist Siphon serves, to leave Twitch's
+//! ads out: from the stream's VOD where the channel keeps one, otherwise from
+//! the stream without the ads (see `twitch_feed`). If neither can be had,
+//! the stream is recorded as yt-dlp reads it, ads and all.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -29,9 +34,10 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 
-use super::live_chat::{self, ChatCapture, PartWatch, Stretch};
+use super::live_chat::{self, ChatCapture, PartTiming, PartWatch, Stretch, VodClock};
 use super::live_draw::{self, DrawPart};
 use super::tracker::{LiveProgress, Progress, Stage};
+use super::twitch_feed::{self, CatchUp, Feed};
 use super::{
     file_size, move_file, partial_path, work_dir, ChildEvent, Done, DownloadEvent, DownloadManager, Failure, Job,
     JobContext, Lookup, Stop, EVENT,
@@ -48,7 +54,7 @@ use crate::process;
 use crate::sessions::{Account, Sessions};
 use crate::settings::SettingsStore;
 use crate::state::CapabilityCache;
-use crate::ytdlp::metadata::{self, LiveStatus, VideoInfo};
+use crate::ytdlp::metadata::{self, FormatKind, LiveStatus, VideoInfo};
 use crate::ytdlp::{self, args, errors, progress};
 
 /// How long a stopped stream is given to come back before the recording is
@@ -80,6 +86,11 @@ const CAUGHT_UP: f64 = 30.0;
 
 /// Parts in a row that recorded nothing before the recording gives up.
 const EMPTY_PARTS: usize = 3;
+
+/// How long Stop lets a recording read from Twitch's VOD record on to where
+/// it was pressed (see `twitch_feed::CatchUp`) before stopping it where it
+/// is. It took 8 to 15 s in testing.
+const CATCH_UP_LIMIT: Duration = Duration::from_secs(3 * 60);
 
 /// What the frontend asks for when it starts a recording.
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
@@ -133,6 +144,65 @@ pub struct Recovered {
     pub url: String,
     pub title: String,
     pub thumbnail: Option<String>,
+}
+
+/// What a Twitch part records instead of the channel (see `twitch_feed`).
+struct PartFeed {
+    feed: Feed,
+    /// The lookup yt-dlp records from: its stream is the served playlist.
+    lookup: PathBuf,
+    format_id: String,
+    /// Read from the VOD: where on it the part starts, and when that aired, about.
+    vod: Option<(VodClock, f64)>,
+}
+
+/// When a Twitch VOD's second 0 aired, about, from its lookup: when the VOD
+/// was created (to the second), which its replay counts from, less
+/// [`live_chat::REPLAY_LEAD`] (see there).
+fn first_frame(vod: &VideoInfo) -> Option<f64> {
+    let since = vod.live.as_ref()?.since?;
+    Some(since as f64 - live_chat::REPLAY_LEAD)
+}
+
+/// A Twitch VOD's number, from its lookup's id (`v2936316823`).
+fn vod_number(vod: &VideoInfo) -> String {
+    vod.id.trim_start_matches('v').to_string()
+}
+
+/// The format of `formats` (another lookup's) that is `wanted`: audio only,
+/// or the same picture size at the same frame rate. Twitch names a stream's
+/// best `1080p60__source_` and its VOD's `1080p60`.
+fn same_format<'a>(formats: &'a [metadata::Format], wanted: &metadata::Format) -> Option<&'a metadata::Format> {
+    let rate = |format: &metadata::Format| format.fps.map(|fps| fps.round() as u32);
+    formats.iter().find(|format| {
+        format.kind == wanted.kind
+            && (wanted.kind == FormatKind::Audio || (format.height == wanted.height && rate(format) == rate(wanted)))
+    })
+}
+
+/// Writes the lookup yt-dlp records part `number` from into `work`:
+/// `video`'s, with format `format_id`'s stream the playlist `feed` serves.
+/// `named`: the id and title it is named by instead (the VOD's is named as
+/// the stream is, since the recording's name comes from its files').
+async fn write_lookup(
+    video: &VideoInfo,
+    named: Option<(&str, &str)>,
+    format_id: &str,
+    feed: &Feed,
+    work: &Path,
+    number: usize,
+) -> std::result::Result<PathBuf, String> {
+    let json = video
+        .saved
+        .as_ref()
+        .and_then(|saved| saved.for_download(&[], video.with_account))
+        .ok_or("its lookup wasn't kept")?;
+    let json =
+        twitch_feed::lookup_with_stream(&json, format_id, &feed.url, named).ok_or("its lookup has no such format")?;
+    let path = work.join(format!("feed-{number}.json"));
+    tokio::fs::create_dir_all(work).await.map_err(|err| err.to_string())?;
+    tokio::fs::write(&path, json).await.map_err(|err| err.to_string())?;
+    Ok(path)
 }
 
 /// How one part of a recording ended on its own.
@@ -340,14 +410,29 @@ impl DownloadManager {
         let mut video = self.until_live(job, url, account).await?;
         let account = if video.with_account { Account::Use } else { account };
 
+        let stream_began = video
+            .live
+            .as_ref()
+            .and_then(|live| live.since)
+            .map(|since| since as f64);
         // From the start where it was asked for and the site still keeps it.
         let mut from_start = false;
+        // Twitch reads that from the stream's VOD: which, from its second 0,
+        // and when that aired.
+        let mut whole_vod: Option<(VodClock, f64)> = None;
         if request.from_start {
-            match self.formats_from_start(job, &video).await {
-                Ok(formats) if !formats.is_empty() => {
+            match self.lookup_from_start(job, &video).await {
+                Ok(Some(vod)) if !vod.formats.is_empty() => {
+                    if let Some(aired) = first_frame(&vod).or(stream_began) {
+                        let clock = VodClock {
+                            id: vod_number(&vod),
+                            at: 0.0,
+                        };
+                        whole_vod = Some((clock, aired));
+                    }
                     let mut with = (*video).clone();
                     if let Some(live) = with.live.as_mut() {
-                        live.from_start = Some(formats);
+                        live.from_start = Some(vod.formats);
                     }
                     video = Arc::new(with);
                     from_start = true;
@@ -355,9 +440,11 @@ impl DownloadManager {
                 result => log::line(
                     job.app,
                     &format!(
-                        "record {}: can't record from the start ({:?}); from now on instead",
+                        "record {}: can't record from the start ({}); from now on instead",
                         video.title,
-                        result.err().map(|e| e.message)
+                        result
+                            .err()
+                            .map_or("the site doesn't keep it".to_string(), |e| e.message)
                     ),
                 ),
             }
@@ -370,16 +457,12 @@ impl DownloadManager {
         }
 
         // The chat, read as it airs into the work folder (see `live_chat`);
-        // from the start, what was said before comes from the stream's VOD.
-        let stream_began = video
-            .live
-            .as_ref()
-            .and_then(|live| live.since)
-            .map(|since| since as f64);
+        // a part read from the stream's VOD gets what was said before from
+        // the VOD's replay.
         let mut capture = match recipe.chat.as_ref().map(|step| &step.source) {
             Some(ChatSource::Live { channel }) => work_dir(job.app, job.id)
                 .ok()
-                .map(|work| ChatCapture::start(job.app, channel, &work, stream_began.filter(|_| from_start))),
+                .map(|work| ChatCapture::start(job.app, channel, &work)),
             _ => None,
         };
         let mut recording = Recording {
@@ -411,19 +494,55 @@ impl DownloadManager {
         let mut last_error: Option<AppError> = None;
         let mut empty_parts = 0;
         let mut disk_full = false;
+        let twitch = video.extractor.as_deref() == Some("TwitchStream");
+        // The format recorded, as it was planned: each Twitch part finds it
+        // in what it reads by its picture (see `same_format`).
+        let planned = video
+            .formats
+            .iter()
+            .chain(
+                video
+                    .live
+                    .as_ref()
+                    .and_then(|live| live.from_start.as_ref())
+                    .into_iter()
+                    .flatten(),
+            )
+            .find(|format| format.id == recording.recipe.format_selector())
+            .cloned();
+        // Read from the VOD until a part's VOD stopped growing while it was read.
+        let mut vod_ok = true;
         let stop = loop {
             let before = recording.bytes();
             let first = recording.parts.is_empty();
+            let number = recording.parts.len() + 1;
+            // From the start: all of it, as yt-dlp reads it.
+            let whole = from_start && first;
+            let feed = match (&planned, twitch && !whole) {
+                (Some(planned), true) => self.part_feed(job, &video, planned, number, account, vod_ok).await,
+                _ => None,
+            };
             if let Some(capture) = capture.as_mut() {
-                let number = recording.parts.len() + 1;
+                let vod = if whole {
+                    whole_vod.clone()
+                } else {
+                    feed.as_ref().and_then(|feed| feed.vod.clone())
+                };
+                let timing = match (vod, &feed) {
+                    (Some((clock, aired)), _) => {
+                        capture.keep_replay(number, &clock, aired);
+                        PartTiming::Vod { clock, aired }
+                    }
+                    (None, Some(feed)) => PartTiming::Marks(feed.feed.marks()),
+                    (None, None) => PartTiming::Matched(playlist_of(&video, &recording.recipe)),
+                };
                 capture.watch_part(PartWatch {
                     number,
                     dir: recording.output_dir.clone(),
                     needle: args::recording_needle(&args::own_marker(job.id), number),
                     ffmpeg: job.bins.ffmpeg(),
                     ffprobe: job.bins.ffprobe(),
-                    playlist: playlist_of(&video, &recording.recipe),
-                    began: stream_began.filter(|_| from_start && first),
+                    timing,
                 });
                 // Drawn in as it records, so Stop leaves only the last minutes to draw.
                 if let (Some(step), true, Ok(images)) = (
@@ -447,8 +566,12 @@ impl DownloadManager {
                 }
             }
             let ended = self
-                .record_part(job, &video, from_start && first, &mut recording, &mut readings)
+                .record_part(job, &video, whole, feed.as_ref(), &mut recording, &mut readings)
                 .await;
+            if feed.as_ref().is_some_and(|feed| feed.feed.stalled()) {
+                vod_ok = false;
+            }
+            drop(feed);
             let recorded_some = recording.bytes() > before;
             empty_parts = if recorded_some { 0 } else { empty_parts + 1 };
             match ended {
@@ -561,15 +684,142 @@ impl DownloadManager {
         }
     }
 
-    /// The formats to record `video` from its start with, looked up now.
-    async fn formats_from_start(&self, job: &JobContext<'_>, video: &VideoInfo) -> Result<Vec<metadata::Format>> {
+    /// The lookup that records `video` from its start, looked up now: on
+    /// Twitch, the stream's VOD (see `metadata::lookup_from_start`).
+    async fn lookup_from_start(&self, job: &JobContext<'_>, video: &VideoInfo) -> Result<Option<VideoInfo>> {
         let sessions = Arc::clone(&job.app.state::<Arc<Sessions>>());
         let cookies = if video.with_account {
             sessions.cookie_file(&video.url)
         } else {
             None
         };
-        metadata::fetch_from_start(job.bins, &video.url, cookies.as_ref().map(|file| file.path())).await
+        let mut vod =
+            metadata::lookup_from_start(job.bins, &video.url, cookies.as_ref().map(|file| file.path())).await?;
+        if let Some(vod) = vod.as_mut() {
+            vod.with_account = video.with_account;
+        }
+        Ok(vod)
+    }
+
+    /// What a Twitch part records instead of the stream as yt-dlp reads it:
+    /// the stream's VOD from its newest segment on (unless `vod_ok` is
+    /// false), or the stream without its ads (see `twitch_feed`). `None` if
+    /// neither can be had: then the stream as it is, ads and all.
+    async fn part_feed(
+        &self,
+        job: &JobContext<'_>,
+        video: &VideoInfo,
+        wanted: &metadata::Format,
+        number: usize,
+        account: Account,
+        vod_ok: bool,
+    ) -> Option<PartFeed> {
+        let work = work_dir(job.app, job.id).ok()?;
+        let http = Twitch::new().ok()?.http().clone();
+        if vod_ok {
+            match self.vod_feed(job, video, wanted, &work, number, http.clone()).await {
+                Ok(feed) => {
+                    log::line(
+                        job.app,
+                        &format!(
+                            "record {}: part {number} from the VOD, from its second {:.0}",
+                            video.title,
+                            feed.vod.as_ref().map_or(0.0, |(clock, _)| clock.at)
+                        ),
+                    );
+                    return Some(feed);
+                }
+                Err(why) => log::line(
+                    job.app,
+                    &format!("record {}: part {number} not from the VOD ({why})", video.title),
+                ),
+            }
+        }
+        match self.live_feed(job, video, wanted, &work, number, account, http).await {
+            Ok(feed) => {
+                log::line(
+                    job.app,
+                    &format!("record {}: part {number} without the ads", video.title),
+                );
+                Some(feed)
+            }
+            Err(why) => {
+                log::line(
+                    job.app,
+                    &format!("record {}: part {number} with the ads ({why})", video.title),
+                );
+                None
+            }
+        }
+    }
+
+    /// The part from the stream's VOD, from its newest segment on.
+    async fn vod_feed(
+        &self,
+        job: &JobContext<'_>,
+        video: &VideoInfo,
+        wanted: &metadata::Format,
+        work: &Path,
+        number: usize,
+        http: reqwest::Client,
+    ) -> std::result::Result<PartFeed, String> {
+        let vod = self
+            .lookup_from_start(job, video)
+            .await
+            .map_err(|error| error.message)?
+            .ok_or("the channel keeps no VOD of it")?;
+        let format = same_format(&vod.formats, wanted).ok_or("its VOD has no such format")?;
+        let upstream = format.stream_url.as_deref().ok_or("its VOD has no playlist")?;
+        let first_frame = first_frame(&vod).ok_or("its VOD doesn't say when it began")?;
+        let feed = Feed::vod(http, upstream, first_frame).await?;
+        let at = feed.vod_start.unwrap_or(0.0);
+        let named = Some((video.id.as_str(), video.title.as_str()));
+        let lookup = write_lookup(&vod, named, &format.id, &feed, work, number).await?;
+        let clock = VodClock {
+            id: vod_number(&vod),
+            at,
+        };
+        Ok(PartFeed {
+            feed,
+            lookup,
+            format_id: format.id.clone(),
+            vod: Some((clock, first_frame + at)),
+        })
+    }
+
+    /// The part from the stream without its ads, looked up again: the
+    /// stream's playlist links run out.
+    #[allow(clippy::too_many_arguments)]
+    async fn live_feed(
+        &self,
+        job: &JobContext<'_>,
+        video: &VideoInfo,
+        wanted: &metadata::Format,
+        work: &Path,
+        number: usize,
+        account: Account,
+        http: reqwest::Client,
+    ) -> std::result::Result<PartFeed, String> {
+        let lookup = Lookup { refresh: true, account };
+        let fresh = self
+            .video_info(job, &video.url, lookup)
+            .await
+            .map_err(|error| error.message)?;
+        let format = fresh
+            .formats
+            .iter()
+            .find(|format| format.id == wanted.id)
+            .or_else(|| same_format(&fresh.formats, wanted))
+            .ok_or("the stream has no such format now")?;
+        let upstream = format.stream_url.as_deref().ok_or("the stream has no playlist")?;
+        let feed = Feed::live(http, upstream).await?;
+        let lookup = write_lookup(&fresh, None, &format.id, &feed, work, number).await?;
+        Ok(PartFeed {
+            feed,
+            lookup,
+            format_id: format.id.clone(),
+            vod: None,
+        })
     }
 
     /// Records one stretch of the stream, until yt-dlp ends (the stream ended
@@ -579,6 +829,7 @@ impl DownloadManager {
         job: &JobContext<'_>,
         video: &VideoInfo,
         from_start: bool,
+        feed: Option<&PartFeed>,
         recording: &mut Recording,
         readings: &mut Readings,
     ) -> std::result::Result<PartEnd, Failure> {
@@ -586,8 +837,12 @@ impl DownloadManager {
         let mut cmd = ytdlp::command(job.bins);
         // Its own process group: Stop asks it to finish, rather than killing it.
         process::in_own_group(&mut cmd);
+        let record_args = match feed {
+            Some(feed) => args::record_feed_args(&recording.recipe, &feed.format_id, feed.vod.is_some()),
+            None => args::record_args(&recording.recipe, from_start),
+        };
         cmd.args(progress::template_args())
-            .args(args::record_args(&recording.recipe, from_start))
+            .args(record_args)
             .args(["--no-playlist", "--no-mtime"]);
         self.route(job.id, &mut cmd).map_err(Failure::Spawn)?;
         let sessions = Arc::clone(&job.app.state::<Arc<Sessions>>());
@@ -599,14 +854,17 @@ impl DownloadManager {
         self.attach_cookies(job.id, cookies);
         self.add_cookies(job.id, &mut cmd);
         let name = format!("{}{}", job.place.prefix(), job.settings.filename_template());
-        cmd.arg("--paths")
-            .arg(&recording.output_dir)
-            .args([
-                "--output",
-                &args::recording_template(&name, &args::own_marker(job.id), part, from_start),
-                "--",
-            ])
-            .arg(&video.url);
+        cmd.arg("--paths").arg(&recording.output_dir).args([
+            "--output",
+            &args::recording_template(&name, &args::own_marker(job.id), part, from_start),
+        ]);
+        match feed {
+            Some(feed) => cmd.arg("--load-info-json").arg(&feed.lookup),
+            None => cmd.arg("--").arg(&video.url),
+        };
+        // Read from the VOD, Stop records on to where it was pressed.
+        let catch_up = feed.and_then(|feed| feed.feed.catch_up());
+        self.set_catch_up(job.id, catch_up.clone());
 
         recording.parts.push(Vec::new());
         let mut disk_full = false;
@@ -665,10 +923,17 @@ impl DownloadManager {
                         }
                     }
                     reading.disk_left = disk_left;
+                    if let Some(catch_up) = &catch_up {
+                        reading.stop_in = catch_up.left();
+                        if catch_up.asked_for().is_some_and(|asked| asked > CATCH_UP_LIMIT) {
+                            self.interrupt_now(job.id);
+                        }
+                    }
                     report(job, Stage::Recording, 0.0, reading);
                 }
             })
             .await;
+        self.set_catch_up(job.id, None);
         if let Some(current) = recording.parts.last_mut() {
             // One last look: a file yt-dlp started since the last one (they are
             // two seconds apart) would otherwise be left out, and left behind.
@@ -1291,6 +1556,25 @@ impl DownloadManager {
         let Some(job) = jobs.get_mut(id) else { return };
         if job.stop.is_none() {
             job.stop = Some(Stop::Finish);
+            if let Some(&pid) = job.pids.first() {
+                job.interrupting = Some(super::interrupt(pid));
+            }
+        }
+    }
+
+    /// What Stop asks of the part being recorded, while it is read from
+    /// Twitch's VOD (see `DownloadManager::stop`).
+    fn set_catch_up(&self, id: &str, catch_up: Option<CatchUp>) {
+        if let Some(job) = self.jobs.lock().unwrap().get_mut(id) {
+            job.catch_up = catch_up;
+        }
+    }
+
+    /// Asks the recording's process to finish now, if that isn't asked already.
+    fn interrupt_now(&self, id: &str) {
+        let mut jobs = self.jobs.lock().unwrap();
+        let Some(job) = jobs.get_mut(id) else { return };
+        if job.interrupting.is_none() {
             if let Some(&pid) = job.pids.first() {
                 job.interrupting = Some(super::interrupt(pid));
             }

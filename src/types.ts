@@ -502,6 +502,8 @@ export interface LiveProgress {
   starts_at: number | null;
   /** Seconds of recording the disk still has room for, when that's getting short. */
   disk_left: number | null;
+  /** Stopped while read from Twitch's VOD, behind live: seconds it still records to get to where Stop was pressed. */
+  stop_in: number | null;
 }
 
 /** The total download speed (`speed://total`), measured as the bytes pass through Siphon. */

@@ -8,17 +8,23 @@
 //! - `chat.json`: the channel, its emotes and badges, as the recording began;
 //! - `chat.jsonl`: every message, deletion and timeout, as it came;
 //! - `aired-N.json`: when a moment of the recording's Nth stretch aired;
-//! - from the start: `vod.json`, the VOD the stream is saved to, and
-//!   `replay.json`, what its replay has from before the recording began.
+//! - for a stretch read from the stream's VOD: `vod-N.json`, which VOD and
+//!   what is wanted from its replay, and `replay-N.json`, what it had.
 //!
-//! Recorded from the start, a recording is the stream's VOD from its first
-//! frame (yt-dlp records Twitch from the start from it), so its chat is
-//! placed as the VOD's replay places it: what was said before Record comes
-//! from the replay, what was said after from IRC, both on one clock.
+//! A stretch read from the stream's VOD (recorded from the start, which
+//! yt-dlp reads from the VOD, or from now, which Siphon reads from it to
+//! leave Twitch's ads out: see `twitch_feed`) knows which of the VOD's
+//! seconds it starts with, so its chat is placed as the VOD's replay places
+//! it. What was said before IRC was read comes from the replay, what was
+//! said after from IRC, both on one clock.
 //!
-//! Recorded from now, when a stretch aired is found by matching a frame. The stream's playlist
-//! says when each of its two-second segments aired; the first frame of a
-//! recent one is decoded and looked for among the recording's last frames.
+//! A stretch read from the stream without its ads knows when its first
+//! segment aired, and where it jumps over each ad and when what follows
+//! aired: the stream's playlist says when each segment aired.
+//!
+//! Otherwise (where neither can be had), when a stretch aired is found by
+//! matching a frame. The first frame of a recent segment of the stream's
+//! playlist is decoded and looked for among the recording's last frames.
 //! The playlist is read as often as a player reads it, because Twitch starts
 //! it with an ad for viewers without an account that only plays out then.
 //! Decoding is exact, so the frame decodes the same in both, whatever ads
@@ -28,6 +34,7 @@
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -35,6 +42,7 @@ use tauri::AppHandle;
 use tokio::task::JoinHandle;
 
 use super::live::recording_files;
+use super::twitch_feed::Mark;
 use crate::chat::irc::{self, Event};
 use crate::chat::twitch::Twitch;
 use crate::chat::{emotes, parse_timestamp, ChatLog, Message};
@@ -45,15 +53,15 @@ use crate::process;
 const SNAPSHOT: &str = "chat.json";
 /// Everything the chat said, one event a line, in the work folder.
 const EVENTS: &str = "chat.jsonl";
-/// Recorded from the start: the stream's VOD, looked up as the recording
-/// began (Twitch stops naming a stream's VOD once the stream ends).
-const VOD: &str = "vod.json";
-/// Recorded from the start: what the chat said before the recording began.
-const BEFORE: &str = "replay.json";
-/// How long into a recording from the start its chat from before Record is
-/// fetched: by then Twitch's replay has the last of it (a message showed in
-/// the replay within three minutes of being sent, 2026-11-21).
+/// How long into a stretch read from the VOD its replay is fetched: by then
+/// Twitch's replay has the last of what was said before IRC was read (a
+/// message showed in the replay within three minutes of being sent,
+/// 2026-11-21).
 const BEFORE_AFTER: Duration = Duration::from_secs(2 * 60);
+/// How many times the replay is fetched, this far apart, for a message that
+/// tells its clock: a quiet channel's may have none at first.
+const REPLAY_TRIES: u32 = 5;
+const REPLAY_EVERY: Duration = Duration::from_secs(2 * 60);
 /// A recording's file appears about this long after what it starts with aired:
 /// ffmpeg starts three segments back from the newest, which is itself behind.
 const GUESSED_DELAY: f64 = 8.0;
@@ -81,43 +89,91 @@ pub(super) const CLEARED_SPAN: f64 = 120.0;
 pub(super) const REPLAY_LEAD: f64 = 5.0;
 
 /// When a moment of a recording's stretch aired.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(super) struct Aired {
     /// The moment, in the stretch file's own timestamps (seconds).
     pub at: f64,
     /// When it aired, in seconds since 1970.
     pub aired: f64,
-    /// Found by matching a frame, rather than guessed from when the file appeared.
+    /// Known, rather than guessed from when the file appeared.
     pub exact: bool,
-    /// The stretch is the stream's VOD from its first frame (recorded from the
-    /// start): placed by the VOD's replay where it can be had, rather than by
-    /// `aired`, the stream's start to the second.
+    /// The stretch is read from the stream's VOD, from this second of it:
+    /// placed by the VOD's replay where it can be had, rather than by
+    /// `aired`, which is about right.
     #[serde(default)]
-    pub vod_start: bool,
+    pub vod: Option<VodClock>,
+    /// Where the stretch jumps over an ad that was left out (see
+    /// `twitch_feed`), in order: from each on, it is what aired from then.
+    #[serde(default)]
+    pub cuts: Vec<Cut>,
 }
 
-/// The VOD a stream recorded from the start is saved to, and what is wanted
-/// from its replay.
+impl Aired {
+    /// Where in the stretch's file (its own timestamps) what aired at `wall`
+    /// is, carried on past either end. What aired during an ad that was left
+    /// out is where the file jumps over it.
+    pub(super) fn file_time(&self, wall: f64) -> f64 {
+        let mut points = vec![(self.at, self.aired)];
+        points.extend(self.cuts.iter().map(|cut| (cut.at, cut.aired)));
+        let index = points.iter().rposition(|(_, aired)| *aired <= wall).unwrap_or(0);
+        let (at, aired) = points[index];
+        let time = at + (wall - aired);
+        points.get(index + 1).map_or(time, |(next, _)| time.min(*next))
+    }
+}
+
+/// Where a stretch read from a Twitch VOD starts on it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(super) struct VodClock {
+    /// The VOD's number.
+    pub id: String,
+    /// The VOD's second the stretch's file starts with.
+    pub at: f64,
+}
+
+/// Where a stretch jumps over an ad left out, and when what follows aired.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub(super) struct Cut {
+    /// In the stretch file's own timestamps.
+    pub at: f64,
+    /// In seconds since 1970.
+    pub aired: f64,
+}
+
+/// The VOD a stretch is read from, and what is wanted from its replay.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct VodRef {
     id: String,
-    /// When the stream began, in seconds since 1970.
-    since: f64,
-    /// When the recording began: the replay is wanted up to here.
-    until: f64,
+    /// From the stretch's first second of the VOD …
+    from: f64,
+    /// … to a minute past the second that aired as it began: IRC was on by
+    /// then, and what both have is kept once.
+    to: f64,
+    /// When the replay was thought to count from (see `PartTiming::Vod`),
+    /// to say how far out that was.
+    guess: f64,
 }
 
-/// What the chat said before a recording from the start began, from the
-/// VOD's replay.
+/// What the VOD's replay had for a stretch read from it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Before {
-    /// When the VOD starts as its replay counts, in seconds since 1970.
-    origin: f64,
+    /// When the VOD starts as its replay counts, in seconds since 1970;
+    /// `None` if no one said anything to tell it by.
+    origin: Option<f64>,
     /// Each at the moment it was sent, on the clock IRC's messages are on.
     messages: Vec<Message>,
 }
 
+fn vod_file(work: &Path, number: usize) -> PathBuf {
+    work.join(format!("vod-{number}.json"))
+}
+
+fn replay_file(work: &Path, number: usize) -> PathBuf {
+    work.join(format!("replay-{number}.json"))
+}
+
 /// A stretch of the recording as the finished file holds it.
+#[derive(Debug, Clone)]
 pub(super) struct Stretch {
     /// Its number (1 for the first), as `aired-N.json` names it.
     pub number: usize,
@@ -137,10 +193,21 @@ pub(super) struct PartWatch {
     pub needle: String,
     pub ffmpeg: PathBuf,
     pub ffprobe: PathBuf,
-    /// The stream's playlist, which says when each segment aired.
-    pub playlist: Option<String>,
-    /// Recorded from the start: when the stream began, which the file starts with.
-    pub began: Option<f64>,
+    pub timing: PartTiming,
+}
+
+/// Where a stretch's timing comes from.
+pub(super) enum PartTiming {
+    /// It is read from the stream's VOD: where on the VOD it starts, and
+    /// when that aired, about (the VOD was created, less [`REPLAY_LEAD`]:
+    /// its replay counts from then).
+    Vod { clock: VodClock, aired: f64 },
+    /// It is read from the stream without the ads: where it starts and goes
+    /// on after each ad, and when that aired, as they come (see `twitch_feed`).
+    Marks(Arc<Mutex<Vec<Mark>>>),
+    /// It is read as yt-dlp reads the stream: by matching a frame with the
+    /// stream's playlist, which says when each segment aired.
+    Matched(Option<String>),
 }
 
 /// The tasks keeping a recording's chat; they end with it.
@@ -170,51 +237,14 @@ pub(super) fn aired_file(work: &Path, number: usize) -> PathBuf {
 
 impl ChatCapture {
     /// Starts reading `channel`'s chat into `work`, and keeps its emotes and
-    /// badges there. `from_start`: the recording is from the stream's start,
-    /// which began then (seconds since 1970); what was said before is fetched
-    /// from its VOD's replay.
-    pub(super) fn start(app: &AppHandle, channel: &str, work: &Path, from_start: Option<f64>) -> ChatCapture {
+    /// badges there.
+    pub(super) fn start(app: &AppHandle, channel: &str, work: &Path) -> ChatCapture {
         let mut capture = ChatCapture {
             app: app.clone(),
             work: work.to_path_buf(),
             tasks: Vec::new(),
         };
         let _ = std::fs::create_dir_all(work);
-
-        if let Some(since) = from_start {
-            let (app, login, work) = (app.clone(), channel.to_string(), work.to_path_buf());
-            let began = now();
-            capture.tasks.push(tokio::spawn(async move {
-                // Kept from the first time: Siphon restarted while recording.
-                if work.join(VOD).exists() {
-                    return;
-                }
-                let Ok(twitch) = Twitch::new() else { return };
-                let vod = match twitch.live_vod(&login).await {
-                    Ok(Some(id)) => VodRef {
-                        id,
-                        since,
-                        until: began,
-                    },
-                    Ok(None) => {
-                        log::line(&app, &format!("chat #{login}: the stream keeps no VOD to read back"));
-                        return;
-                    }
-                    Err(error) => {
-                        log::line(
-                            &app,
-                            &format!("chat #{login}: its VOD couldn't be found: {}", error.message),
-                        );
-                        return;
-                    }
-                };
-                if save_json(&work.join(VOD), &vod).await.is_err() {
-                    return;
-                }
-                tokio::time::sleep(BEFORE_AFTER).await;
-                fetch_before(&app, &work, &vod).await;
-            }));
-        }
 
         let (app, login, snapshot) = (app.clone(), channel.to_string(), work.join(SNAPSHOT));
         capture.tasks.push(tokio::spawn(async move {
@@ -275,6 +305,53 @@ impl ChatCapture {
         capture
     }
 
+    /// Fetches, in the background, what the replay of the VOD that stretch
+    /// `number` is read from has (see `VodRef`): its clock, and what was
+    /// said from the stretch's start before IRC was read. `aired`: when the
+    /// stretch's first second aired, about (see `PartTiming::Vod`).
+    pub(super) fn keep_replay(&mut self, number: usize, clock: &VodClock, aired: f64) {
+        let (app, work) = (self.app.clone(), self.work.clone());
+        let vod = VodRef {
+            id: clock.id.clone(),
+            from: clock.at,
+            to: clock.at + (now() - aired) + 60.0,
+            guess: aired - clock.at + REPLAY_LEAD,
+        };
+        self.tasks.push(tokio::spawn(async move {
+            if save_json(&vod_file(&work, number), &vod).await.is_err() {
+                return;
+            }
+            tokio::time::sleep(BEFORE_AFTER).await;
+            let mut fetched = false;
+            for attempt in 0..REPLAY_TRIES {
+                if attempt > 0 {
+                    tokio::time::sleep(REPLAY_EVERY).await;
+                }
+                // Wider each time, for a quiet channel.
+                let wider = VodRef {
+                    to: vod.to + f64::from(attempt) * REPLAY_EVERY.as_secs_f64(),
+                    ..vod.clone()
+                };
+                match fetch_replay(&app, &wider).await {
+                    Some(replay) if replay.origin.is_some() => {
+                        let _ = save_json(&replay_file(&work, number), &replay).await;
+                        return;
+                    }
+                    Some(_) => fetched = true,
+                    None => {}
+                }
+            }
+            if fetched {
+                // No one said a thing: placed by when it aired, about.
+                let none = Before {
+                    origin: None,
+                    messages: Vec::new(),
+                };
+                let _ = save_json(&replay_file(&work, number), &none).await;
+            }
+        }));
+    }
+
     /// Works out when a stretch of the recording aired, in the background.
     pub(super) fn watch_part(&mut self, watch: PartWatch) {
         let (app, work) = (self.app.clone(), self.work.clone());
@@ -294,7 +371,7 @@ impl ChatCapture {
     }
 }
 
-/// Places the stretch: a guess as soon as its file appears, then the frame match.
+/// Places the stretch once its file has appeared, as its timing allows.
 async fn find_aired(app: &AppHandle, work: &Path, watch: PartWatch) {
     let target = aired_file(work, watch.number);
     let file = loop {
@@ -311,41 +388,100 @@ async fn find_aired(app: &AppHandle, work: &Path, watch: PartWatch) {
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
     };
-    let guess = match watch.began {
-        // From the start, the file starts where the stream did (see `chat_for_file`).
-        Some(began) => Aired {
-            at: start,
-            aired: began,
-            exact: true,
-            vod_start: true,
-        },
-        None => Aired {
-            at: start,
-            aired: appeared - GUESSED_DELAY,
-            exact: false,
-            vod_start: false,
-        },
-    };
-    save_aired(&target, &guess).await;
-    if guess.exact {
-        return;
+    match watch.timing {
+        PartTiming::Vod { clock, aired } => {
+            let timing = Aired {
+                at: start,
+                aired,
+                exact: true,
+                vod: Some(clock),
+                cuts: Vec::new(),
+            };
+            save_aired(&target, &timing).await;
+        }
+        PartTiming::Marks(marks) => follow_marks(&target, start, &marks).await,
+        PartTiming::Matched(playlist) => {
+            let guess = Aired {
+                at: start,
+                aired: appeared - GUESSED_DELAY,
+                exact: false,
+                vod: None,
+                cuts: Vec::new(),
+            };
+            save_aired(&target, &guess).await;
+            if let Some(playlist) = playlist {
+                match_aired(
+                    app,
+                    work,
+                    &watch.ffmpeg,
+                    &watch.ffprobe,
+                    watch.number,
+                    &file,
+                    &guess,
+                    &playlist,
+                )
+                .await;
+            }
+        }
     }
-    let Some(playlist) = watch.playlist else { return };
+}
+
+/// Keeps the timing of a stretch read without the ads as its marks come
+/// (see `twitch_feed::Mark`): where it starts, then where it goes on after
+/// each ad. Until the recording ends.
+async fn follow_marks(target: &Path, start: f64, marks: &Mutex<Vec<Mark>>) {
+    let mut known = 0;
+    loop {
+        let marks: Vec<Mark> = marks.lock().unwrap().clone();
+        if let (Some(first), true) = (marks.first(), marks.len() > known) {
+            known = marks.len();
+            let timing = Aired {
+                at: start + first.offset,
+                aired: first.aired,
+                exact: true,
+                vod: None,
+                cuts: marks[1..]
+                    .iter()
+                    .map(|mark| Cut {
+                        at: start + mark.offset,
+                        aired: mark.aired,
+                    })
+                    .collect(),
+            };
+            save_aired(target, &timing).await;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+/// Finds when the stretch aired by matching a frame with the stream's
+/// playlist, in place of `guess`.
+#[allow(clippy::too_many_arguments)]
+async fn match_aired(
+    app: &AppHandle,
+    work: &Path,
+    ffmpeg: &Path,
+    ffprobe: &Path,
+    number: usize,
+    file: &Path,
+    guess: &Aired,
+    playlist: &str,
+) {
+    let target = aired_file(work, number);
     let Ok(twitch) = Twitch::new() else { return };
     let started = Instant::now();
     let mut last_try: Option<Instant> = None;
     while started.elapsed() < MATCH_FOR {
-        let live = live_segments(twitch.http(), &playlist).await;
+        let live = live_segments(twitch.http(), playlist).await;
         // A few of the stream's own segments: past the ad, and one old enough
         // to be in the recording already.
         if live.len() >= 3 && last_try.is_none_or(|at| at.elapsed() >= MATCH_EVERY) {
             last_try = Some(Instant::now());
-            if let Some(found) = match_frame(twitch.http(), &watch.ffmpeg, &watch.ffprobe, work, &live, &file).await {
+            if let Some(found) = match_frame(twitch.http(), ffmpeg, ffprobe, work, &live, file).await {
                 log::line(
                     app,
                     &format!(
-                        "chat: stretch {} aired {:.2} s after it was guessed to",
-                        watch.number,
+                        "chat: stretch {number} aired {:.2} s after it was guessed to",
                         found.aired - found.at - (guess.aired - guess.at)
                     ),
                 );
@@ -357,10 +493,7 @@ async fn find_aired(app: &AppHandle, work: &Path, watch: PartWatch) {
     }
     log::line(
         app,
-        &format!(
-            "chat: stretch {} placed by when it began, give or take a few seconds",
-            watch.number
-        ),
+        &format!("chat: stretch {number} placed by when it began, give or take a few seconds"),
     );
 }
 
@@ -381,18 +514,11 @@ pub(super) async fn load_json<T: serde::de::DeserializeOwned>(file: &Path) -> Op
     serde_json::from_slice(&tokio::fs::read(file).await.ok()?).ok()
 }
 
-/// Fetches what the chat said before a recording from the start began, from
-/// the VOD's replay, into the work folder, and says what it fetched.
-async fn fetch_before(app: &AppHandle, work: &Path, vod: &VodRef) -> Option<Before> {
+/// Fetches what the VOD's replay has for a stretch read from it, and says
+/// what it fetched. `None` if it couldn't be had.
+async fn fetch_replay(app: &AppHandle, vod: &VodRef) -> Option<Before> {
     let started = Instant::now();
-    let fetched = async {
-        let twitch = Twitch::new()?;
-        // A minute past the recording's start: IRC was on by then, and what
-        // both have is kept once.
-        twitch
-            .comments(&vod.id, 0.0, (vod.until - vod.since + 60.0).max(0.0), |_| {})
-            .await
-    };
+    let fetched = async { Twitch::new()?.comments(&vod.id, vod.from, vod.to, |_| {}).await };
     let replay = match fetched.await {
         Ok(replay) => replay,
         Err(error) => {
@@ -404,33 +530,42 @@ async fn fetch_before(app: &AppHandle, work: &Path, vod: &VodRef) -> Option<Befo
         }
     };
     let Some(origin) = replay.origin else {
-        log::line(app, &format!("chat: the replay of VOD {} has nothing yet", vod.id));
-        return None;
+        log::line(
+            app,
+            &format!(
+                "chat: the replay of VOD {} has nothing from its second {:.0} to {:.0} yet",
+                vod.id, vod.from, vod.to
+            ),
+        );
+        return Some(Before {
+            origin: None,
+            messages: Vec::new(),
+        });
     };
-    let before = Before {
-        origin,
-        messages: replay
-            .messages
-            .into_iter()
-            .map(|mut message| {
-                message.time += origin;
-                message
-            })
-            .collect(),
-    };
+    let messages: Vec<Message> = replay
+        .messages
+        .into_iter()
+        .map(|mut message| {
+            message.time += origin;
+            message
+        })
+        .collect();
     log::line(
         app,
         &format!(
-            "chat: {} messages from before the recording, from VOD {} ({} gaps), its start {:.2} s after the stream's, {:.1} s",
-            before.messages.len(),
+            "chat: {} messages from VOD {}'s replay from its second {:.0} ({} gaps), its clock {:+.2} s from the guess, {:.1} s",
+            messages.len(),
             vod.id,
+            vod.from,
             replay.gaps,
-            origin - vod.since,
+            origin - vod.guess,
             started.elapsed().as_secs_f64()
         ),
     );
-    save_json(&work.join(BEFORE), &before).await.ok()?;
-    Some(before)
+    Some(Before {
+        origin: Some(origin),
+        messages,
+    })
 }
 
 /// The stream's own segments that `playlist` lists now (none while it shows
@@ -481,7 +616,8 @@ async fn match_frame(
         at,
         aired: segment.aired,
         exact: true,
-        vod_start: false,
+        vod: None,
+        cuts: Vec::new(),
     })
 }
 
@@ -629,38 +765,36 @@ fn parse_framemd5(text: &str) -> Vec<(f64, String)> {
 /// The recording's chat placed on the finished file's clock, from what the
 /// capture kept in `work`; `None` if it kept no message or no stretch could
 /// be placed. Deleted messages and timed-out users' messages are left out.
-/// Recorded from the start, what was said before Record comes from the
-/// VOD's replay (fetched now if it wasn't while recording), and the stretch
-/// that is the VOD from its start is placed as the replay places it.
+/// A stretch read from the VOD is placed as the VOD's replay places it
+/// (fetched now if it wasn't while recording), which also has what was said
+/// before IRC was read.
 pub(super) async fn chat_for_file(app: &AppHandle, work: &Path, stretches: &[Stretch]) -> Option<ChatLog> {
     let events = tokio::fs::read_to_string(work.join(EVENTS)).await.unwrap_or_default();
-    let before = match load_json::<Before>(&work.join(BEFORE)).await {
-        Some(before) => Some(before),
-        None => match load_json::<VodRef>(&work.join(VOD)).await {
-            Some(vod) => fetch_before(app, work, &vod).await,
-            None => None,
-        },
-    };
     let mut placed: Vec<(Stretch, Aired)> = Vec::new();
+    let mut replays = HashMap::new();
     for stretch in stretches {
         let Some(aired) = load_json::<Aired>(&aired_file(work, stretch.number)).await else {
             continue;
         };
-        placed.push((
-            Stretch {
-                number: stretch.number,
-                start: stretch.start,
-                length: stretch.length,
-                offset: stretch.offset,
-            },
-            aired,
-        ));
+        if aired.vod.is_some() {
+            let replay = match load_json::<Before>(&replay_file(work, stretch.number)).await {
+                Some(replay) => Some(replay),
+                None => match load_json::<VodRef>(&vod_file(work, stretch.number)).await {
+                    Some(vod) => fetch_replay(app, &vod).await,
+                    None => None,
+                },
+            };
+            if let Some(replay) = replay {
+                replays.insert(stretch.number, replay);
+            }
+        }
+        placed.push((stretch.clone(), aired));
     }
     if placed.is_empty() {
         return None;
     }
     let snapshot = ChatLog::load(&work.join(SNAPSHOT)).await.unwrap_or_default();
-    let messages = arrange(said(&events), before, placed);
+    let messages = arrange(said(&events), &replays, placed);
     (!messages.is_empty()).then_some(ChatLog { messages, ..snapshot })
 }
 
@@ -670,8 +804,11 @@ pub(super) async fn chat_for_file(app: &AppHandle, work: &Path, stretches: &[Str
 /// message. As `chat_for_file` places it, but each stretch on its own.
 pub(super) async fn chat_for_stretch(work: &Path, number: usize, start: f64) -> Option<ChatLog> {
     let events = tokio::fs::read_to_string(work.join(EVENTS)).await.unwrap_or_default();
-    let before = load_json::<Before>(&work.join(BEFORE)).await;
     let aired = load_json::<Aired>(&aired_file(work, number)).await?;
+    let mut replays = HashMap::new();
+    if let Some(replay) = load_json::<Before>(&replay_file(work, number)).await {
+        replays.insert(number, replay);
+    }
     let stretch = Stretch {
         number,
         start,
@@ -680,38 +817,44 @@ pub(super) async fn chat_for_stretch(work: &Path, number: usize, start: f64) -> 
         // On its own clock.
         offset: start,
     };
-    let messages = arrange(said(&events), before, vec![(stretch, aired)]);
+    let messages = arrange(said(&events), &replays, vec![(stretch, aired)]);
     let snapshot = ChatLog::load(&work.join(SNAPSHOT)).await.unwrap_or_default();
     (!messages.is_empty()).then_some(ChatLog { messages, ..snapshot })
 }
 
-/// When stretch `number` aired, once that is as known as it will be: the
-/// frame match found it, or gave up. For a stretch that is the VOD from its
-/// start, once the replay is in, if there is one (see `arrange`).
+/// When stretch `number` aired, once that is as known as it will be: for a
+/// stretch read from the VOD, once its replay is in (see `arrange`);
+/// otherwise once the frame match found it, or gave up. A stretch read
+/// without the ads gets more of it as the ads come.
 pub(super) async fn timing_settled(work: &Path, number: usize) -> Option<Aired> {
     let aired = load_json::<Aired>(&aired_file(work, number)).await?;
-    let settled = if aired.vod_start {
-        work.join(BEFORE).exists()
+    let settled = if aired.vod.is_some() {
+        replay_file(work, number).exists()
     } else {
         aired.exact
     };
     settled.then_some(aired)
 }
 
-/// The chat on the finished file's clock: what IRC caught, and the replay's
+/// The chat on the finished file's clock: what IRC caught, and the replays'
 /// messages from before it, each in the stretch that was airing then. A
-/// stretch that is the VOD from its start is placed as the replay places it.
-fn arrange(said: Vec<Message>, before: Option<Before>, mut placed: Vec<(Stretch, Aired)>) -> Vec<Message> {
-    if let Some(before) = &before {
-        for (stretch, aired) in placed.iter_mut().filter(|(_, aired)| aired.vod_start) {
-            // The file starts with the VOD's first frame, where the replay
-            // counts from: placed `REPLAY_LEAD` later, that is where it shows.
+/// stretch read from the VOD is placed as its replay places it.
+fn arrange(said: Vec<Message>, replays: &HashMap<usize, Before>, mut placed: Vec<(Stretch, Aired)>) -> Vec<Message> {
+    for (stretch, aired) in &mut placed {
+        let origin = replays.get(&stretch.number).and_then(|replay| replay.origin);
+        if let (Some(clock), Some(origin)) = (&aired.vod, origin) {
+            // The file starts with the VOD's second `clock.at`, which the
+            // replay shows at `origin` and that many seconds: placed
+            // `REPLAY_LEAD` later, that is where it shows.
             aired.at = stretch.start;
-            aired.aired = before.origin - REPLAY_LEAD;
+            aired.aired = origin - REPLAY_LEAD + clock.at;
         }
     }
-    let said = merged(said, before.map(|before| before.messages).unwrap_or_default());
-    place(said, &placed)
+    let before = replays
+        .values()
+        .flat_map(|replay| replay.messages.iter().cloned())
+        .collect();
+    place(merged(said, before), &placed)
 }
 
 /// What IRC caught, and the replay's messages from before IRC's first one:
@@ -719,12 +862,12 @@ fn arrange(said: Vec<Message>, before: Option<Before>, mut placed: Vec<(Stretch,
 /// notices. A message both have is kept once.
 fn merged(mut said: Vec<Message>, before: Vec<Message>) -> Vec<Message> {
     let first = said.iter().map(|message| message.time).fold(f64::INFINITY, f64::min);
-    let known: HashSet<String> = said.iter().map(|message| message.id.clone()).collect();
-    said.extend(
-        before
-            .into_iter()
-            .filter(|message| message.time < first && !known.contains(&message.id)),
-    );
+    let mut known: HashSet<String> = said.iter().map(|message| message.id.clone()).collect();
+    for message in before {
+        if message.time < first && known.insert(message.id.clone()) {
+            said.push(message);
+        }
+    }
     said
 }
 
@@ -763,15 +906,14 @@ fn said(events: &str) -> Vec<Message> {
 /// Each message moved from when it was sent to where it shows in the
 /// finished file ([`REPLAY_LEAD`] before what was airing then), in the
 /// stretch that was airing then. Messages sent while nothing was being
-/// recorded (the stream had dropped) are left out.
+/// recorded (the stream had dropped) are left out; those sent during an ad
+/// that was left out show where the recording jumps over it.
 fn place(messages: Vec<Message>, stretches: &[(Stretch, Aired)]) -> Vec<Message> {
     let mut placed: Vec<Message> = messages
         .into_iter()
         .filter_map(|mut message| {
             let time = stretches.iter().find_map(|(stretch, aired)| {
-                // When the stretch's file starts, on the clock.
-                let began = aired.aired - (aired.at - stretch.start);
-                let into = message.time - REPLAY_LEAD - began;
+                let into = aired.file_time(message.time - REPLAY_LEAD) - stretch.start;
                 (0.0..=stretch.length).contains(&into).then_some(stretch.offset + into)
             })?;
             message.time = time;
@@ -885,6 +1027,34 @@ live.mp4
         assert_eq!(kept, vec!["1", "3"]);
     }
 
+    fn timing(at: f64, aired: f64) -> Aired {
+        Aired {
+            at,
+            aired,
+            exact: true,
+            vod: None,
+            cuts: Vec::new(),
+        }
+    }
+
+    fn times(placed: &[Message]) -> Vec<(&str, f64)> {
+        placed.iter().map(|m| (m.id.as_str(), m.time)).collect()
+    }
+
+    fn assert_times(placed: &[Message], expected: &[(&str, f64)]) {
+        let times = times(placed);
+        assert_eq!(times.len(), expected.len(), "{times:?}");
+        for ((id, time), (want_id, want_time)) in times.iter().zip(expected) {
+            assert_eq!(id, want_id, "{times:?}");
+            assert!((time - want_time).abs() < 1e-9, "{id}: {time}");
+        }
+    }
+
+    /// Sent a little after what it reacts to aired, as Twitch's replay shows it.
+    fn sent(aired: f64) -> f64 {
+        aired + REPLAY_LEAD
+    }
+
     #[test]
     fn places_messages_in_the_stretch_that_was_airing() {
         // Two stretches: the stream dropped for a minute between them.
@@ -896,12 +1066,7 @@ live.mp4
                     length: 100.0,
                     offset: 0.0,
                 },
-                Aired {
-                    at: 11.4,
-                    aired: 1010.0,
-                    exact: true,
-                    vod_start: false,
-                },
+                timing(11.4, 1010.0),
             ),
             (
                 Stretch {
@@ -911,15 +1076,11 @@ live.mp4
                     offset: 100.0,
                 },
                 Aired {
-                    at: 0.0,
-                    aired: 1160.0,
                     exact: false,
-                    vod_start: false,
+                    ..timing(0.0, 1160.0)
                 },
             ),
         ];
-        // Each sent a little after what it reacts to aired, as Twitch's replay shows it.
-        let sent = |aired: f64| aired + REPLAY_LEAD;
         let placed = place(
             vec![
                 message("before", "a", sent(999.0)),
@@ -929,27 +1090,60 @@ live.mp4
             ],
             &stretches,
         );
-        let times: Vec<(&str, f64)> = placed.iter().map(|m| (m.id.as_str(), m.time)).collect();
-        assert_eq!(times, vec![("early", 0.5), ("later", 110.0)]);
+        assert_times(&placed, &[("early", 0.5), ("later", 110.0)]);
+    }
+
+    #[test]
+    fn where_an_ad_was_left_out_the_chat_jumps_with_the_picture() {
+        // From 1.4 the file is what aired from 1000; at 31.4 it jumps over a
+        // 60-second ad to what aired from 1090.
+        let stretch = Stretch {
+            number: 1,
+            start: 1.4,
+            length: 100.0,
+            offset: 0.0,
+        };
+        let aired = Aired {
+            cuts: vec![Cut {
+                at: 31.4,
+                aired: 1090.0,
+            }],
+            ..timing(1.4, 1000.0)
+        };
+        let placed = place(
+            vec![
+                message("before", "a", sent(1010.0)),
+                message("during", "a", sent(1050.0)),
+                message("after", "a", sent(1100.0)),
+            ],
+            &[(stretch, aired.clone())],
+        );
+        // Said during the ad: where the file jumps over it.
+        assert_times(&placed, &[("before", 10.0), ("during", 30.0), ("after", 40.0)]);
+        // And back: what aired at a moment of the file.
+        assert!((aired.file_time(1095.0) - 36.4).abs() < 1e-9);
+    }
+
+    fn from_vod(start: f64, at: f64, aired: f64) -> (Stretch, Aired) {
+        (
+            Stretch {
+                number: 1,
+                start,
+                length: 1000.0,
+                offset: 0.0,
+            },
+            Aired {
+                vod: Some(VodClock { id: "1".into(), at }),
+                ..timing(start, aired)
+            },
+        )
     }
 
     #[test]
     fn from_the_start_the_replay_gives_what_was_said_before_record_and_the_timing() {
         // The stream began at 1000.0; its VOD's replay counts from 1005.7.
-        let stretch = || Stretch {
-            number: 1,
-            start: 64.066,
-            length: 1000.0,
-            offset: 0.0,
-        };
-        let aired = Aired {
-            at: 64.066,
-            aired: 1000.0,
-            exact: true,
-            vod_start: true,
-        };
-        let before = Before {
-            origin: 1005.7,
+        let replay = Before {
+            origin: Some(1005.7),
             messages: vec![
                 message("early", "a", 1010.7),
                 // IRC has it too, a moment apart on the clock.
@@ -959,17 +1153,28 @@ live.mp4
             ],
         };
         let said = vec![message("both", "b", 1300.7), message("irc", "d", 1400.7)];
-        let placed = arrange(said.clone(), Some(before), vec![(stretch(), aired)]);
-        let times: Vec<(&str, f64)> = placed.iter().map(|m| (m.id.as_str(), m.time)).collect();
+        let replays = HashMap::from([(1, replay)]);
+        let placed = arrange(said.clone(), &replays, vec![from_vod(64.066, 0.0, 1000.0)]);
         // As the replay places them: seconds since its origin.
-        let expected = [("early", 5.0), ("both", 295.0), ("irc", 395.0)];
-        assert_eq!(times.len(), expected.len(), "{times:?}");
-        for ((id, time), (want_id, want_time)) in times.iter().zip(expected) {
-            assert_eq!(*id, want_id);
-            assert!((time - want_time).abs() < 1e-9, "{id}: {time}");
-        }
-        // Without the replay, by the stream's start (to the second), as before.
-        let placed = arrange(said, None, vec![(stretch(), aired)]);
+        assert_times(&placed, &[("early", 5.0), ("both", 295.0), ("irc", 395.0)]);
+        // Without the replay, by when it aired, about.
+        let placed = arrange(said, &HashMap::new(), vec![from_vod(64.066, 0.0, 1000.0)]);
         assert!((placed[0].time - (1300.7 - REPLAY_LEAD - 1000.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn from_now_from_the_vod_the_replay_places_it_from_the_second_it_starts_with() {
+        // Read from the VOD's second 3600: the replay shows that at
+        // origin + 3600, so a message sent then shows at the file's start.
+        let replays = HashMap::from([(
+            1,
+            Before {
+                origin: Some(1005.7),
+                messages: vec![message("replay", "a", 1005.7 + 3610.0)],
+            },
+        )]);
+        let said = vec![message("irc", "b", 1005.7 + 3700.0)];
+        let placed = arrange(said, &replays, vec![from_vod(1.4, 3600.0, 4601.0)]);
+        assert_times(&placed, &[("replay", 10.0), ("irc", 100.0)]);
     }
 }

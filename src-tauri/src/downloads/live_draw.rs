@@ -117,11 +117,11 @@ fn now() -> f64 {
 }
 
 /// How far a stretch may be drawn now, on its file's clock: what has
-/// settled ([`SETTLE`]) and is far enough from the end of the file. `start`
-/// is where the file's timestamps start, `began` when that moment aired,
-/// `end` where what has been recorded ends.
-fn settled_until(start: f64, began: f64, end: f64, now: f64) -> f64 {
-    (start + (now - SETTLE - began)).min(end - BEHIND_END)
+/// settled ([`SETTLE`]) and is far enough from the end of the file. `aired`
+/// says when each moment of the file aired, `end` where what has been
+/// recorded ends.
+fn settled_until(aired: &live_chat::Aired, end: f64, now: f64) -> f64 {
+    aired.file_time(now - SETTLE).min(end - BEHIND_END)
 }
 
 /// Draws stretch `part` piece by piece while it is recorded, until the
@@ -144,25 +144,21 @@ pub(super) async fn draw_while_recording(part: DrawPart) {
         tokio::time::sleep(Duration::from_secs(2)).await;
     };
     // When it aired, as well as that will be known.
-    let aired = loop {
+    let mut aired = loop {
         if let Some(aired) = live_chat::timing_settled(&part.work, part.number).await {
             break aired;
         }
         if appeared.elapsed() > TIMING_WAIT {
             match live_chat::load_json::<live_chat::Aired>(&live_chat::aired_file(&part.work, part.number)).await {
                 // The frame match gave up: its guess stands, as it will when finished.
-                Some(aired) if !aired.vod_start => break aired,
-                // From the start without the replay: left to when it is finished,
-                // which looks for the replay again.
+                Some(aired) if aired.vod.is_none() => break aired,
+                // Read from the VOD without its replay: left to when it is
+                // finished, which looks for the replay again.
                 _ => return,
             }
         }
         tokio::time::sleep(LOOK_EVERY).await;
     };
-    // Its file's first timestamp aired then (a stretch that is the VOD from
-    // its start is placed by the replay, which `live_chat` does; drawing
-    // only needs to know when its chat has settled).
-    let began = aired.aired - (aired.at - start);
     let state = state_file(&part.work, part.number);
     let mut done = match live_chat::load_json::<Drawn>(&state).await {
         Some(done) => done,
@@ -174,8 +170,14 @@ pub(super) async fn draw_while_recording(part: DrawPart) {
         }
     };
     loop {
+        // Read without the ads, it learns where each ad was left out as it comes.
+        if let Some(latest) = live_chat::timing_settled(&part.work, part.number).await {
+            aired = latest;
+        }
         if let Some((now_start, length)) = live_chat::file_span(&part.ffprobe, &raw).await {
-            let until = settled_until(start, began, now_start + length, now());
+            // (A stretch read from the VOD is placed by its replay, which
+            // `live_chat` does; drawing only needs to know when its chat has settled.)
+            let until = settled_until(&aired, now_start + length, now());
             if until - done.until >= PIECE {
                 let to = done.until + PIECE;
                 let started = Instant::now();
@@ -568,13 +570,28 @@ mod tests {
     #[test]
     fn a_stretch_is_drawn_once_its_chat_has_settled_and_short_of_its_end() {
         // The file's first timestamp, 1.4, aired at 1000.
-        let (start, began) = (1.4, 1000.0);
+        let start = 1.4;
+        let mut aired = live_chat::Aired {
+            at: start,
+            aired: 1000.0,
+            exact: true,
+            vod: None,
+            cuts: Vec::new(),
+        };
         // Five minutes on: what aired over two minutes and a bit ago.
-        let until = settled_until(start, began, 1000.0, 1300.0);
+        let until = settled_until(&aired, 1000.0, 1300.0);
         assert!((until - (start + 300.0 - SETTLE)).abs() < 1e-9, "{until}");
         const { assert!(SETTLE >= REPLAY_LEAD + CLEARED_SPAN) };
         // Recorded from the start, long settled: as far as the file goes, less a margin.
-        assert!((settled_until(start, began, 500.0, 99_999.0) - (500.0 - BEHIND_END)).abs() < 1e-9);
+        assert!((settled_until(&aired, 500.0, 99_999.0) - (500.0 - BEHIND_END)).abs() < 1e-9);
+        // A minute's ad left out at 100.0: what follows aired a minute later,
+        // and settles a minute later.
+        aired.cuts.push(live_chat::Cut {
+            at: 100.0,
+            aired: 1158.6,
+        });
+        let until = settled_until(&aired, 1000.0, 1158.6 + SETTLE + 20.0);
+        assert!((until - 120.0).abs() < 1e-9, "{until}");
     }
 
     #[test]

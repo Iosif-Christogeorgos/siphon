@@ -301,6 +301,8 @@ function recordingPieces(download: Download): ({ key: string; node: ReactNode } 
       node:
         progress.stage === "reconnecting" ? (
           "Stream paused"
+        ) : live?.stop_in != null ? (
+          <span className="text-live">Catching up to Stop · {formatSpan(live.stop_in)}</span>
         ) : live?.behind != null ? (
           <span className="text-live">Catching up · {formatSpan(live.behind)} behind</span>
         ) : (
@@ -403,6 +405,7 @@ function fullStatus(download: Download): string {
                 STAGE_LABELS[progress.stage],
                 live && progress.stage !== "waiting_live" && formatDuration(live.elapsed),
                 live && progress.stage !== "waiting_live" && formatBytes(live.bytes),
+                live?.stop_in != null && `catching up to Stop, ${formatSpan(live.stop_in)}`,
                 live?.behind != null && `${formatSpan(live.behind)} behind live`,
                 formatBitrate(live?.bitrate),
                 live?.disk_left != null && `the disk is full in ${formatSpan(live.disk_left)}`,

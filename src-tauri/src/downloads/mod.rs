@@ -10,6 +10,7 @@ mod live;
 mod live_chat;
 mod live_draw;
 mod tracker;
+mod twitch_feed;
 
 pub use chat::image_folder as chat_image_folder;
 pub use live::Recovered;
@@ -302,6 +303,9 @@ struct Job {
     /// That request, while it is under way: it ends once every process it
     /// asked has ended (see `process::interrupt_tree`).
     interrupting: Option<tokio::task::JoinHandle<()>>,
+    /// A recording read from Twitch's VOD, behind live, while it is: Stop
+    /// lets it record on to where Stop was pressed (see `twitch_feed`).
+    catch_up: Option<twitch_feed::CatchUp>,
 }
 
 /// Who may run: jobs take a slot in the order they were added.
@@ -726,9 +730,12 @@ impl DownloadManager {
             let Some(job) = jobs.get_mut(id) else { return false };
             job.stop = Some(stop);
             if job.graceful && stop != Stop::Cancel {
+                // Behind live, it records on to where Stop was pressed and
+                // ends there by itself; pressed again, Stop stops it at once.
+                let ends_itself = stop == Stop::Finish && job.catch_up.as_ref().is_some_and(twitch_feed::CatchUp::ask);
                 // Asked to stop, so it closes its file properly; whoever runs it
                 // waits for that (see `run_child`).
-                if let Some(&pid) = job.pids.first() {
+                if let (false, Some(&pid)) = (ends_itself, job.pids.first()) {
                     job.interrupting = Some(interrupt(pid));
                 }
                 Vec::new()

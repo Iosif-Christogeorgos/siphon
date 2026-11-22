@@ -176,7 +176,7 @@ pub fn hints(recipe: &Recipe, extractor: Option<&str>, limit: Option<u64>, free:
     }
     if extractor.is_some_and(|key| key.to_lowercase().starts_with("twitch")) {
         hints.push(info(
-            "Twitch shows ads during live streams, and they end up in the recording. Siphon doesn't remove them.",
+            "Twitch's ads are left out. Where the channel keeps its past broadcasts, the recording is read from them, so nothing is missed during an ad, and Stop takes a few seconds to catch up. Otherwise it skips what aired during each ad.",
         ));
     }
     hints
@@ -399,7 +399,9 @@ mod tests {
             roomy.iter().any(|hint| hint.text.contains("room for about 40 h")),
             "{roomy:?}"
         );
-        assert!(hints(&recipe, Some("TwitchStream"), None, None)[0].text.contains("ads"));
+        assert!(hints(&recipe, Some("TwitchStream"), None, None)[0]
+            .text
+            .contains("ads are left out"));
         assert!(hints(&recipe, None, None, None).is_empty());
     }
 

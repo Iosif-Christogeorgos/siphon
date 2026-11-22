@@ -314,6 +314,22 @@ pub fn record_args(recipe: &Recipe, from_start: bool) -> Vec<String> {
     args
 }
 
+/// The arguments that record a stream from a lookup whose stream Siphon
+/// serves (see `downloads::twitch_feed`): as [`record_args`] from now, with
+/// format `format_id` of that lookup. For a VOD, with its from-the-start
+/// formats kept: yt-dlp leaves them out otherwise ("No video formats found"),
+/// and with them it starts ffmpeg at the served playlist's first segment.
+pub fn record_feed_args(recipe: &Recipe, format_id: &str, vod: bool) -> Vec<String> {
+    let mut args = record_args(recipe, false);
+    if let Some(at) = args.iter().position(|arg| arg == "--format") {
+        args[at + 1] = format_id.to_string();
+    }
+    if vod {
+        args.push("--live-from-start".into());
+    }
+    args
+}
+
 /// The output template for part `part` of a recording: the user's naming
 /// style, the download's own marker, and which part it is. Recorded from now
 /// on, it is one MPEG-TS file; from the start, yt-dlp names the video and
@@ -386,6 +402,25 @@ mod subtitle_tests {
 #[cfg(test)]
 mod recording_tests {
     use super::*;
+
+    #[test]
+    fn a_recording_from_a_served_playlist_records_the_format_given() {
+        let recipe: Recipe = serde_json::from_value(serde_json::json!({
+            "video": null, "audio": null, "container": "mp4", "strip_audio": false, "reason": null,
+            "promise": "", "hints": [], "duration": null, "trim": null, "source_fraction": 1.0,
+            "badge": "lossless", "size_limit": null, "fits": null, "blocked": null,
+            "section_request_size": null, "fallback": null, "cut_encode": null
+        }))
+        .unwrap();
+        let live = record_feed_args(&recipe, "1080p60__source_", false);
+        let at = live.iter().position(|arg| arg == "--format").unwrap();
+        assert_eq!(live[at + 1], "1080p60__source_");
+        assert!(live.contains(&"--hls-use-mpegts".to_string()));
+        assert!(!live.contains(&"--live-from-start".to_string()));
+        let vod = record_feed_args(&recipe, "1080p60", true);
+        assert!(vod.contains(&"--live-from-start".to_string()));
+        assert!(!vod.contains(&"--merge-output-format".to_string()));
+    }
 
     #[test]
     fn names_each_part_of_a_recording_and_finds_the_title_again() {

@@ -69,6 +69,9 @@ pub struct LiveProgress {
     pub starts_at: Option<u64>,
     /// Seconds of recording the disk still has room for, when that is getting short.
     pub disk_left: Option<f64>,
+    /// Stopped while read from Twitch's VOD, behind live: how many seconds
+    /// it still records to get to where Stop was pressed.
+    pub stop_in: Option<f64>,
 }
 
 /// Share of the bar the downloads get when yt-dlp only has to merge afterwards …

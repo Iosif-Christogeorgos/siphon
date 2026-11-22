@@ -296,9 +296,11 @@ function Recording({
       : "Waiting for the stream to start"
     : stage === "reconnecting"
       ? "Stream paused, waiting for it"
-      : live?.behind != null
-        ? `Catching up · ${formatSpan(live.behind)} behind live`
-        : null;
+      : live?.stop_in != null
+        ? `Catching up to Stop · ${formatSpan(live.stop_in)}`
+        : live?.behind != null
+          ? `Catching up · ${formatSpan(live.behind)} behind live`
+          : null;
   const detail = waiting
     ? ""
     : [live && formatBytes(live.bytes), stage === "recording" && formatBitrate(live?.bitrate)].filter(Boolean).join(" · ");

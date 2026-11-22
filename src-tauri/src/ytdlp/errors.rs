@@ -282,6 +282,13 @@ pub fn is_offline(log: &str) -> bool {
     log.to_lowercase().contains("is not currently live")
 }
 
+/// True when yt-dlp was asked for a stream from its start and the site
+/// doesn't keep it as it airs: a Twitch channel that saves no VODs ("there
+/// are no formats that can be downloaded from the start").
+pub fn not_kept_from_start(log: &str) -> bool {
+    log.contains("no formats that can be downloaded from the start")
+}
+
 /// True when a live recording that finished without an error ended because
 /// its stream did: its playlist said so, and nothing failed on the way. A
 /// stream that stops sending ends ffmpeg without an error too, but leaves
