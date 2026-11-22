@@ -124,7 +124,7 @@ Siphon checks the sign-in on the video before saying it worked, then looks the v
 
 ## Live recording
 
-A live stream gets **Record** instead of Download, and a scheduled stream or an offline channel **Record when it starts**. Siphon waits for it, records it as MPEG-TS (so nothing recorded is lost to a crash), carries on through short dropouts, and when it ends or is stopped makes it into the preset's file (Max quality, Watch or Audio) and checks it. Where the site keeps what already aired, it can record **from the start**, catching up first. Recordings go first within the speed limit and are finished after a crash or closing. Details, measurements and limits are in [live.md](live.md).
+A live stream gets **Record** instead of Download, and a scheduled stream or an offline channel **Record when it starts**. Siphon waits for it, records it as MPEG-TS (so nothing recorded is lost to a crash), carries on through short dropouts, and when it ends or is stopped makes it into the preset's file (Max quality, Watch or Audio) and checks it. Where the site keeps what already aired, it can record **from the start**, catching up first. On Twitch the ads are left out: a recording reads the stream's VOD where the channel keeps one, and otherwise the stream with the ads taken out of its playlist (Siphon serves the playlist yt-dlp records). Recordings go first within the speed limit and are finished after a crash or closing. Details, measurements and limits are in [live.md](live.md).
 
 ## Updates
 
@@ -166,7 +166,7 @@ src-tauri/               Rust backend (Tauri 2)
   src/srt.rs             Reading, cleaning, cutting and writing SubRip subtitles
   src/choices.rs         The remembered choice and saved presets (choices.json), and migrating old ones
   src/ffmpeg/            Hardware encoder detection and conversion arguments
-  src/downloads/         The download queue, jobs (pause, resume, cancel), progress tracking, and live recording (live.rs)
+  src/downloads/         The download queue, jobs (pause, resume, cancel), progress tracking, and live recording (live.rs; Twitch without its ads: twitch_feed.rs)
   src/throttle/          The speed limit: the local proxy, the shared fair limiter, the system proxy
   src/sessions/          Signed-in sites: cookie jars (DPAPI), which site a link is, the sign-in window,
                          taking a sign-in over from a browser or a cookies.txt file

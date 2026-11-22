@@ -84,7 +84,7 @@ Paste a playlist or channel link to pick the videos you want, with an estimated 
 
 ### Record live streams
 
-Paste a live stream from Twitch, YouTube, Kick and more, and press **Record**, or **Record when it starts** for a scheduled stream or an offline channel. Siphon records from now or, where the site allows, from the start, keeps going through short dropouts, and makes it into a file that plays everywhere when you press Stop or the stream ends. A crash or power cut never loses what was recorded: Siphon finishes it the next time it starts.
+Paste a live stream from Twitch, YouTube, Kick and more, and press **Record**, or **Record when it starts** for a scheduled stream or an offline channel. Siphon records from now or, where the site allows, from the start, keeps going through short dropouts, and makes it into a file that plays everywhere when you press Stop or the stream ends. On Twitch it leaves the ads out, with no account or subscription. A crash or power cut never loses what was recorded: Siphon finishes it the next time it starts.
 
 ### Twitch chat in the picture
 
