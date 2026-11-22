@@ -16,7 +16,7 @@ use tokio::sync::Mutex;
 
 use super::render::{Geometry, Layer, Style};
 use super::twitch::Twitch;
-use super::{emotes, images, ChatLog, ChatSource, Message, Placement};
+use super::{images, ChatLog, ChatSource, Message, Placement};
 use crate::error::Result;
 use crate::log;
 
@@ -288,9 +288,8 @@ impl ChatPreviews {
 impl LivePreview {
     async fn start(login: &str) -> Result<LivePreview> {
         let twitch = Twitch::new()?;
-        let channel = twitch.channel(login).await?;
-        let ((emote_list, _), badges) =
-            tokio::join!(emotes::fetch(twitch.http(), &channel.id), twitch.badges(&channel.id));
+        let channel_id = twitch.channel_id(login).await?;
+        let (log, _) = ChatLog::of_channel(&twitch, &channel_id).await;
         let recent = Arc::new(std::sync::Mutex::new(VecDeque::new()));
         let (into, login) = (Arc::clone(&recent), login.to_string());
         let reader = tokio::spawn(async move {
@@ -315,12 +314,7 @@ impl LivePreview {
         });
         Ok(LivePreview {
             twitch,
-            log: ChatLog {
-                channel,
-                messages: Vec::new(),
-                emotes: emote_list,
-                badges: badges.unwrap_or_default(),
-            },
+            log,
             recent,
             reader,
             last_asked: Instant::now(),
@@ -341,18 +335,10 @@ impl Preview {
     async fn start(id: &str) -> Result<Preview> {
         let twitch = Twitch::new()?;
         let vod = twitch.vod(id).await?;
-        let ((emote_list, _), badges) = tokio::join!(
-            emotes::fetch(twitch.http(), &vod.channel.id),
-            twitch.badges(&vod.channel.id)
-        );
+        let (log, _) = ChatLog::of_channel(&twitch, &vod.channel_id).await;
         Ok(Preview {
             twitch,
-            log: ChatLog {
-                channel: vod.channel,
-                messages: Vec::new(),
-                emotes: emote_list,
-                badges: badges.unwrap_or_default(),
-            },
+            log,
             ids: HashSet::new(),
             fetched: Vec::new(),
             layer: None,

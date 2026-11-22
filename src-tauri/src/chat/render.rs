@@ -740,13 +740,11 @@ fn from_hsl(hue: f64, saturation: f64, lightness: f64) -> [u8; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chat::{images, Image, Provider};
+    use crate::chat::{images, Image};
 
     fn emote(name: &str, overlay: bool) -> Emote {
         Emote {
             name: name.into(),
-            provider: Provider::SevenTv,
-            id: name.into(),
             images: vec![Image {
                 height: 32,
                 url: format!("https://cdn.example/{name}"),

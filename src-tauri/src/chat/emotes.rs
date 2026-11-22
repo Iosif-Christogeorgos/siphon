@@ -11,7 +11,7 @@
 
 use serde_json::Value;
 
-use super::{Emote, Image, Provider};
+use super::{Emote, Image};
 
 const SEVEN_TV: &str = "https://7tv.io/v3";
 const BTTV: &str = "https://api.betterttv.net/3/cached";
@@ -115,8 +115,6 @@ fn seven_tv(list: Option<&Value>) -> Vec<Emote> {
             let flags = |value: &Value| value.get("flags").and_then(Value::as_u64).unwrap_or(0);
             Some(Emote {
                 name: name.to_string(),
-                provider: Provider::SevenTv,
-                id: emote.get("id")?.as_str()?.to_string(),
                 images,
                 overlay: flags(emote) & SEVEN_TV_SET_OVERLAY != 0 || flags(data) & SEVEN_TV_EMOTE_OVERLAY != 0,
             })
@@ -145,8 +143,6 @@ fn bttv(list: Option<&Value>) -> Vec<Emote> {
             let name = emote.get("code")?.as_str()?;
             Some(Emote {
                 name: name.to_string(),
-                provider: Provider::Bttv,
-                id: id.to_string(),
                 images: [(28, "1x"), (56, "2x"), (112, "3x")]
                     .into_iter()
                     .map(|(height, size)| Image {
@@ -168,11 +164,6 @@ fn ffz(list: Option<&Value>) -> Vec<Emote> {
     };
     list.iter()
         .filter_map(|emote| {
-            let id = match emote.get("id")? {
-                Value::Number(number) => number.to_string(),
-                Value::String(text) => text.clone(),
-                _ => return None,
-            };
             let images = emote.get("images")?;
             let images: Vec<Image> = [(28, "1x"), (56, "2x"), (112, "4x")]
                 .into_iter()
@@ -185,8 +176,6 @@ fn ffz(list: Option<&Value>) -> Vec<Emote> {
                 .collect();
             Some(Emote {
                 name: emote.get("code")?.as_str()?.to_string(),
-                provider: Provider::Ffz,
-                id,
                 images,
                 overlay: emote.get("modifier").and_then(Value::as_bool) == Some(true),
             })
@@ -271,28 +260,33 @@ mod tests {
                 {"id":7,"code":"ffzHat","images":{"1x":"https://cdn.betterttv.net/frankerfacez_emote/7/1"},"modifier":true}]"#,
         );
         let ffz_emotes = ffz(Some(&ffz_list));
-        assert_eq!(ffz_emotes[0].id, "523340");
+        assert_eq!(ffz_emotes[0].name, "3Lass");
         assert_eq!(ffz_emotes[0].images.len(), 2, "sizes FFZ doesn't have are left out");
         assert!(ffz_emotes[1].overlay);
     }
 
     #[test]
     fn the_first_list_to_name_an_emote_wins() {
-        let emote = |name: &str, provider: Provider| Emote {
+        // Each emote's image says which list it came from.
+        let emote = |name: &str, from: &str| Emote {
             name: name.into(),
-            provider,
-            id: name.into(),
-            images: Vec::new(),
+            images: vec![Image {
+                height: 28,
+                url: from.into(),
+            }],
             overlay: false,
         };
         let merged = merge(vec![
-            vec![emote("KEKW", Provider::SevenTv)],
-            vec![emote("KEKW", Provider::Bttv), emote("Hammies", Provider::Bttv)],
-            vec![emote("Hammies", Provider::Ffz), emote("", Provider::Ffz)],
+            vec![emote("KEKW", "7tv")],
+            vec![emote("KEKW", "bttv"), emote("Hammies", "bttv")],
+            vec![emote("Hammies", "ffz"), emote("", "ffz")],
         ]);
         assert_eq!(
-            merged.iter().map(|e| (e.name.as_str(), e.provider)).collect::<Vec<_>>(),
-            vec![("KEKW", Provider::SevenTv), ("Hammies", Provider::Bttv)]
+            merged
+                .iter()
+                .map(|e| (e.name.as_str(), e.images[0].url.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("KEKW", "7tv"), ("Hammies", "bttv")]
         );
     }
 }

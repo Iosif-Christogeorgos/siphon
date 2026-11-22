@@ -18,7 +18,7 @@ use futures_util::StreamExt;
 use serde_json::{json, Value};
 use tokio::sync::Semaphore;
 
-use super::{Badge, BadgeRef, Channel, Image, Message, Part};
+use super::{Badge, BadgeRef, Image, Message, Part};
 use crate::error::{AppError, ErrorKind, Result};
 
 const GQL: &str = "https://gql.twitch.tv/gql";
@@ -61,7 +61,8 @@ pub struct Replay {
 /// A VOD: whose it is, and how long.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Vod {
-    pub channel: Channel,
+    /// Twitch's number for the channel, which its badges and the emote services key by.
+    pub channel_id: String,
     pub length: f64,
 }
 
@@ -166,22 +167,22 @@ impl Twitch {
     pub async fn vod(&self, id: &str) -> Result<Vod> {
         let data = self
             .query(
-                "query($id:ID!){video(id:$id){lengthSeconds owner{id login displayName}}}",
+                "query($id:ID!){video(id:$id){lengthSeconds owner{id}}}",
                 json!({ "id": id }),
             )
             .await?;
         parse_vod(&data).ok_or_else(|| refused("Twitch doesn't have this video's chat."))
     }
 
-    /// The channel with the login `login`.
-    pub async fn channel(&self, login: &str) -> Result<Channel> {
+    /// Twitch's number for the channel with the login `login`.
+    pub async fn channel_id(&self, login: &str) -> Result<String> {
         let data = self
             .query(
-                "query($login:String!){user(login:$login){id login displayName}}",
+                "query($login:String!){user(login:$login){id}}",
                 json!({ "login": login }),
             )
             .await?;
-        parse_channel(data.get("user")).ok_or_else(|| refused("Twitch has no such channel."))
+        user_id(data.get("user")).ok_or_else(|| refused("Twitch has no such channel."))
     }
 
     /// Everyone's badges and the channel's own (its subscriber and bits
@@ -404,20 +405,17 @@ fn first_error(answer: &Value) -> Option<String> {
 fn parse_vod(data: &Value) -> Option<Vod> {
     let video = data.get("video")?;
     Some(Vod {
-        channel: parse_channel(video.get("owner"))?,
+        channel_id: user_id(video.get("owner"))?,
         length: video.get("lengthSeconds")?.as_f64()?,
     })
 }
 
-fn parse_channel(user: Option<&Value>) -> Option<Channel> {
-    let user = user?;
-    let text = |key: &str| user.get(key).and_then(Value::as_str).map(str::to_string);
-    let login = text("login")?;
-    Some(Channel {
-        id: text("id")?,
-        name: text("displayName").unwrap_or_else(|| login.clone()),
-        login,
-    })
+fn user_id(user: Option<&Value>) -> Option<String> {
+    user?
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
 }
 
 fn parse_badges(list: Option<&Value>) -> Vec<Badge> {
@@ -604,20 +602,13 @@ mod tests {
 
     #[test]
     fn reads_a_vod_and_badges() {
-        let data: Value = serde_json::from_str(
-            r#"{"video":{"lengthSeconds":25081,"owner":{"id":"15310631","login":"greekgodx","displayName":"Greekgodx"}}}"#,
-        )
-        .unwrap();
+        let data: Value =
+            serde_json::from_str(r#"{"video":{"lengthSeconds":25081,"owner":{"id":"15310631"}}}"#).unwrap();
         let vod = parse_vod(&data).unwrap();
         assert_eq!(vod.length, 25081.0);
-        assert_eq!(
-            vod.channel,
-            Channel {
-                id: "15310631".into(),
-                login: "greekgodx".into(),
-                name: "Greekgodx".into()
-            }
-        );
+        assert_eq!(vod.channel_id, "15310631");
+        let gone: Value = serde_json::from_str(r#"{"video":{"lengthSeconds":10,"owner":null}}"#).unwrap();
+        assert_eq!(parse_vod(&gone), None, "a VOD whose channel is gone");
         let badges: Value = serde_json::from_str(
             r#"[{"setID":"subscriber","version":"48","title":"4-Year Subscriber","imageURL":"https://static-cdn.jtvnw.net/badges/v1/5ec1cc90-8bbc-4253-90de-2edeaa70180c/2"}]"#,
         )

@@ -45,7 +45,7 @@ use super::live::recording_files;
 use super::twitch_feed::Mark;
 use crate::chat::irc::{self, Event};
 use crate::chat::twitch::Twitch;
-use crate::chat::{emotes, parse_timestamp, ChatLog, Message};
+use crate::chat::{parse_timestamp, ChatLog, Message};
 use crate::log;
 use crate::process;
 
@@ -254,15 +254,8 @@ impl ChatCapture {
             }
             let fetched = async {
                 let twitch = Twitch::new()?;
-                let channel = twitch.channel(&login).await?;
-                let ((emote_list, _), badges) =
-                    tokio::join!(emotes::fetch(twitch.http(), &channel.id), twitch.badges(&channel.id));
-                Ok::<_, crate::error::AppError>(ChatLog {
-                    channel,
-                    messages: Vec::new(),
-                    emotes: emote_list,
-                    badges: badges.unwrap_or_default(),
-                })
+                let channel_id = twitch.channel_id(&login).await?;
+                Ok::<_, crate::error::AppError>(ChatLog::of_channel(&twitch, &channel_id).await.0)
             }
             .await;
             match fetched {

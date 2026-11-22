@@ -12,7 +12,7 @@ use tauri::Manager;
 use super::{ChildEvent, DownloadManager, Failure, JobContext};
 use crate::chat::render::{Geometry, Layer, Style};
 use crate::chat::twitch::Twitch;
-use crate::chat::{emotes, images, ChatLog, ChatSource, ChatStep};
+use crate::chat::{images, ChatLog, ChatSource, ChatStep};
 use crate::error::{AppError, Result};
 use crate::ffmpeg::{self, ChatLayer, Pass};
 use crate::log;
@@ -90,10 +90,9 @@ impl DownloadManager {
         let twitch = Twitch::new()?;
         let vod = twitch.vod(id).await?;
         let (from, to) = span(recipe, vod.length);
-        let (replay, (emote_list, missing), badges) = tokio::join!(
+        let (replay, (channel, missing)) = tokio::join!(
             twitch.comments(id, (from - LEAD_IN).max(0.0), to, |_| {}),
-            emotes::fetch(twitch.http(), &vod.channel.id),
-            twitch.badges(&vod.channel.id),
+            ChatLog::of_channel(&twitch, &vod.channel_id),
         );
         let replay = replay?;
         if replay.messages.is_empty() {
@@ -104,12 +103,10 @@ impl DownloadManager {
             };
             return Err(AppError::new(crate::error::ErrorKind::Unavailable, why));
         }
+        // Without some emotes or badges the chat is still the chat.
         let log = ChatLog {
-            channel: vod.channel,
             messages: replay.messages,
-            emotes: emote_list,
-            // Without badges the chat is still the chat.
-            badges: badges.unwrap_or_default(),
+            ..channel
         };
         // The images, at the sizes the box will draw them (the frame's size as
         // the lookup gave it; the layer makes do with another size if it differs).
@@ -127,12 +124,12 @@ impl DownloadManager {
         crate::log::line(
             job.app,
             &format!(
-                "chat {id}: {} messages ({} gaps), {} emotes (not had: {}), {} badges, {wanted} images ({failed} failed), {:.1} s",
+                "chat {id}: {} messages ({} gaps), {} emotes, {} badges (not had: {}), {wanted} images ({failed} failed), {:.1} s",
                 log.messages.len(),
                 replay.gaps,
                 log.emotes.len(),
-                if missing.is_empty() { "none".to_string() } else { missing.join(", ") },
                 log.badges.len(),
+                if missing.is_empty() { "none".to_string() } else { missing.join(", ") },
                 started.elapsed().as_secs_f64()
             ),
         );

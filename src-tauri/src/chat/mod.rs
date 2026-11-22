@@ -141,7 +141,6 @@ pub struct ChatStep {
 /// failed download doesn't fetch it again.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ChatLog {
-    pub channel: Channel,
     /// In time order.
     pub messages: Vec<Message>,
     /// The channel's and everyone's third-party emotes, as they were when the
@@ -149,14 +148,6 @@ pub struct ChatLog {
     /// (see [`emotes::merge`]).
     pub emotes: Vec<Emote>,
     pub badges: Vec<Badge>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct Channel {
-    /// Twitch's number for the channel, which the emote services key by.
-    pub id: String,
-    pub login: String,
-    pub name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -201,21 +192,11 @@ pub struct Badge {
     pub images: Vec<Image>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Provider {
-    Twitch,
-    SevenTv,
-    Bttv,
-    Ffz,
-}
-
+/// A third-party emote (7TV's, BTTV's or FFZ's).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Emote {
     /// The word that shows it.
     pub name: String,
-    pub provider: Provider,
-    pub id: String,
     /// The image in each size offered, smallest first.
     pub images: Vec<Image>,
     /// Drawn over the emote before it instead of beside it (7TV's
@@ -254,6 +235,25 @@ pub fn twitch_emote_images(id: &str) -> Vec<Image> {
 }
 
 impl ChatLog {
+    /// A channel's chat before anything is said: the third-party emotes and
+    /// the badges it shows (`channel_id` is Twitch's number for the
+    /// channel). Also says which of those lists couldn't be had: the chat is
+    /// drawn without them.
+    pub async fn of_channel(twitch: &twitch::Twitch, channel_id: &str) -> (ChatLog, Vec<&'static str>) {
+        let ((emotes, mut missing), badges) =
+            tokio::join!(emotes::fetch(twitch.http(), channel_id), twitch.badges(channel_id));
+        let badges = badges.unwrap_or_else(|_| {
+            missing.push("badges");
+            Vec::new()
+        });
+        let log = ChatLog {
+            messages: Vec::new(),
+            emotes,
+            badges,
+        };
+        (log, missing)
+    }
+
     pub async fn save(&self, file: &Path) -> Result<()> {
         let json = serde_json::to_vec(self).map_err(|err| AppError::internal(err.to_string()))?;
         let partial = file.with_extension("json.part");
@@ -423,6 +423,18 @@ mod tests {
         assert_eq!(broken.width, Placement::MIN_WIDTH);
         assert!(broken.x.is_finite() && broken.height <= 1.0);
         assert_eq!(Placement::DEFAULT.sanitized(), Placement::DEFAULT);
+    }
+
+    #[test]
+    fn reads_a_chat_kept_by_an_older_version() {
+        // As 0.16.0 kept it, with the channel and each emote's service and id.
+        let old = r##"{"channel":{"id":"1","login":"a","name":"A"},
+            "messages":[{"id":"m","time":1.5,"name":"A","login":"a","color":"#FF0000","badges":[],"parts":[{"kind":"text","text":"hi"}],"notice":false}],
+            "emotes":[{"name":"KEKW","provider":"seven_tv","id":"x","images":[{"height":32,"url":"https://cdn.example/x"}],"overlay":false}],
+            "badges":[]}"##;
+        let log: ChatLog = serde_json::from_str(old).unwrap();
+        assert_eq!(log.messages.len(), 1);
+        assert_eq!(log.emotes[0].name, "KEKW");
     }
 
     #[test]
