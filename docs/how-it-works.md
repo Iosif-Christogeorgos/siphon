@@ -154,7 +154,7 @@ Progress comes from `--progress-template` lines that the backend parses and fold
 src/                     React + TypeScript frontend
   components/            Shared UI (title bar, error card, shadcn/ui primitives)
   features/              One folder per feature: setup, link, video, playlist, presets, options,
-                         trim, download, queue, settings, speed, sign-in, home
+                         trim, download, queue, settings, speed, sign-in, home, chat
   lib/                   IPC wrappers, formatting, motion presets
   stores/                Zustand stores (binaries, choices, downloads, trim, toasts, appUpdate, ui, speed, signIn),
                          and the shared settings query
@@ -166,7 +166,8 @@ src-tauri/               Rust backend (Tauri 2)
   src/srt.rs             Reading, cleaning, cutting and writing SubRip subtitles
   src/choices.rs         The remembered choice and saved presets (choices.json), and migrating old ones
   src/ffmpeg/            Hardware encoder detection and conversion arguments
-  src/downloads/         The download queue, jobs (pause, resume, cancel), progress tracking, and live recording (live.rs; Twitch without its ads: twitch_feed.rs)
+  src/downloads/         The download queue, jobs (pause, resume, cancel), progress tracking, and live recording (live.rs; Twitch without its ads: twitch_feed.rs), and drawing chat in (chat.rs, live_chat.rs, live_draw.rs)
+  src/chat/              Twitch chat: reading it (replay, IRC), emotes and badges, and drawing it as a layer
   src/throttle/          The speed limit: the local proxy, the shared fair limiter, the system proxy
   src/sessions/          Signed-in sites: cookie jars (DPAPI), which site a link is, the sign-in window,
                          taking a sign-in over from a browser or a cookies.txt file
@@ -182,6 +183,7 @@ docs/presets.md          What each preset does and assumes, with sources
 docs/sign-in.md          How signing in to sites works, what is kept where, and how to test it
 docs/live.md             Recording live streams: how, what was tested, and its limits
 docs/subtitles.md        Subtitles: which a download gets, where each preset puts them, what was tested
+docs/chat.md             Twitch chat drawn in: how it is read, timed and drawn, what was measured
 docs/decisions.md        Why things work the way they do, and known issues
 docs/media/              The README's screenshots and demo
 app-icon.svg             Icon source; regenerate with `npx tauri icon app-icon.svg`
