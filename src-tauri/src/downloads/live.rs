@@ -224,11 +224,60 @@ pub(super) struct Readings {
     rate: Option<u64>,
     from_start: bool,
     caught_up: bool,
+    /// How long the recording from the start is, measured from its file
+    /// (see [`Measuring`]), once known.
+    recorded: Option<f64>,
     samples: VecDeque<(Instant, u64)>,
 }
 
 /// How far back the bitrate is measured: streams arrive a segment at a time.
 const BITRATE_WINDOW: Duration = Duration::from_secs(10);
+/// How often a recording catching up from the start has its files measured.
+const MEASURE_EVERY: Duration = Duration::from_secs(5);
+
+/// Measures a part's files every few seconds while it catches up from the
+/// start: how long the shortest is (what has picture and sound both), for
+/// how far behind live it is (see [`Readings::set_recorded`]). Stops when dropped.
+struct Measuring {
+    length: Arc<std::sync::Mutex<Option<f64>>>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Measuring {
+    fn start(ffprobe: PathBuf, dir: PathBuf, needle: String) -> Measuring {
+        let length = Arc::new(std::sync::Mutex::new(None));
+        let into = Arc::clone(&length);
+        let task = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(MEASURE_EVERY).await;
+                let files = recording_files(&dir, &needle);
+                let mut shortest: Option<f64> = None;
+                for file in &files {
+                    let Some((_, length)) = live_chat::file_span(&ffprobe, file).await else {
+                        // One that can't be read yet: no measure this time, rather than a wrong one.
+                        shortest = None;
+                        break;
+                    };
+                    shortest = Some(shortest.map_or(length, |shortest| shortest.min(length)));
+                }
+                if let Some(shortest) = shortest {
+                    *into.lock().unwrap() = Some(shortest);
+                }
+            }
+        });
+        Measuring { length, task }
+    }
+
+    fn length(&self) -> Option<f64> {
+        *self.length.lock().unwrap()
+    }
+}
+
+impl Drop for Measuring {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
 
 impl Readings {
     pub(super) fn new(started: Instant, since: Option<u64>, rate: Option<u64>, from_start: bool) -> Self {
@@ -238,8 +287,25 @@ impl Readings {
             rate,
             from_start,
             caught_up: !from_start,
+            recorded: None,
             samples: VecDeque::new(),
         }
+    }
+
+    /// Whether how far behind live it is still matters: recorded from the
+    /// start, and not caught up yet.
+    pub(super) fn catching_up(&self) -> bool {
+        self.from_start && !self.caught_up
+    }
+
+    /// How long the recording is, as its file says.
+    pub(super) fn set_recorded(&mut self, seconds: f64) {
+        self.recorded = Some(seconds);
+    }
+
+    /// A part recorded from now: whatever came before, it is at live.
+    pub(super) fn reached_live(&mut self) {
+        self.caught_up = true;
     }
 
     /// What to report with `bytes` recorded at `now` (`unix` is the same moment in Unix seconds).
@@ -256,18 +322,27 @@ impl Readings {
             let seconds = now.duration_since(*at).as_secs_f64();
             (seconds >= 2.0).then(|| bytes.saturating_sub(*first) as f64 * 8.0 / seconds)
         });
-        // From the start: the stream's age, less what has been recorded of it at its own rate.
-        let behind = match (self.from_start && !self.caught_up, self.since, self.rate) {
-            (true, Some(since), Some(rate)) if rate > 0 => {
-                let behind = unix.saturating_sub(since) as f64 - bytes as f64 / rate as f64;
-                if behind < CAUGHT_UP {
-                    self.caught_up = true;
-                    None
-                } else {
-                    Some(behind)
-                }
+        // From the start: the stream's age, less how long the recording is:
+        // as its file says, or until that is known, its bytes at the
+        // stream's stated rate (Twitch states more than its streams average,
+        // so that alone never came within 30 s: "44 s behind" to the end).
+        let behind = match (self.catching_up(), self.since) {
+            (true, Some(since)) => {
+                let recorded = self.recorded.or_else(|| {
+                    self.rate
+                        .filter(|rate| *rate > 0)
+                        .map(|rate| bytes as f64 / rate as f64)
+                });
+                recorded.map(|recorded| unix.saturating_sub(since) as f64 - recorded)
             }
             _ => None,
+        };
+        let behind = match behind {
+            Some(behind) if behind < CAUGHT_UP => {
+                self.caught_up = true;
+                None
+            }
+            behind => behind,
         };
         LiveProgress {
             elapsed: now.duration_since(self.started).as_secs_f64(),
@@ -875,6 +950,14 @@ impl DownloadManager {
         // What this part's files have in their names, to find them on disk.
         let needle = args::recording_needle(&args::own_marker(job.id), part);
         let mut last_look: Option<Instant> = None;
+        // From the start, how far behind live it is comes from how long its
+        // files are; a part from now is at live.
+        if !from_start {
+            readings.reached_live();
+        }
+        let mut measuring = readings
+            .catching_up()
+            .then(|| Measuring::start(job.bins.ffprobe(), output_dir.clone(), needle.clone()));
         let result = self
             .run_child(job.bins, job.id, cmd, |event| match event {
                 ChildEvent::Line(line) => {
@@ -911,7 +994,14 @@ impl DownloadManager {
                             }
                         }
                     }
+                    if let Some(length) = measuring.as_ref().and_then(Measuring::length) {
+                        readings.set_recorded(length);
+                    }
                     let mut reading = readings.at(recording.bytes(), now, unix_now());
+                    if !readings.catching_up() {
+                        // Caught up: no more measuring.
+                        measuring = None;
+                    }
                     if last_disk_check.is_none_or(|at| now.duration_since(at) >= DISK_CHECK) {
                         last_disk_check = Some(now);
                         if let Some(free) = super::free_space(&output_dir) {
@@ -1691,6 +1781,19 @@ mod tests {
         // Once caught up, it stays so.
         let after = readings.at(3_600_000_000, start + Duration::from_secs(70), 13_900);
         assert_eq!(after.behind, None);
+    }
+
+    #[test]
+    fn a_recording_from_the_start_is_as_far_behind_as_its_file_says() {
+        let start = Instant::now();
+        // Stated at 1 MB a second, but averaging less: its bytes say 50 minutes recorded.
+        let mut readings = Readings::new(start, Some(10_000), Some(1_000_000), true);
+        assert_eq!(readings.at(3_000_000_000, start, 13_600).behind, Some(600.0));
+        // Its file holds 59 minutes 50 seconds: within 30 s of live.
+        readings.set_recorded(3590.0);
+        assert!(readings.catching_up());
+        assert_eq!(readings.at(3_000_000_000, start, 13_600).behind, None);
+        assert!(!readings.catching_up(), "caught up for good");
     }
 
     #[test]

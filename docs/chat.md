@@ -88,7 +88,6 @@ Each comment says the whole seconds into the video, rounded down, and the moment
 
 - **A video's chat is thinned** to Twitch's 15 messages a second in its busiest moments (see above), and so is a recording's from before Record.
 - **Without VODs, what airs during an ad is missing** from a recording (Twitch doesn't send it), and what the chat said meanwhile shows where it jumps over it. Where neither the VOD nor the stream without its ads can be read, the ads are recorded, with the chat over them, as before.
-- **From the start, Siphon said "Catching up · 44 s behind live" to the end** (2026-11-21); the VOD isn't that far behind (see [live.md](live.md#known-limitations)).
 - **Not drawn:** 7TV's personal emotes and name paints, and BTTV's emote modifiers.
 - **Tier-3 subscriber badges** (`subscriber/3012`) weren't checked against the channel's badge list.
 - **The size estimate** for a video with chat (the source's size, HEVC three quarters of it) was checked on two Twitch clips only.
