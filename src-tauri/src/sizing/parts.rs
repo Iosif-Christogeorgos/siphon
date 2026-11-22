@@ -26,6 +26,12 @@ use crate::ytdlp::metadata::Format;
 const MOST_SEGMENTS: usize = 120;
 /// Asked at once.
 const AT_ONCE: usize = 12;
+/// The share of an MPEG-TS segment that is the video and sound: the rest is
+/// the format's own packaging (a header on every 188 bytes, and more), which
+/// a file made from it doesn't keep. 0.9667–0.9670 on three segments of a
+/// Twitch VOD (2026-11-22); a 10-minute part's 590.5 MB of segments held
+/// 570.7 MB. Fragmented MP4 segments (CMAF) carry next to none.
+const TS_CONTENT: f64 = 0.967;
 /// How long ffprobe may take to read both ends of a part.
 const PROBE_LIMIT: Duration = Duration::from_secs(30);
 /// How long ffmpeg and ffprobe wait on a connection that sends nothing, in microseconds.
@@ -181,7 +187,20 @@ async fn segmented(format: &Format, url: &str, start: f64, end: f64) -> Option<u
         .filter_map(|size| async move { size })
         .collect()
         .await;
-    sum(&inside, &sizes, start, end)
+    let bytes = sum(&inside, &sizes, start, end)?;
+    Some(if is_transport_stream(&inside) {
+        (bytes as f64 * TS_CONTENT) as u64
+    } else {
+        bytes
+    })
+}
+
+/// True when the segments are MPEG-TS (`….ts`), whose packaging a file made
+/// from them doesn't keep.
+fn is_transport_stream(segments: &[Segment]) -> bool {
+    segments.first().is_some_and(|segment| {
+        Url::parse(&segment.url).is_ok_and(|url| url.path().to_ascii_lowercase().ends_with(".ts"))
+    })
 }
 
 /// The arguments that make ffprobe print where in the file the packets
@@ -300,6 +319,20 @@ mod tests {
         let ranged = segments("#EXTINF:6.0,\n#EXT-X-BYTERANGE:120000@0\nall.ts\n", &base);
         assert_eq!(ranged[0].size, Some(120_000));
         assert!(segments("#EXT-X-STREAM-INF:BANDWIDTH=1\nlow.m3u8\n", &base).is_empty());
+    }
+
+    #[test]
+    fn tells_transport_stream_segments_apart() {
+        let at = |url: &str| Segment {
+            url: url.into(),
+            ..segment(0.0, 10.0)
+        };
+        assert!(is_transport_stream(&[at("https://example.com/vod/1080p60/12.ts")]));
+        assert!(is_transport_stream(&[at(
+            "https://example.com/vod/12-muted.TS?token=1"
+        )]));
+        assert!(!is_transport_stream(&[at("https://example.com/vod/1080p60/12.mp4")]));
+        assert!(!is_transport_stream(&[]));
     }
 
     #[test]
