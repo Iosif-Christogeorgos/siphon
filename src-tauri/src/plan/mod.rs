@@ -571,9 +571,8 @@ impl Recipe {
             return 0;
         };
         let fps = self.video.as_ref().and_then(|video| video.fps).unwrap_or(30.0);
-        // AAC at 48 kHz: 47 packets a second.
-        let audio = if self.audio_codec().is_some() { 47.0 } else { 0.0 };
-        crate::ffmpeg::smart_cut::Index::unused((duration * fps) as usize, (duration * audio) as usize)
+        let audio = if self.audio_codec().is_some() { duration } else { 0.0 };
+        crate::ffmpeg::smart_cut::Index::unused((duration * fps) as usize, audio)
     }
 
     /// What the rule of thumb takes a constant-quality encode of the video to

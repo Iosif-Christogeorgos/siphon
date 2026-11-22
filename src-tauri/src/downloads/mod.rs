@@ -1423,9 +1423,9 @@ impl DownloadManager {
 
         // Join them, on the video's own timestamps, starting at zero.
         // Audio packets are at most a hundred a second (AAC at 48 kHz is 47).
-        let audio_packets = audio
-            .as_ref()
-            .map_or(0, |_| ((plan.end() - plan.first()) * 100.0).ceil() as usize);
+        let audio_packets = audio.as_ref().map_or(0, |_| {
+            ((plan.end() - plan.first()) * smart_cut::AUDIO_PACKETS_KEPT_FOR).ceil() as usize
+        });
         // The subtitle track, shifted with the pieces; each cue is a packet in the index.
         let track = subtitles
             .map(|prepared| prepared.track.as_path())

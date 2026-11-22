@@ -635,7 +635,7 @@ fn a_cut_copied_stream_is_smart_cut_in_its_own_codec() {
     assert_eq!(part.badge, Badge::Lossless);
     // Its share of the whole, and the padding the cut leaves where room was
     // kept for the MP4's index: 60 s of 30 fps video with AAC.
-    let padding = crate::ffmpeg::smart_cut::Index::unused(60 * 30, 60 * 47);
+    let padding = crate::ffmpeg::smart_cut::Index::unused(60 * 30, 60.0);
     assert_eq!(part.estimated_size().unwrap(), whole / 10 + padding);
     // Its fallback re-encodes the whole part, the same way.
     let full = part.with_full_cut();
@@ -689,7 +689,7 @@ fn a_clip_goes_by_its_bytes_and_its_ends_once_measured() {
     facts.add_cut_ends("137", Span::of(trim), 4_000_000);
     video.sizes.merge(&facts);
     let after = plan(&video, &choice, trim, &nvidia()).unwrap();
-    let padding = crate::ffmpeg::smart_cut::Index::unused(30 * 30, 30 * 47);
+    let padding = crate::ffmpeg::smart_cut::Index::unused(30 * 30, 30.0);
     assert_eq!(after.estimated_size(), Some(30_000_000 + 4_000_000 + padding + 500_000));
     // What yt-dlp fetches: the streams' bytes, without what the cut adds.
     assert_eq!(after.estimated_source_bytes(), Some(30_500_000));

@@ -668,19 +668,34 @@ pub enum Index {
     Rewrite,
 }
 
+/// The audio packets a second the index's room is kept for: at most a
+/// hundred (AAC at 48 kHz is 47).
+pub const AUDIO_PACKETS_KEPT_FOR: f64 = 100.0;
+
+/// What the index takes for each packet: measured 17.2 bytes on a 30 s
+/// YouTube clip and 17.4 on an hour of 60 fps video with AAC (6.7 MB).
+const INDEX_BYTES_PER_PACKET: u64 = 17;
+
 impl Index {
-    /// Room for the index of `video` frames and `audio` packets. It takes
-    /// about 17 bytes each (6.7 MB for an hour of 60 fps video with AAC);
-    /// twice that, and a megabyte, leaves room to spare.
+    /// Room for the index of `video` frames and `audio` packets: about twice
+    /// what they take (32 bytes each), counting the audio at its most (see
+    /// [`AUDIO_PACKETS_KEPT_FOR`]), and 64 KiB for the rest of the index.
+    /// What it doesn't use stays in the file as padding: until 0.17 the rest
+    /// was given a megabyte, so a 30 s clip carried 1.15 MB of nothing (a
+    /// Share clip could be pushed over its limit by it, and converted). Too
+    /// little, and ffmpeg says so and the join is done again with the index
+    /// moved to the front afterwards (see `downloads::smart_cut`).
     pub fn room_for(video: usize, audio: usize) -> Index {
-        Index::Reserve(1_048_576 + 32 * (video + audio) as u64)
+        Index::Reserve(65_536 + 32 * (video + audio) as u64)
     }
 
-    /// What is left of that room once the index is in, as padding in the
-    /// file: a 30 s clip at 60 fps had 1.15 MB of it (2026-11-22).
-    pub fn unused(video: usize, audio: usize) -> u64 {
-        match Index::room_for(video, audio) {
-            Index::Reserve(bytes) => bytes.saturating_sub(17 * (video + audio) as u64),
+    /// What is left of that room in a cut of `video` frames with
+    /// `audio_seconds` of AAC: padding in the file.
+    pub fn unused(video: usize, audio_seconds: f64) -> u64 {
+        let kept_for = (audio_seconds * AUDIO_PACKETS_KEPT_FOR).ceil() as usize;
+        let audio = (audio_seconds * 47.0) as usize;
+        match Index::room_for(video, kept_for) {
+            Index::Reserve(bytes) => bytes.saturating_sub(INDEX_BYTES_PER_PACKET * (video + audio) as u64),
             Index::Rewrite => 0,
         }
     }
@@ -1407,8 +1422,8 @@ mod tests {
         let join: Vec<String> = join.iter().map(|a| a.to_string_lossy().into_owned()).collect();
         assert!(join.iter().any(|a| a == "concat:head.ts|mid.ts|tail.ts"));
         assert!(join.windows(2).any(|w| w == ["-output_ts_offset", "-3600.5"]));
-        // 6.7 MB was needed for this hour; twice that is reserved.
-        assert!(join.windows(2).any(|w| w == ["-moov_size", "13360576"]));
+        // 6.7 MB was needed for this hour; twice that is reserved, and 64 KiB.
+        assert!(join.windows(2).any(|w| w == ["-moov_size", "12377536"]));
         assert!(!join.iter().any(|a| a == "+faststart"));
         assert!(!join.iter().any(|a| a == "hev1"));
         let hevc = join_args(
