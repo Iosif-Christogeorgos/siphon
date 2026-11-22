@@ -116,42 +116,26 @@ impl Twitch {
         &self.http
     }
 
-    /// Sends `body` (one operation, or a list of them), trying again twice
-    /// after a dropped connection, a server error or "too many requests".
+    /// Sends `body` (one operation, or a list of them), trying again after
+    /// a failure that may pass (see [`super::send`]).
     async fn post(&self, body: &Value) -> Result<Value> {
-        let mut last = None;
-        for delay in [0, 2, 6] {
-            if delay > 0 {
-                tokio::time::sleep(Duration::from_secs(delay)).await;
-            }
-            let sent = self
-                .http
+        let body = body.to_string();
+        let response = super::send(|| {
+            self.http
                 .post(GQL)
                 .header("Client-ID", CLIENT_ID)
                 .header("Content-Type", "text/plain;charset=UTF-8")
-                .body(body.to_string())
-                .send()
-                .await;
-            match sent {
-                Ok(response) if response.status().is_success() => {
-                    return response
-                        .json::<Value>()
-                        .await
-                        .map_err(|err| refused("Twitch's answer couldn't be read.").with_details(err.to_string()));
-                }
-                Ok(response) => {
-                    let status = response.status();
-                    let passing = status.is_server_error() || status.as_u16() == 429;
-                    last =
-                        Some(refused("Twitch turned the request for the chat down.").with_details(status.to_string()));
-                    if !passing {
-                        break;
-                    }
-                }
-                Err(err) => last = Some(AppError::from(err)),
-            }
+                .body(body.clone())
+        })
+        .await?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(refused("Twitch turned the request for the chat down.").with_details(status.to_string()));
         }
-        Err(last.unwrap_or_else(|| refused("Twitch didn't answer.")))
+        response
+            .json::<Value>()
+            .await
+            .map_err(|err| refused("Twitch's answer couldn't be read.").with_details(err.to_string()))
     }
 
     /// One query, with its variables; the data it answered, or why not.

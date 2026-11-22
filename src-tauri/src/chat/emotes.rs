@@ -35,10 +35,10 @@ const SEVEN_TV_SET_OVERLAY: u64 = 1;
 const SEVEN_TV_EMOTE_OVERLAY: u64 = 1 << 8;
 
 /// A channel's and everyone's third-party emotes, merged (see the module's
-/// notes), and which of the six lists couldn't be had, for the log.
+/// notes), and which of the six lists couldn't be had, even tried again.
 pub async fn fetch(http: &reqwest::Client, channel_id: &str) -> (Vec<Emote>, Vec<&'static str>) {
     let get = |url: String| async move {
-        let response = http.get(url).send().await.ok()?;
+        let response = super::send(|| http.get(&url)).await.ok()?;
         // 7TV answers 404 for a streamer without a 7TV account: no emotes, not a failure.
         if response.status() == reqwest::StatusCode::NOT_FOUND {
             return Some(Value::Null);

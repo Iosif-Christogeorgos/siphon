@@ -18,6 +18,7 @@ pub mod twitch;
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -318,6 +319,32 @@ impl ChatLog {
     }
 }
 
+/// How long after a failure that may pass (a dropped connection, a server
+/// error, "too many requests") a request to Twitch or an emote service is
+/// tried again: twice, a little later each time.
+const RETRY_AFTER: [Duration; 2] = [Duration::from_secs(2), Duration::from_secs(6)];
+
+/// Sends the request `request` builds, and again while it fails in a way
+/// that may pass (see [`RETRY_AFTER`]). The last answer, whatever its
+/// status, or the last error.
+pub async fn send(request: impl Fn() -> reqwest::RequestBuilder) -> reqwest::Result<reqwest::Response> {
+    let may_pass = |sent: &reqwest::Result<reqwest::Response>| match sent {
+        Ok(response) => {
+            response.status().is_server_error() || response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
+        }
+        Err(_) => true,
+    };
+    let mut sent = request().send().await;
+    for wait in RETRY_AFTER {
+        if !may_pass(&sent) {
+            break;
+        }
+        tokio::time::sleep(wait).await;
+        sent = request().send().await;
+    }
+    sent
+}
+
 /// Seconds since 1970 for Twitch's timestamps (`2026-11-15T15:09:44.979Z`),
 /// which are always UTC.
 pub fn parse_timestamp(text: &str) -> Option<f64> {
@@ -423,6 +450,35 @@ mod tests {
         assert_eq!(broken.width, Placement::MIN_WIDTH);
         assert!(broken.x.is_finite() && broken.height <= 1.0);
         assert_eq!(Placement::DEFAULT.sanitized(), Placement::DEFAULT);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn tries_a_request_again_while_its_failure_may_pass() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        // One request a connection, answered with these in turn.
+        let server = tokio::spawn(async move {
+            for status in [
+                "503 Service Unavailable",
+                "429 Too Many Requests",
+                "200 OK",
+                "404 Not Found",
+            ] {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = vec![0; 8192];
+                let _ = socket.read(&mut request).await.unwrap();
+                let answer = format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                socket.write_all(answer.as_bytes()).await.unwrap();
+            }
+        });
+        let http = reqwest::Client::builder().no_proxy().build().unwrap();
+        let answered = send(|| http.get(&url)).await.unwrap();
+        assert_eq!(answered.status(), 200, "after a server error and too many requests");
+        // Tried again, it would find the server gone and fail.
+        let refused = send(|| http.get(&url)).await.unwrap();
+        assert_eq!(refused.status(), 404, "a refusal isn't tried again");
+        server.await.unwrap();
     }
 
     #[test]

@@ -51,6 +51,10 @@ use crate::process;
 
 /// The channel's emotes and badges, in the work folder.
 const SNAPSHOT: &str = "chat.json";
+/// When some of the channel's emotes or badges couldn't be had as the
+/// recording began, they are looked for again this often, this many times.
+const SNAPSHOT_EVERY: Duration = Duration::from_secs(60);
+const SNAPSHOT_TRIES: u32 = 10;
 /// Everything the chat said, one event a line, in the work folder.
 const EVENTS: &str = "chat.jsonl";
 /// How long into a stretch read from the VOD its replay is fetched: by then
@@ -247,24 +251,9 @@ impl ChatCapture {
         let _ = std::fs::create_dir_all(work);
 
         let (app, login, snapshot) = (app.clone(), channel.to_string(), work.join(SNAPSHOT));
-        capture.tasks.push(tokio::spawn(async move {
-            // Kept from the first time: a stream that came back has the same emotes.
-            if snapshot.exists() {
-                return;
-            }
-            let fetched = async {
-                let twitch = Twitch::new()?;
-                let channel_id = twitch.channel_id(&login).await?;
-                Ok::<_, crate::error::AppError>(ChatLog::of_channel(&twitch, &channel_id).await.0)
-            }
-            .await;
-            match fetched {
-                Ok(log) => {
-                    let _ = log.save(&snapshot).await;
-                }
-                Err(error) => log::line(&app, &format!("chat #{login}: no emotes or badges: {}", error.message)),
-            }
-        }));
+        capture.tasks.push(tokio::spawn(
+            async move { keep_snapshot(&app, &login, &snapshot).await },
+        ));
 
         let (app, login, events) = (capture.app.clone(), channel.to_string(), work.join(EVENTS));
         capture.tasks.push(tokio::spawn(async move {
@@ -361,6 +350,42 @@ impl ChatCapture {
     /// The work folder its files are kept in.
     pub(super) fn work(&self) -> &Path {
         &self.work
+    }
+}
+
+/// Keeps `login`'s emotes and badges in `snapshot`, as the recording begins.
+/// Whatever couldn't be had is looked for again (see [`SNAPSHOT_EVERY`]),
+/// keeping the most complete set so far, so a moment's failure doesn't cost
+/// the whole recording its emotes.
+async fn keep_snapshot(app: &AppHandle, login: &str, snapshot: &Path) {
+    // Kept from the first time: a stream that came back has the same emotes.
+    if snapshot.exists() {
+        return;
+    }
+    let mut fewest_missing = usize::MAX;
+    for attempt in 0..SNAPSHOT_TRIES {
+        if attempt > 0 {
+            tokio::time::sleep(SNAPSHOT_EVERY).await;
+        }
+        let fetched = async {
+            let twitch = Twitch::new()?;
+            let channel_id = twitch.channel_id(login).await?;
+            Ok::<_, crate::error::AppError>(ChatLog::of_channel(&twitch, &channel_id).await)
+        }
+        .await;
+        let missing = match fetched {
+            Ok((log, missing)) => {
+                if missing.len() < fewest_missing && log.save(snapshot).await.is_ok() {
+                    fewest_missing = missing.len();
+                }
+                if missing.is_empty() {
+                    return;
+                }
+                missing.join(", ")
+            }
+            Err(error) => format!("emotes or badges ({})", error.message),
+        };
+        log::line(app, &format!("chat #{login}: no {missing} yet"));
     }
 }
 

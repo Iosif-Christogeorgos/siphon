@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use futures_util::StreamExt;
 use image::{AnimationDecoder, ImageDecoder, RgbaImage};
@@ -13,6 +14,8 @@ use sha2::{Digest, Sha256};
 const PARALLEL: usize = 12;
 /// An emote larger than this isn't an emote.
 const MAX_BYTES: usize = 8 * 1024 * 1024;
+/// Numbers each image's file while it is written (see [`fetch`]).
+static PARTIAL: AtomicU64 = AtomicU64::new(0);
 
 /// Where an image is kept in `dir`: named after its address, so the same
 /// emote is fetched once for every download.
@@ -21,7 +24,8 @@ pub fn cached_path(dir: &Path, url: &str) -> PathBuf {
     dir.join(format!("{}.img", hex::encode(&digest[..12])))
 }
 
-/// Fetches into `dir` whichever of `urls` it doesn't have yet. Returns how
+/// Fetches into `dir` whichever of `urls` it doesn't have yet, each tried
+/// again after a failure that may pass (see [`super::send`]). Returns how
 /// many couldn't be had: those are drawn as their words instead.
 pub async fn fetch(http: &reqwest::Client, dir: &Path, urls: Vec<String>) -> usize {
     if tokio::fs::create_dir_all(dir).await.is_err() {
@@ -31,21 +35,29 @@ pub async fn fetch(http: &reqwest::Client, dir: &Path, urls: Vec<String>) -> usi
     let results = futures_util::stream::iter(missing)
         .map(|url| async move {
             let bytes = async {
-                let response = http.get(&url).send().await.ok()?.error_for_status().ok()?;
+                let response = super::send(|| http.get(&url)).await.ok()?.error_for_status().ok()?;
+                if response
+                    .content_length()
+                    .is_some_and(|length| length > MAX_BYTES as u64)
+                {
+                    return None;
+                }
                 let bytes = response.bytes().await.ok()?;
                 (bytes.len() <= MAX_BYTES && decode(&bytes).is_some()).then_some(bytes)
             }
             .await;
-            match bytes {
-                Some(bytes) => {
-                    let file = cached_path(dir, &url);
-                    let partial = file.with_extension("part");
-                    let written = tokio::fs::write(&partial, &bytes).await.is_ok()
-                        && tokio::fs::rename(&partial, &file).await.is_ok();
-                    written
-                }
-                None => false,
+            let Some(bytes) = bytes else { return false };
+            let file = cached_path(dir, &url);
+            // Written beside it under a name of its own first: two downloads
+            // (or a download and a preview) may fetch the same image at once.
+            let partial = file.with_extension(format!("{}.part", PARTIAL.fetch_add(1, Ordering::Relaxed)));
+            let written =
+                tokio::fs::write(&partial, &bytes).await.is_ok() && tokio::fs::rename(&partial, &file).await.is_ok();
+            if !written {
+                let _ = tokio::fs::remove_file(&partial).await;
             }
+            // Should the other fetch have put it in place first, it is there all the same.
+            written || file.exists()
         })
         .buffer_unordered(PARALLEL)
         .collect::<Vec<bool>>()
