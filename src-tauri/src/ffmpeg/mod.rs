@@ -72,11 +72,17 @@ pub struct ChatLayer {
     /// and silent, until the layer ended (found 2026-11-21: a 30 s clip came
     /// out with 31 s of picture).
     pub end: Option<f64>,
-    /// The output's frame rate, made in the graph before the cut at `end`,
-    /// so that the cut is exact. Made after the graph (`-r`), it added a
-    /// frame or two past the cut, and pieces drawn as a stream records
-    /// overlapped, which lost the next piece's first frames when they were
-    /// joined (found 2026-11-22). `None`: as the output's options say.
+    /// The output's frame rate, made first in the graph, before the
+    /// picture's own filters (a piece's cut among them) and the cut at
+    /// `end`, so that both cuts see the same timestamps and are exact.
+    /// Made after the graph (`-r`), it added a frame or two past the cut,
+    /// and pieces drawn as a stream records overlapped, which lost the next
+    /// piece's first frames when they were joined (found 2026-11-22). Made
+    /// after the overlay, it moved each frame onto the rate's grid there,
+    /// which for a Twitch recording from the start (its frames on whole
+    /// milliseconds, just before the grid's) put each piece's last frame
+    /// on the cut, and one frame went missing at every join (found
+    /// 2026-11-22, 46 in 96 minutes). `None`: as the output's options say.
     pub rate: Option<f64>,
 }
 
@@ -104,10 +110,16 @@ impl ChatLayer {
     /// The filter graph that draws the layer (input `input`) over the
     /// picture after the picture's own `filters`, as the output `[v]`.
     fn graph(&self, filters: &[String], input: usize) -> String {
-        let base = if filters.is_empty() {
+        let rate = self.rate.map(|fps| format!("fps={}", frame_rate(fps)));
+        let base: Vec<&str> = rate
+            .iter()
+            .map(String::as_str)
+            .chain(filters.iter().map(String::as_str))
+            .collect();
+        let base = if base.is_empty() {
             "null".to_string()
         } else {
-            filters.join(",")
+            base.join(",")
         };
         let matrix = if self.hd { "bt709" } else { "smpte170m" };
         let chat = format!(
@@ -115,12 +127,8 @@ impl ChatLayer {
             self.start
         );
         let overlay = format!("overlay=x={}:y={}:format=yuv420:eof_action=repeat", self.x, self.y);
-        let rate = self
-            .rate
-            .map(|fps| format!(",fps={}", frame_rate(fps)))
-            .unwrap_or_default();
         let cut = self.end.map(|end| format!(",trim=end={end:.6}")).unwrap_or_default();
-        format!("[0:v]{base}[base];[{input}:v]{chat}[chat];[base][chat]{overlay}{rate}{cut}[v]")
+        format!("[0:v]{base}[base];[{input}:v]{chat}[chat];[base][chat]{overlay}{cut}[v]")
     }
 }
 
@@ -1173,16 +1181,15 @@ mod recording_tests {
         ));
         // Ten seconds before the piece, counted from the file's start as ffmpeg counts `-ss`.
         assert!(piece.contains("-copyts -ss 110.000 -i a.ts"), "{piece}");
+        // The stream's rate first, so the piece's cut and the cut after the
+        // overlay see the same timestamps.
         assert!(
-            piece.contains("[0:v]trim=start=121.400000:end=241.400000[base]"),
+            piece.contains("[0:v]fps=60,trim=start=121.400000:end=241.400000"),
             "{piece}"
         );
         assert!(piece.contains("setpts=PTS-STARTPTS+121.4/TB"), "{piece}");
         // Cut where the piece ends, however long the layer lasts.
-        assert!(
-            piece.contains("eof_action=repeat,fps=60,trim=end=241.400000[v]"),
-            "{piece}"
-        );
+        assert!(piece.contains("eof_action=repeat,trim=end=241.400000[v]"), "{piece}");
         assert!(
             piece.contains(" -fps_mode passthrough ") && !piece.contains(" -r "),
             "{piece}"

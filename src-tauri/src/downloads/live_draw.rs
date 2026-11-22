@@ -324,21 +324,28 @@ async fn frame_times(ffprobe: &Path, file: &Path) -> Vec<f64> {
 }
 
 /// Whether a piece's frames (`times`) are those from `from` to `until`, at
-/// `fps` a second: starting with the first, ending before the next piece's,
-/// none missing.
+/// `fps` a second: starting with the first, ending just before the next
+/// piece's, none missing. The frames are on the rate's grid (see
+/// `ffmpeg::ChatLayer::rate`) and each cut keeps the frame nearest it, so
+/// the first is within half a frame of `from` and the last within half a
+/// frame of one frame before `until`: a frame lost or doubled at either end
+/// is a whole frame out, and fails.
 fn piece_fits(times: &[f64], from: f64, until: Option<f64>, fps: f64) -> Result<(), String> {
+    /// Leeway for times printed to the microsecond.
+    const PRINTED: f64 = 1e-4;
     let frame = 1.0 / fps;
+    let near = |time: f64, at: f64| (time - at).abs() <= frame / 2.0 + PRINTED;
     let (Some(&first), Some(&last)) = (times.first(), times.last()) else {
         return Err("the piece has no picture".to_string());
     };
-    if (first - from).abs() > frame {
-        return Err(format!("the piece starts at {first:.3} s, not {from:.3} s"));
+    if !near(first, from) {
+        return Err(format!("the piece starts at {first:.4} s, not {from:.4} s"));
     }
     if let Some(until) = until {
         let wanted = ((until - from) * fps).round() as usize;
-        if last >= until - frame / 2.0 || times.len().abs_diff(wanted) > 1 {
+        if !near(last, until - frame) || times.len().abs_diff(wanted) > 1 {
             return Err(format!(
-                "the piece has {} frames to {last:.3} s, not {wanted} to {until:.3} s",
+                "the piece has {} frames to {last:.4} s, not {wanted} to just before {until:.4} s",
                 times.len()
             ));
         }
@@ -603,6 +610,16 @@ mod tests {
         // Ten frames late (a seek past a key frame), or two frames too many (the overlap at a join).
         assert!(piece_fits(&frames(121.633_333, 7190), 121.467, Some(241.467), 60.0).is_err());
         assert!(piece_fits(&frames(121.466_667, 7202), 121.467, Some(241.467), 60.0).is_err());
+        // One frame lost at the start, or at the end, as a cut after the
+        // overlay lost it at every join of a Twitch recording from the start.
+        assert!(piece_fits(&frames(121.483_333, 7199), 121.467, Some(241.467), 60.0).is_err());
+        assert!(piece_fits(&frames(121.466_667, 7199), 121.467, Some(241.467), 60.0).is_err());
+        // Cuts off the rate's grid keep the frame nearest them.
+        let off_grid = 121.467 + 0.4 / 60.0;
+        assert_eq!(
+            piece_fits(&frames(121.466_667, 7200), off_grid, Some(off_grid + 120.0), 60.0),
+            Ok(())
+        );
         // The last piece runs to the end of what was recorded.
         assert_eq!(piece_fits(&frames(241.466_667, 500), 241.467, None, 60.0), Ok(()));
         assert!(piece_fits(&[], 1.0, None, 60.0).is_err());
