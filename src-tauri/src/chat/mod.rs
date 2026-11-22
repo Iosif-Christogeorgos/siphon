@@ -306,7 +306,8 @@ impl ChatLog {
                 match part {
                     Part::Emote { id, .. } => add(image_for(&twitch_emote_images(id), emote_height)),
                     Part::Text { text } => {
-                        for word in text.split_whitespace() {
+                        // Words as the chat is drawn (`render::tokens`): between spaces.
+                        for word in text.split(' ') {
                             if let Some(emote) = emotes.get(word) {
                                 add(image_for(&emote.images, emote_height));
                             }

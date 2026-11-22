@@ -10,7 +10,7 @@ use std::process::Stdio;
 use tauri::Manager;
 
 use super::{ChildEvent, DownloadManager, Failure, JobContext};
-use crate::chat::render::{Geometry, Layer, Style};
+use crate::chat::render::{layer_fps, Geometry, Layer, Style};
 use crate::chat::twitch::Twitch;
 use crate::chat::{images, ChatLog, ChatSource, ChatStep};
 use crate::error::{AppError, Result};
@@ -24,9 +24,6 @@ const CHAT_FILE: &str = "chat.json";
 /// Chat from this long before a clip starts is fetched too, so its first
 /// frame shows the chat as it was then rather than an empty box.
 const LEAD_IN: f64 = 60.0;
-/// The chat layer never needs more frames a second than this: messages come
-/// in and emotes move no faster, and every frame is a copy of the box.
-const MAX_LAYER_FPS: f64 = 31.0;
 
 /// Where emote and badge images are kept, for every download.
 pub fn image_folder(app: &tauri::AppHandle) -> Result<PathBuf> {
@@ -168,7 +165,7 @@ impl DownloadManager {
             _ => (picture.width, picture.height),
         };
         let fps = picture.fps.or_else(|| recipe.output_fps()).unwrap_or(30.0);
-        let layer_fps = if fps > MAX_LAYER_FPS { fps / 2.0 } else { fps };
+        let layer_fps = layer_fps(fps);
         let (start, end) = span(recipe, picture.duration.unwrap_or(0.0));
         let length = (end - start).max(0.0);
         // A cut keeps the video's own clock (see `ffmpeg::convert_args_shifted`);

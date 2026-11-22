@@ -1381,8 +1381,7 @@ impl DownloadManager {
         let picture = self.picture(job, first).await?;
         // The stream's rate: the recording may start with an ad at another.
         let fps = recipe.output_fps().or(picture.fps).unwrap_or(30.0);
-        // No more frames than the chat needs (see `chat::MAX_LAYER_FPS`).
-        let layer_fps = if fps > 31.0 { fps / 2.0 } else { fps };
+        let layer_fps = crate::chat::render::layer_fps(fps);
         let cache = super::chat::image_folder(job.app)?;
         let geometry = Geometry::new(placement, picture.width, picture.height);
         let style = Style::for_width(geometry.width);

@@ -31,7 +31,7 @@ use tokio::io::{AsyncBufReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
 
 use super::live::recording_files;
 use super::live_chat::{self, CLEARED_SPAN, REPLAY_LEAD};
-use crate::chat::render::{Layer, Style};
+use crate::chat::render::{layer_fps, Layer, Style};
 use crate::chat::twitch::Twitch;
 use crate::chat::{images, Placement};
 use crate::ffmpeg::{self, ChatLayer};
@@ -55,8 +55,6 @@ const LOOK_EVERY: Duration = Duration::from_secs(10);
 /// How long a stretch's timing may take to settle (the frame match, or the
 /// VOD's replay) before drawing goes ahead with what there is.
 const TIMING_WAIT: Duration = Duration::from_secs(15 * 60);
-/// The chat layer never needs more frames a second than this (see `downloads::chat`).
-const MAX_LAYER_FPS: f64 = 31.0;
 
 /// How far a stretch has been drawn, as kept in the work folder.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -261,7 +259,7 @@ async fn draw_piece(
         .await
         .ok_or("the recording couldn't be read")?;
     let fps = part.recipe.output_fps().or(picture.fps).unwrap_or(30.0);
-    let layer_fps = if fps > MAX_LAYER_FPS { fps / 2.0 } else { fps };
+    let layer_fps = layer_fps(fps);
     // The images of what this piece shows, from a minute before (still in the box).
     let geometry = crate::chat::render::Geometry::new(&part.placement, picture.width, picture.height);
     let style = Style::for_width(geometry.width);

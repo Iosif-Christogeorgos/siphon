@@ -20,6 +20,20 @@ const DESIGN_WIDTH: f64 = 300.0;
 const SLOT: char = '\u{FFFC}';
 /// Twitch's own lines (a sub, a raid) are drawn in its purple, lightened to read over video.
 const NOTICE_INK: Ink = Ink([0xC9, 0xA8, 0xFF]);
+/// The chat layer never needs more frames a second than this: messages come
+/// in and emotes move no faster, and every frame is a copy of the box.
+const MAX_LAYER_FPS: f64 = 31.0;
+
+/// How many frames a second the chat layer of a video of `fps` frames a
+/// second is drawn at: the video's own rate, or a whole fraction of it
+/// within [`MAX_LAYER_FPS`], so each layer frame lasts whole video frames
+/// (60 → 30, 120 → 30, 144 → 28.8, 50 → 25).
+pub fn layer_fps(fps: f64) -> f64 {
+    if !fps.is_finite() || fps <= 0.0 {
+        return 30.0;
+    }
+    fps / (fps / MAX_LAYER_FPS).ceil().max(1.0)
+}
 
 /// Where the box is on the frame, in pixels. Even numbers throughout:
 /// 4:2:0 video keeps its colour at half size.
@@ -842,6 +856,26 @@ mod tests {
         assert_eq!(default_color("viewer"), default_color("viewer"));
         assert_eq!(parse_hex("#1E90FF"), Some([0x1E, 0x90, 0xFF]));
         assert_eq!(parse_hex("1E90FF"), None);
+    }
+
+    #[test]
+    fn draws_the_layer_at_a_whole_fraction_of_the_videos_rate() {
+        for (video, layer) in [
+            (60.0, 30.0),
+            (30.0, 30.0),
+            (25.0, 25.0),
+            (50.0, 25.0),
+            (120.0, 30.0),
+            (144.0, 28.8),
+            (0.0, 30.0),
+        ] {
+            assert!(
+                (layer_fps(video) - layer).abs() < 1e-9,
+                "{video} → {}",
+                layer_fps(video)
+            );
+        }
+        assert!((layer_fps(60_000.0 / 1001.0) - 30_000.0 / 1001.0).abs() < 1e-9);
     }
 
     #[test]
