@@ -284,7 +284,7 @@ async fn draw_piece(
         rate: Some(fps),
     };
     let piece = piece_path(drawn);
-    let args = ffmpeg::draw_piece_args(&part.recipe, raw, from, until, &chat, &piece);
+    let args = ffmpeg::draw_piece_args(&part.recipe, raw, start, from, until, &chat, &piece);
     // The layer for no longer than the piece (see `ffmpeg::ChatLayer::end`);
     // the last piece's length is what is there.
     let length = match until {

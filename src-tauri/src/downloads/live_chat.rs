@@ -594,11 +594,15 @@ async fn match_frame(
     // The third newest: old enough to be in the recording already.
     let segment = live.iter().rev().nth(2).or_else(|| live.first())?;
     // A fragmented MP4 segment is read after its initialisation segment.
+    let fetch = |url: &str| {
+        let request = http.get(url);
+        async move { request.send().await?.error_for_status()?.bytes().await }
+    };
     let mut bytes = Vec::new();
     if let Some(init) = &segment.init {
-        bytes.extend_from_slice(&http.get(init).send().await.ok()?.bytes().await.ok()?);
+        bytes.extend_from_slice(&fetch(init).await.ok()?);
     }
-    bytes.extend_from_slice(&http.get(&segment.url).send().await.ok()?.bytes().await.ok()?);
+    bytes.extend_from_slice(&fetch(&segment.url).await.ok()?);
     let local = work.join(if segment.init.is_some() {
         "frame.mp4"
     } else {
@@ -609,8 +613,7 @@ async fn match_frame(
     let _ = tokio::fs::remove_file(&local).await;
     let wanted = wanted?;
     let (start, length) = file_span(ffprobe, file).await?;
-    let from = (start + length - MATCH_WINDOW).max(start);
-    let frames = frame_md5s(ffmpeg, file, from).await;
+    let frames = frame_md5s(ffmpeg, file, start, start + length - MATCH_WINDOW).await;
     let at = frames.iter().find(|(_, md5)| *md5 == wanted)?.0;
     Some(Aired {
         at,
@@ -706,28 +709,37 @@ async fn first_frame_md5(ffmpeg: &Path, file: &Path) -> Option<String> {
     text.trim().strip_prefix("MD5=").map(str::to_string)
 }
 
-/// Each video frame of `file` from `from` seconds on: its time in the file's
-/// own timestamps, and the MD5 of its picture.
-async fn frame_md5s(ffmpeg: &Path, file: &Path, from: f64) -> Vec<(f64, String)> {
+/// Each video frame of `file` (whose timestamps start at `start`) from its
+/// own timestamp `from` on: its time in the file's own timestamps, and the
+/// MD5 of its picture.
+async fn frame_md5s(ffmpeg: &Path, file: &Path, start: f64, from: f64) -> Vec<(f64, String)> {
     let mut cmd = process::command(ffmpeg);
-    cmd.args(["-v", "error", "-nostdin", "-copyts", "-ss", &format!("{from:.3}"), "-i"])
-        .arg(file)
-        // Every frame, at its own time. Otherwise ffmpeg makes the frames even
-        // at the rate the recording starts with, which is that of Twitch's ad
-        // (30 a second): every other frame of a 60-frame stream was left out,
-        // the one looked for among them, and its time was rounded to 1/30 s
-        // (found 2026-11-22: no match in ten minutes).
-        .args([
-            "-map",
-            "0:v:0",
-            "-fps_mode",
-            "passthrough",
-            "-enc_time_base",
-            "demux",
-            "-f",
-            "framemd5",
-            "-",
-        ]);
+    cmd.args([
+        "-v",
+        "error",
+        "-nostdin",
+        "-copyts",
+        "-ss",
+        &crate::ffmpeg::seek_from(start, from),
+        "-i",
+    ])
+    .arg(file)
+    // Every frame, at its own time. Otherwise ffmpeg makes the frames even
+    // at the rate the recording starts with, which is that of Twitch's ad
+    // (30 a second): every other frame of a 60-frame stream was left out,
+    // the one looked for among them, and its time was rounded to 1/30 s
+    // (found 2026-11-22: no match in ten minutes).
+    .args([
+        "-map",
+        "0:v:0",
+        "-fps_mode",
+        "passthrough",
+        "-enc_time_base",
+        "demux",
+        "-f",
+        "framemd5",
+        "-",
+    ]);
     let Ok(Some(output)) = process::output_within(cmd, Duration::from_secs(120)).await else {
         return Vec::new();
     };

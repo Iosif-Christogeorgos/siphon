@@ -604,14 +604,16 @@ pub fn finalize_args(recipe: &Recipe, input: Recorded, output: &Path, chat: Opti
 /// The arguments that draw the chat into a piece of a recording while it
 /// records (see `downloads::live_draw`): the picture of `input` from `from`
 /// to `until` (the end of what is there, if `None`), on the file's own
-/// timestamps, encoded as `recipe` says with the chat layer from
-/// Siphon (`chat.start` is `from`), and the audio packets whose middle falls
-/// in the piece copied, all kept on the recording's timestamps in MPEG-TS.
-/// Pieces drawn back to back and joined byte for byte make the recording,
-/// drawn: every frame and every audio packet once (tested 2026-11-21).
+/// timestamps, which start at `file_start`, encoded as `recipe` says with
+/// the chat layer from Siphon (`chat.start` is `from`), and the audio
+/// packets whose middle falls in the piece copied, all kept on the
+/// recording's timestamps in MPEG-TS. Pieces drawn back to back and joined
+/// byte for byte make the recording, drawn: every frame and every audio
+/// packet once (tested 2026-11-21).
 pub fn draw_piece_args(
     recipe: &Recipe,
     input: &Path,
+    file_start: f64,
     from: f64,
     until: Option<f64>,
     chat: &ChatLayer,
@@ -632,12 +634,7 @@ pub fn draw_piece_args(
     // can land just after one, and decoding then starts at the next. Three
     // seconds back was not always enough (a piece began a sixth of a second
     // late, 2026-11-22). The trim keeps exactly the piece.
-    push(&[
-        "-copyts",
-        "-ss",
-        &format!("{:.3}", (from - PIECE_LEAD_IN).max(0.0)),
-        "-i",
-    ]);
+    push(&["-copyts", "-ss", &seek_from(file_start, from - PIECE_LEAD_IN), "-i"]);
     args.push(input.into());
     args.extend(chat.input_args().into_iter().map(OsString::from));
     let mut push = |values: &[&str]| args.extend(values.iter().map(OsString::from));
@@ -688,6 +685,15 @@ pub fn draw_piece_args(
 /// How far before a piece drawn as a stream records its recording is read
 /// from, in seconds (see `draw_piece_args`).
 const PIECE_LEAD_IN: f64 = 10.0;
+
+/// The `-ss` that starts reading a file whose timestamps start at
+/// `file_start` from its own timestamp `at` (or its start, if `at` is
+/// before it). ffmpeg counts `-ss` from the file's start, not by its
+/// timestamps, even with `-copyts` and `-seek_timestamp` (checked
+/// 2026-11-22 on a file starting at 101.4 s: `-ss 20` read from 121.4 s).
+pub fn seek_from(file_start: f64, at: f64) -> String {
+    format!("{:.3}", (at - file_start).max(0.0))
+}
 
 /// A frame rate as ffmpeg reads it: NTSC's rates exactly (`60000/1001`),
 /// others as a plain number.
@@ -1159,12 +1165,14 @@ mod recording_tests {
         let piece = text(draw_piece_args(
             &converted,
             Path::new("a.ts"),
+            1.4,
             121.4,
             Some(241.4),
             &layer,
             Path::new("a.drawn1.piece.ts"),
         ));
-        assert!(piece.contains("-copyts -ss 111.400 -i a.ts"), "{piece}");
+        // Ten seconds before the piece, counted from the file's start as ffmpeg counts `-ss`.
+        assert!(piece.contains("-copyts -ss 110.000 -i a.ts"), "{piece}");
         assert!(
             piece.contains("[0:v]trim=start=121.400000:end=241.400000[base]"),
             "{piece}"
@@ -1194,15 +1202,19 @@ mod recording_tests {
         let last = text(draw_piece_args(
             &converted,
             Path::new("a.ts"),
-            1.0,
+            1.4,
+            1.4,
             None,
             &layer,
             Path::new("p.ts"),
         ));
         assert!(
-            last.contains("-ss 0.000 ") && last.contains("trim=start=1.000000[base]"),
+            last.contains("-ss 0.000 ") && last.contains("trim=start=1.400000[base]"),
             "{last}"
         );
+        // A file whose timestamps start far from zero is still read from just before the piece.
+        assert_eq!(seek_from(101.4, 131.4 - PIECE_LEAD_IN), "20.000");
+        assert_eq!(seek_from(101.4, 50.0), "0.000");
         assert_eq!(frame_rate(59.94), "60000/1001");
         assert_eq!(frame_rate(29.97), "30000/1001");
         assert_eq!(frame_rate(25.0), "25");
