@@ -113,7 +113,8 @@ function QueueItem({ download }: { download: Download }) {
   const text = useRef<HTMLDivElement>(null);
   // A recording has no Pause: on air it has Stop, which keeps what it recorded.
   const onAir = download.record && active && (progress.stage === "recording" || progress.stage === "reconnecting");
-  const finishing = download.record && active && progress.stage === "finalizing";
+  // Being finished, which may start by fetching the chat from before Record.
+  const finishing = download.record && active && (progress.stage === "finalizing" || progress.stage === "chat");
 
   return (
     <div className="group relative flex gap-3 rounded-xl px-2 py-2.5 transition-colors hover:bg-accent">

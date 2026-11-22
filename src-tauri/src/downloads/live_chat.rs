@@ -156,6 +156,21 @@ struct VodRef {
     /// When the replay was thought to count from (see `PartTiming::Vod`),
     /// to say how far out that was.
     guess: f64,
+    /// When the stretch began to be recorded, in seconds since 1970: its
+    /// replay has what was said before then [`BEFORE_AFTER`] later (see
+    /// [`replay_wait`]). 0 in one kept before 0.16.2.
+    #[serde(default)]
+    asked: f64,
+}
+
+/// How long to wait before fetching `vod`'s replay at `now`: until
+/// [`BEFORE_AFTER`] after its stretch began to be recorded, as the recording
+/// itself does. Fetched sooner, the replay hasn't yet got what was said in
+/// the seconds before Record (2026-11-22: fetched 102 s after Record, it
+/// lacked the last 25 s before it, 5 to 12 messages a second; the same
+/// seconds were there later).
+fn replay_wait(vod: &VodRef, now: f64) -> Duration {
+    Duration::from_secs_f64((vod.asked + BEFORE_AFTER.as_secs_f64() - now).clamp(0.0, BEFORE_AFTER.as_secs_f64()))
 }
 
 /// What the VOD's replay had for a stretch read from it.
@@ -293,11 +308,13 @@ impl ChatCapture {
     /// stretch's first second aired, about (see `PartTiming::Vod`).
     pub(super) fn keep_replay(&mut self, number: usize, clock: &VodClock, aired: f64) {
         let (app, work) = (self.app.clone(), self.work.clone());
+        let asked = now();
         let vod = VodRef {
             id: clock.id.clone(),
             from: clock.at,
-            to: clock.at + (now() - aired) + 60.0,
+            to: clock.at + (asked - aired) + 60.0,
             guess: aired - clock.at + REPLAY_LEAD,
+            asked,
         };
         self.tasks.push(tokio::spawn(async move {
             if save_json(&vod_file(&work, number), &vod).await.is_err() {
@@ -796,25 +813,41 @@ fn parse_framemd5(text: &str) -> Vec<(f64, String)> {
 /// capture kept in `work`; `None` if it kept no message or no stretch could
 /// be placed. Deleted messages and timed-out users' messages are left out.
 /// A stretch read from the VOD is placed as the VOD's replay places it
-/// (fetched now if it wasn't while recording), which also has what was said
-/// before IRC was read.
-pub(super) async fn chat_for_file(app: &AppHandle, work: &Path, stretches: &[Stretch]) -> Option<ChatLog> {
+/// (fetched now if it wasn't while recording: see [`replay_for`]), which
+/// also has what was said before IRC was read. `fetching` is told when the
+/// replay has to be fetched, which can take up to [`BEFORE_AFTER`].
+pub(super) async fn chat_for_file(
+    app: &AppHandle,
+    work: &Path,
+    stretches: &[Stretch],
+    fetching: impl Fn(),
+) -> Option<ChatLog> {
     let events = tokio::fs::read_to_string(work.join(EVENTS)).await.unwrap_or_default();
     let mut placed: Vec<(Stretch, Aired)> = Vec::new();
     let mut replays = HashMap::new();
+    let fetching = &fetching;
     for stretch in stretches {
         let Some(aired) = load_json::<Aired>(&aired_file(work, stretch.number)).await else {
             continue;
         };
         if aired.vod.is_some() {
-            let replay = match load_json::<Before>(&replay_file(work, stretch.number)).await {
-                Some(replay) => Some(replay),
-                None => match load_json::<VodRef>(&vod_file(work, stretch.number)).await {
-                    Some(vod) => fetch_replay(app, &vod).await,
-                    None => None,
-                },
+            let fetch = |vod: VodRef| async move {
+                fetching();
+                let wait = replay_wait(&vod, now());
+                if !wait.is_zero() {
+                    log::line(
+                        app,
+                        &format!(
+                            "chat: waiting {:.0} s for the replay of VOD {} to have what was said before Record",
+                            wait.as_secs_f64(),
+                            vod.id
+                        ),
+                    );
+                    tokio::time::sleep(wait).await;
+                }
+                fetch_replay(app, &vod).await
             };
-            if let Some(replay) = replay {
+            if let Some(replay) = replay_for(work, stretch.number, fetch).await {
                 replays.insert(stretch.number, replay);
             }
         }
@@ -826,6 +859,32 @@ pub(super) async fn chat_for_file(app: &AppHandle, work: &Path, stretches: &[Str
     let snapshot = ChatLog::load(&work.join(SNAPSHOT)).await.unwrap_or_default();
     let messages = arrange(said(&events), &replays, placed);
     (!messages.is_empty()).then_some(ChatLog { messages, ..snapshot })
+}
+
+/// The replay of the VOD stretch `number` is read from (see `VodRef`): as
+/// the recording kept it, or else fetched now with `fetch` and kept in
+/// `work` beside it. The recording fetches it [`BEFORE_AFTER`] in, and a
+/// recording stopped sooner ends that fetch, so `fetch` waits for that
+/// moment first (see [`replay_wait`]). Drawing the stretch reads the replay
+/// only from `work` (`chat_for_stretch`): until 0.16.2 the one fetched here
+/// wasn't kept, and a recording from the start stopped within two minutes
+/// had none of the chat from before Record drawn in (2026-11-22). A replay
+/// with nothing to tell its clock by isn't kept: finishing the recording
+/// again looks again.
+async fn replay_for<F, Fut>(work: &Path, number: usize, fetch: F) -> Option<Before>
+where
+    F: FnOnce(VodRef) -> Fut,
+    Fut: std::future::Future<Output = Option<Before>>,
+{
+    if let Some(replay) = load_json::<Before>(&replay_file(work, number)).await {
+        return Some(replay);
+    }
+    let vod = load_json::<VodRef>(&vod_file(work, number)).await?;
+    let replay = fetch(vod).await?;
+    if replay.origin.is_some() {
+        let _ = save_json(&replay_file(work, number), &replay).await;
+    }
+    Some(replay)
 }
 
 /// The chat of stretch `number` of a recording that is still going on, on
@@ -1206,5 +1265,89 @@ live.mp4
         let said = vec![message("irc", "b", 1005.7 + 3700.0)];
         let placed = arrange(said, &replays, vec![from_vod(1.4, 3600.0, 4601.0)]);
         assert_times(&placed, &[("replay", 10.0), ("irc", 100.0)]);
+    }
+
+    #[tokio::test]
+    async fn a_replay_fetched_as_the_recording_is_finished_is_drawn_in_too() {
+        // A recording from the start stopped before its replay was fetched
+        // (2026-11-22): the work folder says which VOD, when it aired, and
+        // what IRC caught after Record, but has no replay.
+        let work = std::env::temp_dir().join(format!("siphon-replay-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&work);
+        std::fs::create_dir_all(&work).unwrap();
+        let vod = |number: usize| VodRef {
+            id: format!("{number}"),
+            from: 0.0,
+            to: 900.0,
+            guess: 1005.0,
+            asked: 1000.0,
+        };
+        save_json(&vod_file(&work, 1), &vod(1)).await.unwrap();
+        save_json(&aired_file(&work, 1), &from_vod(1.4, 0.0, 1000.0).1)
+            .await
+            .unwrap();
+        let irc = serde_json::to_string(&Event::Message(message("irc", "b", 1800.0))).unwrap();
+        std::fs::write(work.join(EVENTS), format!("{irc}\n")).unwrap();
+        // Without the replay, only what IRC caught would be drawn.
+        let ids = |log: ChatLog| log.messages.into_iter().map(|m| m.id).collect::<Vec<_>>();
+        assert_eq!(ids(chat_for_stretch(&work, 1, 1.4).await.unwrap()), ["irc"]);
+
+        // Finishing fetches it …
+        let replay = Before {
+            origin: Some(1005.7),
+            messages: vec![message("before record", "a", 1010.7)],
+        };
+        let fetched = replay_for(&work, 1, |asked| {
+            assert_eq!(asked.id, "1");
+            async move { Some(replay) }
+        })
+        .await;
+        assert!(fetched.is_some());
+        // … and drawing the stretch, which reads it from the work folder, has it.
+        assert_eq!(
+            ids(chat_for_stretch(&work, 1, 1.4).await.unwrap()),
+            ["before record", "irc"]
+        );
+        // Kept: finishing again doesn't fetch it again.
+        let mut asked = false;
+        let again = replay_for(&work, 1, |_| {
+            asked = true;
+            async { None }
+        })
+        .await;
+        assert!(again.is_some() && !asked);
+
+        // A replay with nothing to tell its clock by isn't kept, so it is looked for again.
+        save_json(&vod_file(&work, 2), &vod(2)).await.unwrap();
+        let quiet = replay_for(&work, 2, |_| async {
+            Some(Before {
+                origin: None,
+                messages: Vec::new(),
+            })
+        })
+        .await;
+        assert!(quiet.is_some() && !replay_file(&work, 2).exists());
+        std::fs::remove_dir_all(&work).unwrap();
+    }
+
+    #[test]
+    fn a_replay_is_fetched_no_sooner_than_two_minutes_after_record() {
+        let vod = |asked: f64| VodRef {
+            id: "1".into(),
+            from: 0.0,
+            to: 900.0,
+            guess: 1005.0,
+            asked,
+        };
+        // Stopped 30 s after Record: the rest of the two minutes.
+        assert_eq!(replay_wait(&vod(1000.0), 1030.0), Duration::from_secs(90));
+        // Two minutes on, or finished after a restart: at once.
+        assert_eq!(replay_wait(&vod(1000.0), 1120.0), Duration::ZERO);
+        assert_eq!(replay_wait(&vod(1000.0), 5000.0), Duration::ZERO);
+        // Kept before 0.16.2, without the time: at once.
+        let old: VodRef = serde_json::from_str(r#"{"id":"1","from":0.0,"to":900.0,"guess":1005.0}"#).unwrap();
+        assert_eq!(replay_wait(&old, 1030.0), Duration::ZERO);
+        // A clock set back since: never longer than the two minutes.
+        assert_eq!(replay_wait(&vod(5000.0), 1000.0), BEFORE_AFTER);
     }
 }

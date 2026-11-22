@@ -1207,13 +1207,16 @@ impl DownloadManager {
         let stem = recording.stem();
         let mut recipe = recording.recipe.clone();
         recipe.duration = Some(recorded);
-        // The chat, placed on the finished file's clock.
+        // The chat, placed on the finished file's clock. A recording stopped
+        // before it fetched its VOD's replay fetches it now, which can take up
+        // to two minutes: the row says so meanwhile.
         let chat: Option<(ChatLog, Placement)> = match &recipe.chat {
             Some(step) => {
                 let stretches = stretches(&numbers, &probes, recorded);
-                live_chat::chat_for_file(job.app, work, &stretches)
-                    .await
-                    .map(|log| (log, step.placement))
+                let fetching = || report(job, Stage::Chat, 0.0, LiveProgress::default());
+                let log = live_chat::chat_for_file(job.app, work, &stretches, fetching).await;
+                report(job, Stage::Finalizing, 0.0, LiveProgress::default());
+                log.map(|log| (log, step.placement))
             }
             None => None,
         };
