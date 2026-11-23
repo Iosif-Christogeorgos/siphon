@@ -195,7 +195,14 @@ export function TrimPanel({
             </Button>
           </Hint>
           <Hint label="Close the trimmer and download the whole video">
-            <Button variant="ghost" size="icon-sm" disabled={disabled} onClick={close} aria-label="Close trimmer">
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              disabled={disabled}
+              onClick={close}
+              aria-label="Close trimmer"
+              className="text-destructive hover:bg-destructive-soft hover:text-destructive"
+            >
               <X />
             </Button>
           </Hint>
