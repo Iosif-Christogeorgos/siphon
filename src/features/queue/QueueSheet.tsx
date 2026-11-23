@@ -23,7 +23,7 @@ import { Hint } from "@/components/ui/tooltip";
 import { formatBytes, formatDuration, formatEta, formatSpan, formatSpeed, formatStreamSpeed } from "@/lib/format";
 import { ipc } from "@/lib/ipc";
 import { spring } from "@/lib/motion";
-import { isIndeterminate, isLive, STAGE_LABELS } from "@/lib/stages";
+import { formatPercent, isBusy, isLive, STAGE_LABELS } from "@/lib/stages";
 import { formatShortTimecode, formatTimecode } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { type Download, useDownloads } from "@/stores/downloads";
@@ -168,13 +168,19 @@ function QueueItem({ download }: { download: Download }) {
           )}
           {/* Hairline progress; it parks where it stopped when paused. A recording on air has nothing to fill. */}
           {(active || status === "paused") && !(download.record && isLive(progress.stage)) && (
-            <div className="mt-1.5 h-0.5 overflow-hidden rounded-full bg-border-strong">
+            <div className="relative mt-1.5 h-0.5 overflow-hidden rounded-full bg-border-strong">
               <motion.div
+                // A stage with a count of its own starts the line over, rather than sliding it back.
+                key={progress.stage}
                 className={cn("h-full origin-left", status === "paused" ? "bg-subtle-foreground" : "bg-primary")}
                 initial={false}
                 animate={{ scaleX: progress.fraction }}
                 transition={{ type: "spring", stiffness: 70, damping: 22 }}
               />
+              {/* At work with nothing measured yet: a light runs along it, never a still line. */}
+              {active && isBusy(progress.stage, progress.fraction) && (
+                <div className="absolute inset-0 animate-shimmer bg-[linear-gradient(90deg,transparent_30%,var(--primary)_50%,transparent_70%)] bg-size-[200%_100%] motion-reduce:animate-none" />
+              )}
             </div>
           )}
         </div>
@@ -282,8 +288,7 @@ const SHORT_STAGES: Record<Stage, string | null> = {
   finalizing: "Finishing",
 };
 
-const percent = (download: Download) =>
-  isIndeterminate(download.progress.stage) ? null : `${Math.floor(download.progress.fraction * 100)}%`;
+const percent = (download: Download) => formatPercent(download.progress.fraction);
 
 /** A recording's status line: REC and how long, how much, and how fast; or what it waits for. */
 function recordingPieces(download: Download): ({ key: string; node: ReactNode } | "" | false | null | undefined)[] {

@@ -7,14 +7,14 @@ import {
   useSpring,
   useTransform,
 } from "motion/react";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { ErrorCard } from "@/components/ErrorCard";
 import { Button } from "@/components/ui/button";
 import { Hint } from "@/components/ui/tooltip";
 import { formatBytes, formatDuration, formatEta, formatSpan, formatSpeed, formatStreamSpeed } from "@/lib/format";
 import { ipc } from "@/lib/ipc";
 import { riseIn, spring } from "@/lib/motion";
-import { isIndeterminate, isLive, STAGE_LABELS } from "@/lib/stages";
+import { isBusy, isLive, STAGE_LABELS } from "@/lib/stages";
 import { useNow } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { type DownloadGroup, useDownloads } from "@/stores/downloads";
@@ -213,7 +213,14 @@ function Running({
   const width = useTransform(smooth, (value) => `${Math.min(Math.max(value, 0), 1) * 100}%`);
   // The front edge comes in once there is something to lead, and goes as the bar fills.
   const edge = useTransform(smooth, [0, 0.02, 0.97, 1], [0, 1, 1, 0]);
-  useEffect(() => target.set(fraction), [target, fraction]);
+  // A stage with a count of its own starts the bar over at once, rather than
+  // sliding it back: a recording's chat, then the drawing of it.
+  const shownStage = useRef(stage);
+  useEffect(() => {
+    if (stage !== shownStage.current && fraction < smooth.get()) smooth.jump(fraction);
+    shownStage.current = stage;
+    target.set(fraction);
+  }, [stage, fraction, smooth, target]);
 
   useMotionValueEvent(smooth, "change", (value) => {
     if (done && value >= 0.995) onFilled();
@@ -222,8 +229,10 @@ function Running({
     if (done && smooth.get() >= 0.995) onFilled();
   }, [done, smooth, onFilled]);
 
-  // No percentage until there is something to measure (a resumed download keeps its own).
-  const waiting = isIndeterminate(stage) && fraction === 0;
+  // No percentage until there is something to measure (a resumed download keeps
+  // its own); meanwhile, a stage at work has its bar moving, never a still 0%.
+  const waiting = fraction <= 0;
+  const busy = isBusy(stage, fraction);
   // While converting: the size the file is heading for, from what it has written so far.
   const heading = heading_for != null ? `≈ ${formatBytes(heading_for)}` : null;
   const detail = [heading, formatSpeed(speed), formatEta(eta)].filter(Boolean).join(" · ");
@@ -244,7 +253,7 @@ function Running({
           </div>
         </motion.div>
       </motion.div>
-      {stage === "preparing" && (
+      {busy && (
         <div className="absolute inset-0 animate-shimmer bg-[linear-gradient(100deg,transparent_35%,var(--primary-soft)_50%,transparent_65%)] bg-size-[200%_100%] motion-reduce:animate-none" />
       )}
 
