@@ -132,6 +132,12 @@ pub fn recipe_args(recipe: &Recipe) -> Vec<String> {
             trim.end
         };
         push(&["--download-sections", &format!("*{}-{end}", trim.start)]);
+        // yt-dlp writes a part of a video it takes for live (a Twitch VOD
+        // still being recorded) as MPEG-TS, then copies it into MP4 without
+        // -copyts, which moves it to zero: the cut then finds none of the
+        // selection in it. Written as MP4 at once, as any other video's part
+        // is, it keeps its place (591.5–631.0 s for 600–631, found 2026-11-23).
+        push(&["--no-hls-use-mpegts"]);
 
         // yt-dlp hands a section to ffmpeg; this is what ffmpeg is told about its inputs.
         // Left alone, ffmpeg waits forever on a connection that stops sending,

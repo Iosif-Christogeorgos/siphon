@@ -802,6 +802,8 @@ fn a_cut_for_apple_is_re_encoded_in_full_and_counts_from_the_start() {
     assert!(yt_dlp.iter().any(|arg| arg.contains("-copyts -start_at_zero")));
     // A second past the end, for the frames the last ones are decoded from.
     assert!(yt_dlp.windows(2).any(|pair| pair == ["--download-sections", "*10-21"]));
+    // Written as MP4, on the video's clock, even where yt-dlp takes the video for live.
+    assert!(yt_dlp.iter().any(|arg| arg == "--no-hls-use-mpegts"));
     // ffmpeg fetches a part from the stream's address: YouTube's plain files, not pieces.
     assert!(!yt_dlp.iter().any(|arg| arg.contains("dashy")));
 }
