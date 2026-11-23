@@ -956,6 +956,23 @@ impl Probed {
         }
         Ok(())
     }
+
+    /// Whether a converted file holds anything: the picture it should have
+    /// (or, for sound alone, the sound), with some length. ffmpeg finishes
+    /// without an error when a cut finds nothing of its selection, and
+    /// leaves a file with no tracks. Says what is missing if not.
+    pub fn has_content(&self, video: bool) -> std::result::Result<(), String> {
+        let (track, what) = if video {
+            (self.video, "picture")
+        } else {
+            (self.audio, "sound")
+        };
+        match track {
+            None => Err(format!("it has no {what}")),
+            Some((_, length)) if length > 0.0 => Ok(()),
+            Some(_) => Err(format!("its {what} has no length")),
+        }
+    }
 }
 
 /// Reads one line of `-progress` output. Returns how far the conversion is,
@@ -1042,6 +1059,31 @@ mod recording_tests {
             ..probed
         };
         assert!(late.matches(38.0, true, true).unwrap_err().contains("starts"));
+    }
+
+    #[test]
+    fn a_converted_file_must_hold_its_picture_or_sound() {
+        // What ffprobe printed for the 262-byte MP4 a cut that found nothing
+        // of its selection left (2026-11-23), and for a 35 s Twitch part.
+        let empty = Probed::parse(r#"{"streams":[],"format":{}}"#).unwrap();
+        assert_eq!(empty.has_content(true).unwrap_err(), "it has no picture");
+        assert_eq!(empty.has_content(false).unwrap_err(), "it has no sound");
+        let part = Probed::parse(
+            r#"{"streams":[{"codec_type":"video","start_time":"595.617667","duration":"35.418678","tags":{}},
+                {"codec_type":"audio","start_time":"595.648000","duration":"35.370667","tags":{}}],
+                "format":{"start_time":"595.617667","duration":"35.418678"}}"#,
+        )
+        .unwrap();
+        assert!(part.has_content(true).is_ok() && part.has_content(false).is_ok());
+        // A track with nothing in it.
+        let hollow = Probed {
+            video: Some((0.0, 0.0)),
+            ..part.clone()
+        };
+        assert!(hollow.has_content(true).unwrap_err().contains("no length"));
+        // Sound alone needs no picture.
+        let music = Probed { video: None, ..part };
+        assert!(music.has_content(false).is_ok());
     }
 
     #[test]

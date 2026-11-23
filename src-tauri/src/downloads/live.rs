@@ -1598,7 +1598,7 @@ impl DownloadManager {
     }
 
     /// ffprobe's reading of a file.
-    async fn probe(&self, job: &JobContext<'_>, file: &Path) -> Option<Probed> {
+    pub(super) async fn probe(&self, job: &JobContext<'_>, file: &Path) -> Option<Probed> {
         let mut cmd = process::command(job.bins.ffprobe());
         cmd.args(ffmpeg::probe_args(file));
         let mut json = String::new();

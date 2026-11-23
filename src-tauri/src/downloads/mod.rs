@@ -1245,6 +1245,9 @@ impl DownloadManager {
                 recipe = recipe.on_software();
                 result = self.convert(job, &recipe, source, &partial, work, tracker, track).await;
             }
+            if let Ok(()) = result {
+                result = self.check_converted(job, &recipe, &partial).await;
+            }
             if let Err(error) = result {
                 let _ = tokio::fs::remove_file(&partial).await;
                 return Err(error);
@@ -1273,6 +1276,22 @@ impl DownloadManager {
         }
         tokio::fs::rename(&partial, output).await?;
         Ok(())
+    }
+
+    /// A converted file must hold what it was made for: ffmpeg finishes
+    /// without an error when a cut finds nothing of its selection, and
+    /// leaves a file with no tracks. Found 2026-11-23: a part of a Twitch VOD
+    /// still being recorded, not on the video's clock, came out as a 262-byte
+    /// MP4 and was called finished.
+    async fn check_converted(&self, job: &JobContext<'_>, recipe: &Recipe, file: &Path) -> Result<()> {
+        let verdict = match self.probe(job, file).await {
+            Some(probed) => probed.has_content(recipe.video.is_some()),
+            None => Err("ffprobe couldn't read it".into()),
+        };
+        verdict.map_err(|why| {
+            AppError::internal("The video downloaded, but the converted file came out empty.")
+                .with_details(format!("{}: {why}", file.display()))
+        })
     }
 
     /// Cuts a copied stream on the exact frames, re-encoding only the frames
