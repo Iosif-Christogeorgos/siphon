@@ -66,6 +66,10 @@ const BEFORE_AFTER: Duration = Duration::from_secs(2 * 60);
 /// tells its clock: a quiet channel's may have none at first.
 const REPLAY_TRIES: u32 = 5;
 const REPLAY_EVERY: Duration = Duration::from_secs(2 * 60);
+/// How far past the last second it is wanted for a replay is fetched: past
+/// the moment Record was pressed, so it meets what IRC caught; past the end
+/// of a recording that never got there, so it covers its last seconds.
+const REPLAY_PAST: f64 = 60.0;
 /// A recording's file appears about this long after what it starts with aired:
 /// ffmpeg starts three segments back from the newest, which is itself behind.
 const GUESSED_DELAY: f64 = 8.0;
@@ -163,14 +167,57 @@ struct VodRef {
     asked: f64,
 }
 
-/// How long to wait before fetching `vod`'s replay at `now`: until
-/// [`BEFORE_AFTER`] after its stretch began to be recorded, as the recording
-/// itself does. Fetched sooner, the replay hasn't yet got what was said in
-/// the seconds before Record (2026-11-22: fetched 102 s after Record, it
-/// lacked the last 25 s before it, 5 to 12 messages a second; the same
-/// seconds were there later).
+impl VodRef {
+    /// The replay of VOD `id` for a stretch that starts with its second `at`,
+    /// which aired at `aired`, begun to be recorded at `asked` (both in
+    /// seconds since 1970): from that second to [`REPLAY_PAST`] past the one
+    /// that aired as Record was pressed.
+    fn new(id: String, at: f64, aired: f64, asked: f64) -> VodRef {
+        VodRef {
+            id,
+            from: at,
+            to: at + (asked - aired) + REPLAY_PAST,
+            guess: aired - at + REPLAY_LEAD,
+            asked,
+        }
+    }
+
+    /// What the replay is wanted for once the stretch has been recorded,
+    /// `length` seconds of it: as asked, if it got to the moment Record was
+    /// pressed, and else only up to [`REPLAY_PAST`] past its last second. A
+    /// recording from the start stopped while still catching up keeps only
+    /// the stream's first part: in full, the replay of a stream nearly eight
+    /// hours in (146,327 messages) took 142 s for a recording that kept its
+    /// first 38 minutes, after a wait it didn't need (2026-11-23).
+    fn for_recorded(&self, length: f64) -> VodRef {
+        VodRef {
+            to: self.to.min(self.from + length.max(0.0) + REPLAY_PAST),
+            ..self.clone()
+        }
+    }
+
+    /// When the last second the replay is wanted for aired, in seconds since
+    /// 1970: as Record was pressed, unless [`VodRef::for_recorded`] ended it
+    /// sooner.
+    fn wanted_until(&self) -> f64 {
+        self.guess - REPLAY_LEAD + self.to - REPLAY_PAST
+    }
+}
+
+/// How long to wait before fetching `vod`'s replay at `now`: until it has
+/// the last second it is wanted for, [`BEFORE_AFTER`] after that aired. For
+/// a stretch that got to the moment Record was pressed, that is two minutes
+/// after Record, as the recording itself fetches it. Fetched sooner, the
+/// replay hasn't yet got what was said in the seconds before Record
+/// (2026-11-22: fetched 102 s after Record, it lacked the last 25 s before
+/// it, 5 to 12 messages a second; the same seconds were there later). A
+/// stretch that ended before then (from the start, stopped while catching
+/// up) waits only until its own last second is two minutes old: at once, if
+/// that aired long ago. Timed by when things aired, not by what the replay
+/// has, since a quiet chat looks the same as a replay that hasn't caught up.
 fn replay_wait(vod: &VodRef, now: f64) -> Duration {
-    Duration::from_secs_f64((vod.asked + BEFORE_AFTER.as_secs_f64() - now).clamp(0.0, BEFORE_AFTER.as_secs_f64()))
+    let until = vod.asked.min(vod.wanted_until()) + BEFORE_AFTER.as_secs_f64();
+    Duration::from_secs_f64((until - now).clamp(0.0, BEFORE_AFTER.as_secs_f64()))
 }
 
 /// What the VOD's replay had for a stretch read from it.
@@ -308,14 +355,7 @@ impl ChatCapture {
     /// stretch's first second aired, about (see `PartTiming::Vod`).
     pub(super) fn keep_replay(&mut self, number: usize, clock: &VodClock, aired: f64) {
         let (app, work) = (self.app.clone(), self.work.clone());
-        let asked = now();
-        let vod = VodRef {
-            id: clock.id.clone(),
-            from: clock.at,
-            to: clock.at + (asked - aired) + 60.0,
-            guess: aired - clock.at + REPLAY_LEAD,
-            asked,
-        };
+        let vod = VodRef::new(clock.id.clone(), clock.at, aired, now());
         self.tasks.push(tokio::spawn(async move {
             if save_json(&vod_file(&work, number), &vod).await.is_err() {
                 return;
@@ -588,10 +628,11 @@ async fn fetch_replay(app: &AppHandle, vod: &VodRef) -> Option<Before> {
     log::line(
         app,
         &format!(
-            "chat: {} messages from VOD {}'s replay from its second {:.0} ({} gaps), its clock {:+.2} s from the guess, {:.1} s",
+            "chat: {} messages from VOD {}'s replay from its second {:.0} to {:.0} ({} gaps), its clock {:+.2} s from the guess, {:.1} s",
             messages.len(),
             vod.id,
             vod.from,
+            vod.to,
             replay.gaps,
             origin - vod.guess,
             started.elapsed().as_secs_f64()
@@ -831,7 +872,9 @@ pub(super) async fn chat_for_file(
             continue;
         };
         if aired.vod.is_some() {
+            let length = stretch.length;
             let fetch = |vod: VodRef| async move {
+                let vod = vod.for_recorded(length);
                 fetching();
                 let wait = replay_wait(&vod, now());
                 if !wait.is_zero() {
@@ -1349,5 +1392,33 @@ live.mp4
         assert_eq!(replay_wait(&old, 1030.0), Duration::ZERO);
         // A clock set back since: never longer than the two minutes.
         assert_eq!(replay_wait(&vod(5000.0), 1000.0), BEFORE_AFTER);
+    }
+
+    #[test]
+    fn a_recording_stopped_while_catching_up_wants_only_the_replay_of_what_it_kept() {
+        let record = 1_000_000.0;
+        // From the start of a stream 28,000 s (7.8 h) in, whose first second aired then.
+        let vod = VodRef::new("1".into(), 0.0, record - 28_000.0, record);
+        assert_eq!(vod.to, 28_060.0);
+        // As the recording itself fetches it: all of it, two minutes after Record.
+        assert_eq!(replay_wait(&vod, record + 68.0), Duration::from_secs(52));
+
+        // Stopped 68 s after Record with its first 1,430 s (2026-11-23): only
+        // those, and at once, since they aired hours ago.
+        let kept = vod.for_recorded(1430.0);
+        assert_eq!((kept.from, kept.to), (0.0, 1490.0));
+        assert_eq!(replay_wait(&kept, record + 68.0), Duration::ZERO);
+
+        // Caught up to Record and past it: as asked, so it meets what IRC
+        // caught, and two minutes after Record, as since 0.16.2.
+        let caught_up = vod.for_recorded(28_090.0);
+        assert_eq!(caught_up.to, vod.to);
+        assert_eq!(replay_wait(&caught_up, record + 68.0), Duration::from_secs(52));
+
+        // A stream 15 minutes in, stopped 50 s short of the moment of Record:
+        // to a minute past its last second, once that is two minutes old.
+        let short = VodRef::new("2".into(), 0.0, record - 900.0, record).for_recorded(850.0);
+        assert_eq!(short.to, 910.0);
+        assert_eq!(replay_wait(&short, record + 60.0), Duration::from_secs(10));
     }
 }
