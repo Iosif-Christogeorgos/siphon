@@ -72,12 +72,23 @@ export function LinkInput({ url, loading, onSubmit, onClear }: LinkInputProps) {
     <motion.form animate={shake} onSubmit={handleSubmit} className="relative">
       <div
         className={cn(
-          "group flex h-14 items-center gap-3 rounded-2xl border bg-card pr-2.5 pl-4.5 shadow-card transition-[border-color,box-shadow] duration-200",
-          "focus-within:border-primary/60 focus-within:shadow-[0_0_0_4px_var(--primary-soft),var(--shadow-card)]",
-          invalid && "border-destructive/60 focus-within:border-destructive/60",
+          "group flex h-14 items-center gap-3 rounded-2xl border bg-card pr-2.5 pl-4.5",
+          // In focus: one crisp edge, a hairline of light around it and a soft glow, rather
+          // than a wide band of tint, which read as a second, muddy outline. The same
+          // layers at rest, so the light grows out of the edge instead of jumping on.
+          "shadow-[0_0_0_0_transparent,0_0_0_0_transparent,var(--shadow-card)]",
+          "transition-[border-color,box-shadow] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]",
+          invalid
+            ? "border-destructive/70 focus-within:shadow-[0_0_0_1px_color-mix(in_oklab,var(--destructive)_22%,transparent),0_0_36px_-6px_var(--destructive-glow),var(--shadow-card)]"
+            : "focus-within:border-primary/85 focus-within:shadow-[0_0_0_1px_color-mix(in_oklab,var(--primary)_22%,transparent),0_0_36px_-6px_var(--primary-glow),var(--shadow-card)]",
         )}
       >
-        <Link2 className="size-4.5 shrink-0 text-subtle-foreground transition-colors group-focus-within:text-primary" />
+        <Link2
+          className={cn(
+            "size-4.5 shrink-0 text-subtle-foreground transition-colors duration-300",
+            invalid ? "text-destructive" : "group-focus-within:text-primary",
+          )}
+        />
         <input
           ref={inputRef}
           value={draft}

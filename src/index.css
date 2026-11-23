@@ -25,6 +25,8 @@
   --primary-hover: light-dark(oklch(0.48 0.095 196), oklch(0.86 0.115 192));
   --primary-foreground: light-dark(oklch(0.99 0.01 196), oklch(0.18 0.03 200));
   --primary-soft: light-dark(oklch(0.53 0.1 196 / 0.1), oklch(0.8 0.125 192 / 0.12));
+  /* The light a focused field gives off: faint on light surfaces, where a glow looks grubby. */
+  --primary-glow: light-dark(oklch(0.53 0.1 196 / 0.16), oklch(0.8 0.125 192 / 0.4));
   --secondary: light-dark(oklch(0.955 0.005 210), oklch(0.235 0.009 232));
   --secondary-foreground: var(--foreground);
   --muted: light-dark(oklch(0.955 0.005 210), oklch(0.235 0.009 232));
@@ -35,6 +37,7 @@
   --accent-foreground: var(--foreground);
   --destructive: light-dark(oklch(0.58 0.19 25), oklch(0.72 0.17 22));
   --destructive-soft: light-dark(oklch(0.58 0.19 25 / 0.08), oklch(0.72 0.17 22 / 0.12));
+  --destructive-glow: light-dark(oklch(0.58 0.19 25 / 0.14), oklch(0.72 0.17 22 / 0.32));
   --success: light-dark(oklch(0.6 0.13 158), oklch(0.78 0.15 160));
   /* On air: the LIVE mark and a recording's REC. Its own red, not an error's. */
   --live: light-dark(oklch(0.6 0.22 27), oklch(0.7 0.2 25));
