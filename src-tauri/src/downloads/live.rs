@@ -41,7 +41,7 @@ use super::tracker::{LiveProgress, Progress, Stage};
 use super::twitch_feed::{self, CatchUp, Feed};
 use super::{
     file_size, move_file, partial_path, work_dir, ChildEvent, Done, DownloadEvent, DownloadManager, Failure, Job,
-    JobContext, Lookup, Stop, EVENT,
+    JobContext, Lookup, Made, Stop, EVENT,
 };
 use crate::binaries::BinaryManager;
 use crate::chat::render::{Geometry, Layer, Style};
@@ -1641,7 +1641,8 @@ impl DownloadManager {
                 format!("{stem} (part {}).{ext}", index + 1)
             };
             let target = self.unique_output(recording.output_dir.join(name), job.id);
-            move_file(input, &target).await?;
+            // What this recording recorded, or joined from it in its work folder.
+            move_file(Made(input.clone()), &target).await?;
             kept.push(target);
         }
         // Whatever is left (a video and audio pair that was joined) has a joined copy now.

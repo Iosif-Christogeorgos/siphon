@@ -144,6 +144,21 @@ impl Done {
     }
 }
 
+/// A file Siphon made for a job: what yt-dlp downloaded (under the job's own
+/// marker, or in its work folder), or what a recording recorded. Only such a
+/// file is moved, renamed or deleted by the steps that finish a job
+/// (`move_file`, `publish`, `check_section`), so none of them can be handed
+/// a file that was already on the PC: a file the user gave Siphon to convert
+/// is read where it is and never becomes one of these.
+#[derive(Debug)]
+struct Made(PathBuf);
+
+impl Made {
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
 /// Something worth saying about a finished download.
 struct Note {
     text: String,
@@ -988,10 +1003,8 @@ impl DownloadManager {
                     downloaded
                 } else {
                     // Fetched into the work folder for the conversion that isn't happening.
-                    let name = downloaded.file_name().unwrap_or_default();
-                    let moved = output_dir.join(name);
-                    move_file(&downloaded, &moved).await?;
-                    moved
+                    let moved = output_dir.join(downloaded.path().file_name().unwrap_or_default());
+                    move_file(downloaded, &moved).await?
                 };
                 (plain, downloaded)
             }
@@ -1004,23 +1017,30 @@ impl DownloadManager {
             match (recipe.fallback.as_deref(), recipe.size_limit) {
                 // Share: an original that was expected to fit but came out over
                 // the limit is converted after all.
-                (Some(fallback), Some(limit)) if file_size(&downloaded) > limit => {
-                    let source = work.join(downloaded.file_name().unwrap_or_default());
+                (Some(fallback), Some(limit)) if file_size(downloaded.path()) > limit => {
+                    let source = work.join(downloaded.path().file_name().unwrap_or_default());
                     tokio::fs::create_dir_all(&work).await?;
-                    move_file(&downloaded, &source).await?;
-                    (fallback.clone(), source)
+                    (fallback.clone(), move_file(downloaded, &source).await?)
                 }
                 _ => {
-                    let path = self.publish(&downloaded, job.id).await?;
+                    let path = self.publish(downloaded, job.id).await?;
                     let _ = tokio::fs::remove_dir_all(&work).await;
                     return Ok(Done::file(path, note));
                 }
             }
         };
 
-        let output = self.unique_output(converted_path(&source, &recipe, output_dir), job.id);
+        let output = self.unique_output(converted_path(source.path(), &recipe, output_dir), job.id);
         let result = self
-            .convert_checked(job, &recipe, &source, &output, &work, &mut tracker, subtitles.as_ref())
+            .convert_checked(
+                job,
+                &recipe,
+                source.path(),
+                &output,
+                &work,
+                &mut tracker,
+                subtitles.as_ref(),
+            )
             .await;
         match (&result, self.stop_of(job.id)) {
             (Ok(()), _) | (Err(_), Some(Stop::Cancel)) => {
@@ -1699,7 +1719,7 @@ impl DownloadManager {
         output_dir: &Path,
         info_json: Option<&Path>,
         tracker: &mut Tracker,
-    ) -> Result<PathBuf> {
+    ) -> Result<Made> {
         // What an earlier try at this download left: it was paused, or it failed.
         let previous = self.take_leftovers(job.id);
         let continues = previous.is_some();
@@ -1790,8 +1810,8 @@ impl DownloadManager {
                     AppError::internal("The download finished but the file couldn't be located.")
                         .with_details(log.clone())
                 })?;
-                self.check_section(recipe, &file, &log).await?;
-                return Ok(file);
+                // yt-dlp wrote it under this download's own marker, or into its work folder.
+                return self.check_section(recipe, Made(file), &log).await;
             }
             Err(failure) => failure,
         };
@@ -1819,11 +1839,11 @@ impl DownloadManager {
     /// if the part were complete, and yt-dlp reports success. ffmpeg's own
     /// messages in the log tell: a part cut short is removed, and the
     /// download is tried again like any dropped connection.
-    async fn check_section(&self, recipe: &Recipe, file: &Path, log: &str) -> Result<()> {
+    async fn check_section(&self, recipe: &Recipe, file: Made, log: &str) -> Result<Made> {
         if recipe.trim.is_none() || !errors::section_cut_short(log) {
-            return Ok(());
+            return Ok(file);
         }
-        let _ = tokio::fs::remove_file(file).await;
+        let _ = tokio::fs::remove_file(file.path()).await;
         Err(AppError::new(
             ErrorKind::Network,
             "The site stopped sending the video partway. Try again; it usually works the second time.",
@@ -1878,7 +1898,8 @@ impl DownloadManager {
     /// Gives a file yt-dlp finished its final name: the download's marker comes
     /// off, and a name that is taken gets the next free number. Same folder,
     /// so it is a rename, however large the file.
-    async fn publish(&self, downloaded: &Path, id: &str) -> Result<PathBuf> {
+    async fn publish(&self, downloaded: Made, id: &str) -> Result<PathBuf> {
+        let downloaded = downloaded.path();
         let stem = downloaded.file_stem().and_then(|stem| stem.to_str()).unwrap_or("video");
         let ext = downloaded.extension().and_then(|ext| ext.to_str()).unwrap_or("mp4");
         let wanted = downloaded.with_file_name(format!("{}.{ext}", args::finished_stem(stem)));
@@ -2295,13 +2316,14 @@ fn file_size(path: &Path) -> u64 {
     std::fs::metadata(path).map_or(0, |meta| meta.len())
 }
 
-/// Moves a file, copying it when the destination is on another drive.
-async fn move_file(from: &Path, to: &Path) -> Result<()> {
-    if tokio::fs::rename(from, to).await.is_err() {
-        tokio::fs::copy(from, to).await?;
-        tokio::fs::remove_file(from).await?;
+/// Moves a file Siphon made, copying it when the destination is on another
+/// drive, and says where it is now.
+async fn move_file(from: Made, to: &Path) -> Result<Made> {
+    if tokio::fs::rename(from.path(), to).await.is_err() {
+        tokio::fs::copy(from.path(), to).await?;
+        tokio::fs::remove_file(from.path()).await?;
     }
-    Ok(())
+    Ok(Made(to.to_path_buf()))
 }
 
 /// Reads a stream to the end, keeping the last [`MAX_LOG_LINES`] lines.
