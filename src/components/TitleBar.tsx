@@ -14,12 +14,14 @@ import { useUi } from "@/stores/ui";
 
 export function TitleBar() {
   const appWindow = getCurrentWindow();
-  const openPanel = useUi((state) => state.openPanel);
+  const togglePanel = useUi((state) => state.togglePanel);
   const activeDownloads = useDownloads(selectActiveCount);
   const anyDownloads = useDownloads((state) => state.order.length > 0);
   return (
     <header
       data-tauri-drag-region
+      // Stays in reach while a panel is open, which a click here leaves open.
+      data-beside-panels
       className="flex h-11 shrink-0 items-center justify-between pl-4"
     >
       {/* pointer-events-none lets drags on the label reach the drag region. */}
@@ -35,7 +37,7 @@ export function TitleBar() {
             <button
               type="button"
               aria-label="Downloads"
-              onClick={() => openPanel("downloads")}
+              onClick={() => togglePanel("downloads")}
               className={cn(toolButton, anyDownloads && "text-foreground")}
             >
               <ArrowDownToLine className="size-4" strokeWidth={1.75} />
@@ -56,7 +58,7 @@ export function TitleBar() {
             </button>
           </Hint>
           <Hint label="Settings">
-            <button type="button" aria-label="Settings" onClick={() => openPanel("settings")} className={toolButton}>
+            <button type="button" aria-label="Settings" onClick={() => togglePanel("settings")} className={toolButton}>
               <Settings className="size-4" strokeWidth={1.75} />
             </button>
           </Hint>

@@ -6,8 +6,14 @@ import { spring } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 
 /**
- * A panel that slides in from the right edge, over the main screen.
- * Built on Radix Dialog for focus trapping and Escape-to-close.
+ * A panel that slides in from the right edge, over the main screen. Built on
+ * Radix Dialog for Escape-to-close and closing on a click outside it.
+ *
+ * Not modal: a modal dialog makes everything outside it unclickable, and the
+ * title bar (minimize, close, dragging the window, the other panel) has to
+ * stay in reach. The dimmed backdrop still covers the main screen, and a
+ * click on it closes the panel; a click on anything marked
+ * `data-beside-panels` (the title bar, toasts) leaves it open.
  */
 export function Sheet({
   open,
@@ -33,19 +39,19 @@ export function Sheet({
   const [scrolled, setScrolled] = useState(false);
 
   return (
-    <Dialog.Root open={open} onOpenChange={onOpenChange}>
+    <Dialog.Root open={open} onOpenChange={onOpenChange} modal={false}>
       <AnimatePresence onExitComplete={() => setScrolled(false)}>
         {open && (
           <Dialog.Portal forceMount>
-            <Dialog.Overlay asChild>
-              <motion.div
-                className="fixed inset-0 top-11 z-40 bg-black/30 backdrop-blur-[1.5px]"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 0.18 }}
-              />
-            </Dialog.Overlay>
+            {/* Radix draws no overlay for a dialog that isn't modal; a press on this one is outside the panel, which closes it. */}
+            <motion.div
+              aria-hidden
+              className="fixed inset-0 top-11 z-40 bg-black/30 backdrop-blur-[1.5px]"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.18 }}
+            />
             <Dialog.Content
               asChild
               {...(description ? {} : { "aria-describedby": undefined })}
@@ -53,6 +59,9 @@ export function Sheet({
               onOpenAutoFocus={(event) => {
                 event.preventDefault();
                 (event.currentTarget as HTMLElement).focus();
+              }}
+              onInteractOutside={(event) => {
+                if ((event.target as Element | null)?.closest?.("[data-beside-panels]")) event.preventDefault();
               }}
             >
               <motion.aside

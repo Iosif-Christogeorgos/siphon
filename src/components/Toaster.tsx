@@ -11,7 +11,8 @@ const VISIBLE_MS = 8000;
 export function Toaster() {
   const toasts = useToasts((state) => state.toasts);
   return (
-    <div className="pointer-events-none fixed inset-x-0 bottom-5 z-[60] flex flex-col items-center gap-2 px-6">
+    // A toast's button can be pressed with a panel open, which stays open.
+    <div data-beside-panels className="pointer-events-none fixed inset-x-0 bottom-5 z-[60] flex flex-col items-center gap-2 px-6">
       <AnimatePresence initial={false}>
         {toasts.map((toast) => (
           <motion.div
