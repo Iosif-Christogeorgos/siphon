@@ -9,6 +9,7 @@ mod commands;
 mod downloads;
 mod error;
 mod ffmpeg;
+mod local;
 mod log;
 mod plan;
 mod preview;
@@ -78,6 +79,8 @@ fn main() {
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             preview::clear_cache(app.handle());
+            local::sweep_frames(app.handle());
+            app.manage(local::Grants::default());
             // Paused and failed downloads from the last session carry on from their files.
             let downloads = downloads::DownloadManager::load(app.handle());
             downloads::sweep_work(app.handle(), &downloads.kept_ids());
@@ -100,18 +103,26 @@ fn main() {
             tauri::async_runtime::spawn(keep_tools_updated(app.handle().clone()));
             Ok(())
         })
-        // Siphon ends with its main window: a sign-in window left open would keep it running.
-        .on_window_event(|window, event| {
-            if window.label() == "main" && matches!(event, tauri::WindowEvent::Destroyed) {
+        .on_window_event(|window, event| match event {
+            // Siphon ends with its main window: a sign-in window left open would keep it running.
+            tauri::WindowEvent::Destroyed if window.label() == "main" => {
                 if let Some(sign_in) = window.app_handle().get_window(sessions::sign_in::WINDOW) {
                     let _ = sign_in.destroy();
                 }
             }
+            // Files dropped on the window: the event carries their paths, which
+            // the webview never hands the backend itself (see `local`).
+            tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) if window.label() == "main" => {
+                local::dropped(window.app_handle(), paths.clone());
+            }
+            _ => {}
         })
         .invoke_handler(tauri::generate_handler![
             commands::binaries_status,
             commands::binaries_sync,
             commands::fetch_media,
+            commands::pick_files,
+            commands::read_file,
             commands::get_presets,
             commands::get_choices,
             commands::set_choices,

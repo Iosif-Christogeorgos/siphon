@@ -82,6 +82,7 @@ fn info(formats: Vec<Format>, seconds: f64) -> VideoInfo {
         chat: None,
         saved: None,
         sizes: Default::default(),
+        file: None,
     }
 }
 

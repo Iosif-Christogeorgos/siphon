@@ -7,9 +7,10 @@ use serde_json::Value;
 use std::sync::Arc;
 
 use tauri::{AppHandle, Manager, State};
+use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
-use tokio::sync::Semaphore;
+use tokio::sync::{oneshot, Semaphore};
 
 use crate::binaries::{BinaryManager, ToolStatus, UpdatePolicy};
 use crate::chat::preview::ChatPreviews;
@@ -17,6 +18,7 @@ use crate::chat::Placement;
 use crate::choices::{self, ChoiceStore, Choices};
 use crate::downloads::{self, DownloadManager, DownloadRequest};
 use crate::error::{AppError, ErrorKind, Result};
+use crate::local::{self, Grants, Intake};
 use crate::plan::explain::{self, PlanSummary};
 use crate::plan::registry::{self, Registry};
 use crate::plan::{self, Choice, Trim};
@@ -28,7 +30,7 @@ use crate::settings::{Settings, SettingsStore};
 use crate::sizing::{Measure, Sizing};
 use crate::state::{CapabilityCache, MediaCache};
 use crate::throttle::Throttle;
-use crate::ytdlp::metadata::{self, LiveStatus, Media};
+use crate::ytdlp::metadata::{self, LiveStatus, Media, VideoInfo};
 
 type Binaries<'a> = State<'a, Arc<BinaryManager>>;
 type Downloads<'a> = State<'a, Arc<DownloadManager>>;
@@ -82,6 +84,47 @@ pub async fn fetch_media(
     Ok(media)
 }
 
+/// Browse: Windows' file dialog for video and audio files to convert, opened
+/// here so the webview never names a file. The files picked are kept and
+/// given back by key (see `crate::local`); None if the dialog was closed.
+#[tauri::command]
+pub async fn pick_files(app: AppHandle, grants: State<'_, Grants>) -> Result<Option<Intake>> {
+    let (chosen, picked) = oneshot::channel();
+    let mut dialog = app
+        .dialog()
+        .file()
+        .set_title("Choose videos or sounds to convert")
+        .add_filter("Video and audio", local::MEDIA_EXTENSIONS)
+        .add_filter("All files", &["*"]);
+    if let Some(window) = app.get_webview_window("main") {
+        dialog = dialog.set_parent(&window);
+    }
+    dialog.pick_files(move |paths| {
+        let _ = chosen.send(paths);
+    });
+    let Some(paths) = picked.await.ok().flatten() else {
+        return Ok(None);
+    };
+    let paths = paths.into_iter().filter_map(|path| path.into_path().ok()).collect();
+    Ok(Some(local::take_in(&grants, paths)))
+}
+
+/// Reads what a file the user gave holds (by its key, from a drop or
+/// Browse), and remembers it for planning and converting, as `fetch_media`
+/// does for a link.
+#[tauri::command]
+pub async fn read_file(
+    app: AppHandle,
+    bins: Binaries<'_>,
+    cache: State<'_, MediaCache>,
+    key: String,
+) -> Result<VideoInfo> {
+    ensure_ready(&bins)?;
+    let info = local::read(&app, &bins, &key).await?;
+    cache.insert(&key, Arc::clone(&info));
+    Ok((*info).clone())
+}
+
 /// Every preset group, target and tier: the frontend defines none itself.
 #[tauri::command]
 pub fn get_presets() -> Registry {
@@ -119,6 +162,7 @@ pub async fn plan_download(
     app: AppHandle,
     bins: Binaries<'_>,
     cache: State<'_, MediaCache>,
+    grants: State<'_, Grants>,
     caps: State<'_, CapabilityCache>,
     settings: State<'_, SettingsStore>,
     url: String,
@@ -126,9 +170,7 @@ pub async fn plan_download(
     trim: Option<Trim>,
     from_start: Option<bool>,
 ) -> Result<PlanSummary> {
-    let video = cache
-        .get(&url)
-        .ok_or_else(|| AppError::internal("Siphon lost track of this video. Paste the link again."))?;
+    let video = remembered(&cache, &grants, &url)?;
     let caps = caps.get(&bins).await;
     if video.live.is_none() {
         return explain::summarize(&video, &choice, trim, &caps);
@@ -228,12 +270,11 @@ pub async fn preview_source(
     app: AppHandle,
     bins: Binaries<'_>,
     cache: State<'_, MediaCache>,
+    grants: State<'_, Grants>,
     url: String,
     level: u8,
 ) -> Result<Preview> {
-    let video = cache
-        .get(&url)
-        .ok_or_else(|| AppError::internal("Siphon lost track of this video. Paste the link again."))?;
+    let video = remembered(&cache, &grants, &url)?;
     preview::source(&app, &bins, &video, level).await
 }
 
@@ -260,6 +301,7 @@ pub async fn measure_size(
     app: AppHandle,
     bins: Binaries<'_>,
     cache: State<'_, MediaCache>,
+    grants: State<'_, Grants>,
     caps: State<'_, CapabilityCache>,
     throttle: State<'_, Arc<Throttle>>,
     sizing: State<'_, Sizing>,
@@ -268,9 +310,7 @@ pub async fn measure_size(
     trim: Option<Trim>,
 ) -> Result<Measure> {
     ensure_ready(&bins)?;
-    let video = cache
-        .get(&url)
-        .ok_or_else(|| AppError::internal("Siphon lost track of this video. Paste the link again."))?;
+    let video = remembered(&cache, &grants, &url)?;
     let caps = caps.get(&bins).await;
     sizing
         .measure(
@@ -513,6 +553,22 @@ pub fn sign_out(app: AppHandle, sessions: State<'_, Arc<Sessions>>, site: String
         sign_in::finish(&app, Outcome::Cancelled);
     }
     sessions.sign_out(&site);
+}
+
+/// The video a link or a file's key stands for, as this session looked it up
+/// or read it. A file the shared cache has let go of is still known by its grant.
+fn remembered(cache: &MediaCache, grants: &Grants, url: &str) -> Result<Arc<VideoInfo>> {
+    if let Some(video) = cache.get(url) {
+        return Ok(video);
+    }
+    if local::is_key(url) {
+        return grants
+            .info(url)
+            .ok_or_else(|| AppError::internal("Siphon lost track of this file. Drop it on the window again."));
+    }
+    Err(AppError::internal(
+        "Siphon lost track of this video. Paste the link again.",
+    ))
 }
 
 fn ensure_ready(bins: &BinaryManager) -> Result<()> {

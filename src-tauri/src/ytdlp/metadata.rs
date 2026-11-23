@@ -15,6 +15,7 @@ use super::{command, errors, validate_url};
 use crate::binaries::BinaryManager;
 use crate::chat::ChatSource;
 use crate::error::{AppError, ErrorKind, Result};
+use crate::local::LocalFile;
 use crate::plan::codecs::{AudioCodec, VideoCodec};
 use crate::plan::sizes::SizeFacts;
 use crate::process;
@@ -63,6 +64,10 @@ pub struct VideoInfo {
     /// Sizes measured on the video since (see `plan::sizes`).
     #[serde(skip)]
     pub sizes: SizeFacts,
+    /// A file on this PC the user gave Siphon to convert, rather than a link
+    /// (see `crate::local`); its `url` is then the file's key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<LocalFile>,
 }
 
 /// Where a live stream stands.
@@ -455,6 +460,7 @@ fn offline(url: &str) -> VideoInfo {
         chat: ChatSource::of_channel_link(url),
         saved: None,
         sizes: SizeFacts::default(),
+        file: None,
     }
 }
 
@@ -530,6 +536,7 @@ fn video(raw: RawInfo, requested_url: &str) -> Result<VideoInfo> {
         chat,
         saved: None,
         sizes: SizeFacts::default(),
+        file: None,
     })
 }
 

@@ -301,6 +301,7 @@ mod tests {
             chat: None,
             saved: None,
             sizes: Default::default(),
+            file: None,
         }
     }
 

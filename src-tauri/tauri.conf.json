@@ -29,7 +29,8 @@
       "assetProtocol": {
         "enable": true,
         "scope": [
-          "$APPCACHE/preview/**"
+          "$APPCACHE/preview/**",
+          "$APPCACHE/frames/**"
         ]
       }
     }
