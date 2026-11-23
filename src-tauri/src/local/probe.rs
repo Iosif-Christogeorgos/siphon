@@ -7,7 +7,7 @@ use std::path::Path;
 
 use serde_json::Value;
 
-use super::Original;
+use super::{LocalFile, Original};
 use crate::error::{AppError, ErrorKind, Result};
 use crate::plan::codecs::{AudioCodec, VideoCodec};
 use crate::plan::sizes::SizeFacts;
@@ -22,7 +22,7 @@ pub fn probe_args(file: &Path) -> Vec<OsString> {
         "json",
         "-show_entries",
         concat!(
-            "format=format_name,duration,size,bit_rate",
+            "format=format_name,start_time,duration,size,bit_rate",
             ":stream=index,codec_type,codec_name,width,height,avg_frame_rate,r_frame_rate,bit_rate,",
             "channels,sample_rate,color_transfer,duration",
             // Matroska states a track's bitrate (if at all) and length as tags.
@@ -45,6 +45,8 @@ pub fn probe_args(file: &Path) -> Vec<OsString> {
 pub struct Probe {
     /// ffprobe's names for the file type: "mov,mp4,m4a,3gp,3g2,mj2".
     pub format: String,
+    /// Where its timestamps start, in seconds (1.4 for an MPEG-TS from OBS).
+    pub start: f64,
     /// Seconds.
     pub duration: Option<f64>,
     /// Bits a second, all tracks together.
@@ -86,6 +88,7 @@ impl Probe {
         let format = &value["format"];
         let mut probe = Probe {
             format: format["format_name"].as_str().unwrap_or_default().to_string(),
+            start: number(&format["start_time"]).unwrap_or(0.0),
             duration: number(&format["duration"]).filter(|seconds| *seconds > 0.0),
             bit_rate: number(&format["bit_rate"]).filter(|bits| *bits > 0.0),
             ..Probe::default()
@@ -182,7 +185,11 @@ impl Probe {
             chat: None,
             saved: None,
             sizes: SizeFacts::default(),
-            file: Some(original.describe(size)),
+            file: Some(LocalFile {
+                start: self.start,
+                cover: self.cover,
+                ..original.describe(size)
+            }),
         })
     }
 }

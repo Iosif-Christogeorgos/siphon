@@ -86,7 +86,7 @@ pub fn output_template(recipe: &Recipe, name: &str, own: &str) -> String {
 }
 
 /// 75.4 → "1m15s". File-name safe (no colons) and free of yt-dlp's "%".
-fn clock(seconds: f64) -> String {
+pub fn clock(seconds: f64) -> String {
     let total = seconds.max(0.0).floor() as u64;
     match (total / 3600, total % 3600 / 60, total % 60) {
         (0, minutes, seconds) => format!("{minutes}m{seconds:02}s"),

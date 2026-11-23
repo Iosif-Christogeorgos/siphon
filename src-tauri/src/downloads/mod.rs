@@ -6,6 +6,7 @@
 //! run Siphon's own ffmpeg pass.
 
 mod chat;
+mod files;
 mod live;
 mod live_chat;
 mod live_draw;
@@ -33,6 +34,7 @@ use crate::binaries::{BinaryManager, Tool};
 use crate::error::{AppError, Chance, ErrorKind, Result, Retry};
 use crate::ffmpeg::smart_cut::{self, AudioPiece, Fallback};
 use crate::ffmpeg::{self, encoders::Hardware, Pass};
+use crate::local::{self, Grants, Original};
 use crate::log;
 use crate::plan::codecs::{Container, VideoCodec};
 use crate::plan::subtitles::SubtitleStep;
@@ -142,6 +144,14 @@ impl Done {
             as_recorded: false,
         }
     }
+}
+
+/// What a job makes its file from.
+enum Source {
+    /// A link, downloaded.
+    Link(String),
+    /// A file on this PC the user gave, converted (see [`files`]).
+    File(Arc<Original>),
 }
 
 /// A file Siphon made for a job: what yt-dlp downloaded (under the job's own
@@ -322,6 +332,9 @@ struct Job {
     /// A recording read from Twitch's VOD, behind live, while it is: Stop
     /// lets it record on to where Stop was pressed (see `twitch_feed`).
     catch_up: Option<twitch_feed::CatchUp>,
+    /// What it runs keeps below other programs: a conversion of files on
+    /// this PC, which a batch of keeps the processor busy for long.
+    gentle: bool,
 }
 
 /// Who may run: jobs take a slot in the order they were added.
@@ -377,6 +390,12 @@ pub struct DownloadManager {
     /// the first byte, so one that Siphon's closing or a crash cut short is
     /// finished when it starts again (see [`live`]).
     recordings: Mutex<HashMap<String, live::Recording>>,
+    /// The file on this PC each conversion of one was started on, by id,
+    /// until it has finished or is cancelled: a paused or failed one can be
+    /// resumed after Siphon was restarted (see [`files`]). Never written to.
+    originals: Mutex<HashMap<String, PathBuf>>,
+    /// Who may convert a file on this PC now, by what it takes (see [`files`]).
+    files_gate: Mutex<files::FilesGate>,
     /// Where `leftovers` and `finished` are kept between sessions. None in tests.
     state_file: Option<PathBuf>,
 }
@@ -392,6 +411,8 @@ struct SavedState {
     finished: Vec<PathBuf>,
     #[serde(default)]
     recordings: HashMap<String, live::Recording>,
+    #[serde(default)]
+    originals: HashMap<String, PathBuf>,
 }
 
 /// Everything one running job needs.
@@ -402,6 +423,9 @@ struct JobContext<'a> {
     settings: Settings,
     /// A playlist video's folder and number; empty for anything else.
     place: Place,
+    /// It converts a file on this PC, rather than a download: what went
+    /// wrong is said so.
+    converts_file: bool,
 }
 
 impl JobContext<'_> {
@@ -452,6 +476,7 @@ impl DownloadManager {
             leftovers: Mutex::new(saved.leftovers),
             finished: Mutex::new(saved.finished.into_iter().filter(|path| path.exists()).collect()),
             recordings: Mutex::new(saved.recordings),
+            originals: Mutex::new(saved.originals),
             state_file: Some(state_file),
             ..Self::default()
         }
@@ -465,10 +490,12 @@ impl DownloadManager {
             let leftovers = self.leftovers.lock().unwrap();
             let finished = self.finished.lock().unwrap();
             let recordings = self.recordings.lock().unwrap();
+            let originals = self.originals.lock().unwrap();
             let view = serde_json::json!({
                 "leftovers": &*leftovers,
                 "finished": &*finished,
                 "recordings": &*recordings,
+                "originals": &*originals,
             });
             serde_json::to_vec(&view)
         };
@@ -488,11 +515,12 @@ impl DownloadManager {
         taken
     }
 
-    /// The download ids whose files are kept for a later try, or a recording
-    /// still to be finished.
+    /// The download ids whose files are kept for a later try, a recording
+    /// still to be finished, or a conversion of a file that may be resumed.
     pub fn kept_ids(&self) -> HashSet<String> {
         let mut kept: HashSet<String> = self.leftovers.lock().unwrap().keys().cloned().collect();
         kept.extend(self.recordings.lock().unwrap().keys().cloned());
+        kept.extend(self.originals.lock().unwrap().keys().cloned());
         kept
     }
 
@@ -507,11 +535,16 @@ impl DownloadManager {
 
     /// Queues a download. It starts when a slot is free; progress arrives as events.
     /// A live recording starts at once: the stream doesn't wait either.
+    /// A file on this PC (its key in place of a link) is converted when its
+    /// turn comes (see [`files`]).
     pub fn start(self: &Arc<Self>, app: AppHandle, request: DownloadRequest) -> Result<()> {
-        let url = ytdlp::validate_url(&request.url)?.to_string();
+        let source = self.source_of(&app, &request)?;
         let id = request.id;
         let recording = request.record;
-        self.register(&id, recording.is_none());
+        match &source {
+            Source::Link(_) => self.register(&id, recording.is_none()),
+            Source::File(_) => self.register_file(&id),
+        }
 
         let manager = Arc::clone(self);
         tauri::async_runtime::spawn(async move {
@@ -531,35 +564,54 @@ impl DownloadManager {
                 // Read once the job starts, so changes made while it queued apply.
                 settings: app.state::<SettingsStore>().get(),
                 place: request.place.clone().unwrap_or_default(),
+                converts_file: matches!(source, Source::File(_)),
             };
 
-            let outcome = if let Some(recording) = recording {
-                match app.state::<Arc<Throttle>>().flow().await {
-                    Ok(flow) => {
-                        manager.attach_flow(&id, flow);
-                        manager.record(&job(), &url, &request.choice, recording, account).await
+            let outcome = match (&source, recording) {
+                (Source::File(original), _) => {
+                    let outcome = manager.run_file(&job(), original, &request.choice, request.trim).await;
+                    if let Err(error) = &outcome {
+                        if error.kind != ErrorKind::Cancelled {
+                            let name = original.name();
+                            log::line(&app, &format!("convert {name} failed: {}", failure_summary(error)));
+                        }
                     }
-                    Err(error) => Err(error),
+                    outcome
                 }
-            } else if manager.wait_for_slot(&app, &id).await {
-                let outcome = match app.state::<Arc<Throttle>>().flow().await {
+                (Source::Link(url), Some(recording)) => match app.state::<Arc<Throttle>>().flow().await {
                     Ok(flow) => {
                         manager.attach_flow(&id, flow);
-                        manager.run(&job(), &url, &request.choice, request.trim, account).await
+                        manager.record(&job(), url, &request.choice, recording, account).await
                     }
                     Err(error) => Err(error),
-                };
-                manager.gate.lock().unwrap().running -= 1;
-                manager.gate_changed.notify_waiters();
-                outcome
-            } else {
-                Err(AppError::cancelled())
+                },
+                (Source::Link(url), None) => {
+                    if manager.wait_for_slot(&app, &id).await {
+                        let outcome = match app.state::<Arc<Throttle>>().flow().await {
+                            Ok(flow) => {
+                                manager.attach_flow(&id, flow);
+                                manager.run(&job(), url, &request.choice, request.trim, account).await
+                            }
+                            Err(error) => Err(error),
+                        };
+                        manager.gate.lock().unwrap().running -= 1;
+                        manager.gate_changed.notify_waiters();
+                        outcome
+                    } else {
+                        Err(AppError::cancelled())
+                    }
+                }
             };
 
             let stop = manager.end_job(&id);
             if stop == Some(Stop::Cancel) {
                 // Including what an earlier try left, if it was cancelled between tries.
                 manager.discard_leftovers(&id).await;
+            }
+            // A conversion that is done no longer needs its file remembered;
+            // a paused or failed one does, to be resumed after a restart.
+            if matches!(source, Source::File(_)) && stop.is_none() && outcome.is_ok() {
+                manager.forget_original(&id);
             }
             let event = match (stop, outcome) {
                 (Some(Stop::Cancel), _) => DownloadEvent::Cancelled { id },
@@ -593,6 +645,64 @@ impl DownloadManager {
         self.jobs.lock().unwrap().insert(id.to_string(), Job::default());
         if queued {
             self.gate.lock().unwrap().waiting.push_back(id.to_string());
+        }
+    }
+
+    /// Adds a conversion of a file on this PC to the list. It waits for its
+    /// turn by what it takes (see [`files`]), not in the downloads' queue,
+    /// and what it runs keeps below other programs, so the PC stays usable.
+    fn register_file(&self, id: &str) {
+        let job = Job {
+            gentle: true,
+            ..Job::default()
+        };
+        self.jobs.lock().unwrap().insert(id.to_string(), job);
+    }
+
+    /// What a request makes its file from: its link, or the file on this PC
+    /// its key stands for (see `crate::local`). The webview names files only
+    /// by such keys, and only the backend gives them out; after a restart, a
+    /// conversion is resumed on the file it was started on.
+    fn source_of(&self, app: &AppHandle, request: &DownloadRequest) -> Result<Source> {
+        if !local::is_key(&request.url) {
+            return Ok(Source::Link(ytdlp::validate_url(&request.url)?.to_string()));
+        }
+        if request.record.is_some() {
+            return Err(AppError::new(ErrorKind::Unsupported, "A file can't be recorded."));
+        }
+        let grants = app.state::<Grants>();
+        let original = match grants.get(&request.url) {
+            Some(original) => original,
+            None => {
+                let saved = self.originals.lock().unwrap().get(&request.id).cloned();
+                let Some(saved) = saved else {
+                    return Err(AppError::internal(
+                        "Siphon lost track of this file. Drop it on the window again.",
+                    ));
+                };
+                grants
+                    .grant(&saved)
+                    .filter(|original| original.key() == request.url)
+                    .ok_or_else(|| {
+                        AppError::new(
+                            ErrorKind::Unavailable,
+                            "This file isn't there any more. It may have been moved or deleted.",
+                        )
+                    })?
+            }
+        };
+        self.originals
+            .lock()
+            .unwrap()
+            .insert(request.id.clone(), original.path().to_path_buf());
+        self.save();
+        Ok(Source::File(original))
+    }
+
+    /// A conversion of a file is done: its file needn't be remembered.
+    fn forget_original(&self, id: &str) {
+        if self.originals.lock().unwrap().remove(id).is_some() {
+            self.save();
         }
     }
 
@@ -693,10 +803,15 @@ impl DownloadManager {
         }
     }
 
+    /// Removes what a paused or failed download left on disk, and forgets
+    /// which file a conversion was on (the file itself is never touched).
     async fn discard_leftovers(&self, id: &str) {
         let leftovers = self.leftovers.lock().unwrap().remove(id);
-        if let Some(leftovers) = leftovers {
+        let original = self.originals.lock().unwrap().remove(id);
+        if leftovers.is_some() || original.is_some() {
             self.save();
+        }
+        if let Some(leftovers) = leftovers {
             leftovers.remove().await;
         }
     }
@@ -1037,6 +1152,7 @@ impl DownloadManager {
                 &recipe,
                 source.path(),
                 &output,
+                &partial_path(&output),
                 &work,
                 &mut tracker,
                 subtitles.as_ref(),
@@ -1179,7 +1295,7 @@ impl DownloadManager {
     /// Step 3, checked: converts (on the CPU if the hardware encoder refuses),
     /// then makes sure a Share file is under its limit, encoding again a
     /// little smaller if it isn't. The file only gets its final name once it
-    /// passes; until then it is written beside it under a temporary one.
+    /// passes; until then it is written beside it as `partial`.
     #[allow(clippy::too_many_arguments)]
     async fn convert_checked(
         &self,
@@ -1187,11 +1303,12 @@ impl DownloadManager {
         recipe: &Recipe,
         source: &Path,
         output: &Path,
+        partial: &Path,
         work: &Path,
         tracker: &mut Tracker,
         subtitles: Option<&Prepared>,
     ) -> Result<()> {
-        let partial = partial_path(output);
+        let partial = partial.to_path_buf();
         let mut recipe = recipe.clone();
         let name = output.file_name().unwrap_or_default().to_string_lossy().into_owned();
         // A copied stream that is cut: re-encode only the frames at the cuts.
@@ -1309,8 +1426,12 @@ impl DownloadManager {
             None => Err("ffprobe couldn't read it".into()),
         };
         verdict.map_err(|why| {
-            AppError::internal("The video downloaded, but the converted file came out empty.")
-                .with_details(format!("{}: {why}", file.display()))
+            AppError::internal(if job.converts_file {
+                "The converted file came out empty."
+            } else {
+                "The video downloaded, but the converted file came out empty."
+            })
+            .with_details(format!("{}: {why}", file.display()))
         })
     }
 
@@ -1999,7 +2120,12 @@ impl DownloadManager {
                 Ok(_) => {}
                 Err(Failure::Stopped(_)) => return Err(AppError::cancelled()),
                 Err(Failure::Exited(log)) => {
-                    return Err(AppError::internal("The video downloaded, but converting it failed.").with_details(log))
+                    let what = if job.converts_file {
+                        "Converting the file failed."
+                    } else {
+                        "The video downloaded, but converting it failed."
+                    };
+                    return Err(AppError::internal(what).with_details(log));
                 }
                 Err(Failure::Spawn(error)) => return Err(error),
             }
@@ -2026,6 +2152,9 @@ impl DownloadManager {
         // Waiting for an update can take seconds: the job may have been stopped meanwhile.
         if let Some(stop) = self.stop_of(id) {
             return Err(Failure::Stopped(stop));
+        }
+        if self.jobs.lock().unwrap().get(id).is_some_and(|job| job.gentle) {
+            process::below_others(&mut cmd);
         }
         let mut child = cmd
             .stdout(Stdio::piped())

@@ -199,15 +199,16 @@ pub fn convert_args_shifted(
     let mut push = |values: &[&str]| args.extend(values.iter().map(OsString::from));
 
     // ── Streams ──
-    // First video track, and the first audio track if we keep one. Drops the
-    // source's own subtitles, thumbnails and data tracks, which some
-    // containers reject; Siphon's subtitle file is added on its own.
+    // First video track (`V`: never a cover picture beside it), and the first
+    // audio track if we keep one. Drops the source's own subtitles,
+    // thumbnails and data tracks, which some containers reject; Siphon's
+    // subtitle file is added on its own.
     match (chat, &recipe.video, recipe.video_encode()) {
         (Some((layer, index)), Some(video), Some(encode)) => {
             let filters = video_filters(video, encode, cut, burn.as_deref());
             push(&["-filter_complex", &layer.graph(&filters, index), "-map", "[v]"]);
         }
-        _ => push(&["-map", "0:v:0"]),
+        _ => push(&["-map", "0:V:0"]),
     }
     match recipe.audio_codec() {
         Some(_) if !first_pass && audio_shift.is_some() => push(&["-map", "1:a:0?"]),
@@ -500,6 +501,54 @@ pub(crate) fn audio_encode_args(codec: AudioCodec, bitrate_kbps: Option<u32>, st
     if stereo {
         args.extend(["-ac".into(), "2".into()]);
     }
+    args
+}
+
+/// The arguments that make the sound of `input`, a file on this PC, into the
+/// sound file `recipe` describes: copied or converted, its tags kept, and its
+/// cover picture too (`cover`) where the file type holds one. `cut` is the
+/// part to keep, as where it starts in the file and how long it is. (A
+/// download's sound is made by yt-dlp, see `ytdlp::args`.)
+pub fn sound_args(recipe: &Recipe, input: &Path, output: &Path, cut: Option<(f64, f64)>, cover: bool) -> Vec<OsString> {
+    let mut args: Vec<OsString> = Vec::new();
+    let mut push = |values: &[&str]| args.extend(values.iter().map(OsString::from));
+    push(&["-hide_banner", "-nostdin", "-y", "-loglevel", "error"]);
+    push(&["-progress", "pipe:1", "-nostats"]);
+    if let Some((from, _)) = cut {
+        push(&["-ss", &format!("{from:.3}")]);
+    }
+    push(&["-i"]);
+    args.push(input.into());
+    let mut push = |values: &[&str]| args.extend(values.iter().map(OsString::from));
+    if let Some((_, length)) = cut {
+        push(&["-t", &format!("{length:.3}")]);
+    }
+    push(&["-map", "0:a:0"]);
+    let holds_cover = matches!(recipe.container, Container::Mp3 | Container::M4a | Container::Flac);
+    if cover && holds_cover {
+        push(&["-map", "0:v:0", "-c:v", "copy", "-disposition:v:0", "attached_pic"]);
+    } else {
+        push(&["-vn"]);
+    }
+    match recipe.audio.as_ref().map(|audio| &audio.action) {
+        Some(AudioAction::Encode {
+            codec,
+            bitrate_kbps,
+            stereo,
+        }) => {
+            for arg in audio_encode_args(*codec, *bitrate_kbps, *stereo) {
+                push(&[&arg]);
+            }
+        }
+        _ => push(&["-c:a", "copy"]),
+    }
+    match recipe.container {
+        // The tag version Windows' own players read.
+        Container::Mp3 => push(&["-id3v2_version", "3"]),
+        Container::M4a => push(&["-movflags", "+faststart"]),
+        _ => {}
+    }
+    args.push(output.into());
     args
 }
 

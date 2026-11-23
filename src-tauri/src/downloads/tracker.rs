@@ -133,6 +133,15 @@ impl Tracker {
         }
     }
 
+    /// For converting a file on this PC: nothing is downloaded, so the
+    /// conversion is the whole bar.
+    pub fn converting() -> Self {
+        Self {
+            download_share: 0.0,
+            ..Self::new(true)
+        }
+    }
+
     /// Names Siphon's ffmpeg pass by what it does (see `on_convert`).
     pub fn set_pass_stage(&mut self, stage: Stage) {
         self.pass_stage = stage;

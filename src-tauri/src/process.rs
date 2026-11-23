@@ -19,6 +19,17 @@ pub fn command(program: impl AsRef<OsStr>) -> Command {
     cmd
 }
 
+/// `BELOW_NORMAL_PRIORITY_CLASS`: Windows serves other programs first.
+#[cfg(windows)]
+const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
+
+/// Runs a [`command`] below other programs' priority: a long encode keeps
+/// the processor busy, and the PC must stay usable meanwhile.
+pub fn below_others(cmd: &mut Command) {
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS);
+}
+
 /// Runs a command to completion and captures its output. Returns `None` if
 /// it outlives `limit`, in which case its whole process tree is killed.
 pub async fn output_within(mut cmd: Command, limit: Duration) -> std::io::Result<Option<Output>> {

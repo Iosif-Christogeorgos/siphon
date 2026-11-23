@@ -1800,6 +1800,7 @@ impl DownloadManager {
                     id: &id,
                     settings: app.state::<SettingsStore>().get(),
                     place: Default::default(),
+                    converts_file: false,
                 };
                 log::line(
                     &app,

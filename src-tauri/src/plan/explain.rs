@@ -48,6 +48,9 @@ pub struct PlanSummary {
     pub measurable: bool,
     /// The size of this conversion was measured on the video itself.
     pub measured: bool,
+    /// A file on this PC that already is what was asked for: why, and that
+    /// nothing is made of it (see `crate::local::nothing_to_do`).
+    pub nothing: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -110,6 +113,7 @@ pub fn summarize(video: &VideoInfo, choice: &Choice, trim: Option<Trim>, caps: &
         chat: recipe.chat.is_some(),
         measurable: !video.with_account && !video.sizes.wanted(&recipe, video).is_empty(),
         measured: recipe.measured.encode_exact,
+        nothing: crate::local::nothing_to_do(video, choice, &recipe),
     })
 }
 

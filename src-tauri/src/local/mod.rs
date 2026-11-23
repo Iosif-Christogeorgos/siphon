@@ -10,6 +10,7 @@
 //! A file is only ever read ([`Original`]): what Siphon makes from it goes
 //! beside it under a name of its own.
 
+mod output;
 mod probe;
 
 use std::cmp::Ordering;
@@ -27,6 +28,7 @@ use crate::binaries::BinaryManager;
 use crate::error::{AppError, ErrorKind, Result};
 use crate::process;
 use crate::ytdlp::metadata::VideoInfo;
+pub use output::{nothing_to_do, output_name, partial_name, writable};
 pub use probe::Probe;
 
 /// What the webview calls a file by, in place of a link: `siphon-file:` and its id.
@@ -52,12 +54,14 @@ const STALE_FRAMES: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 /// What a folder's files are taken in by: video and audio files, by their
 /// extension. A file dropped on its own is taken whatever it is called, and
 /// reading it says whether it is one.
+#[rustfmt::skip]
 pub const MEDIA_EXTENSIONS: &[&str] = &[
-    // Video.
-    "mp4", "m4v", "mov", "mkv", "webm", "avi", "wmv", "asf", "flv", "f4v", "ts", "mts", "m2ts", "mpg", "mpeg", "m2v",
-    "vob", "3gp", "3g2", "ogv", "mxf", "dv", "divx", "rm", "rmvb", // Audio.
-    "mp3", "m4a", "m4b", "aac", "opus", "ogg", "oga", "flac", "wav", "wma", "aif", "aiff", "alac", "ape", "wv", "mka",
-    "ac3", "eac3", "dts", "amr", "caf", "mp2",
+    // Video
+    "mp4", "m4v", "mov", "mkv", "webm", "avi", "wmv", "asf", "flv", "f4v", "ts", "mts", "m2ts",
+    "mpg", "mpeg", "m2v", "vob", "3gp", "3g2", "ogv", "mxf", "dv", "divx", "rm", "rmvb",
+    // Audio
+    "mp3", "m4a", "m4b", "aac", "opus", "ogg", "oga", "flac", "wav", "wma", "aif", "aiff",
+    "alac", "ape", "wv", "mka", "ac3", "eac3", "dts", "amr", "caf", "mp2",
 ];
 
 /// A file the user gave Siphon to convert. It is read where it is and never
@@ -123,6 +127,8 @@ impl Original {
                 .map(|folder| folder.to_string_lossy().into_owned())
                 .unwrap_or_default(),
             size,
+            start: 0.0,
+            cover: false,
         }
     }
 }
@@ -146,6 +152,14 @@ pub struct LocalFile {
     pub folder: String,
     /// Bytes.
     pub size: u64,
+    /// Where its timestamps start, in seconds: an MPEG-TS from OBS starts a
+    /// second or so in. A part to cut out is chosen from its start, and cut
+    /// by its timestamps.
+    #[serde(skip)]
+    pub start: f64,
+    /// It holds a cover picture (an audio file's art), kept where what is made can hold one.
+    #[serde(skip)]
+    pub cover: bool,
 }
 
 /// What came of files dropped on the window or picked with Browse.
@@ -186,8 +200,10 @@ impl Stamp {
 }
 
 impl Grants {
-    /// Keeps `path`, a file the user gave, and returns it. None if it isn't a file.
-    fn grant(&self, path: &Path) -> Option<Arc<Original>> {
+    /// Keeps `path`, a file the user gave, and returns it. None if it isn't
+    /// a file. Only a drop, the file dialog, or a conversion the user started
+    /// on the file before Siphon was restarted, add one.
+    pub(crate) fn grant(&self, path: &Path) -> Option<Arc<Original>> {
         let path = std::path::absolute(path).ok()?;
         if !path.is_file() {
             return None;
