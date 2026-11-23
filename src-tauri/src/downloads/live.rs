@@ -28,6 +28,7 @@
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -368,6 +369,11 @@ impl Readings {
 /// is drawing what was left (the rest is copying it into its file), for the
 /// progress shown.
 const DRAWING_SHARE: f64 = 0.7;
+
+/// How much of fetching a recording's chat as it is finished is its replay,
+/// when that has to be fetched (the rest is its emotes' and badges' images),
+/// for the progress shown.
+const REPLAY_SHARE: f64 = 0.5;
 
 /// How often a recording's folder is looked at for files yt-dlp didn't name.
 const FILE_LOOK: Duration = Duration::from_secs(2);
@@ -1208,14 +1214,31 @@ impl DownloadManager {
         let stem = recording.stem();
         let mut recipe = recording.recipe.clone();
         recipe.duration = Some(recorded);
-        // The chat, placed on the finished file's clock. A recording stopped
-        // before it fetched its VOD's replay fetches it now, which can take up
-        // to two minutes: the row says so meanwhile.
+        // The chat, placed on the finished file's clock, with what it needs
+        // that isn't at hand yet: the replay from before Record, when the
+        // recording was stopped before it fetched it, then the images of its
+        // emotes and badges. The row says *Fetching the chat* meanwhile, with
+        // how far it has got: the replay's share first, when there is one.
         let chat: Option<(ChatLog, Placement)> = match &recipe.chat {
             Some(step) => {
                 let stretches = stretches(&numbers, &probes, recorded);
-                let fetching = || report(job, Stage::Chat, 0.0, LiveProgress::default());
-                let log = live_chat::chat_for_file(job.app, work, &stretches, fetching).await;
+                let replayed = AtomicBool::new(false);
+                let log = live_chat::chat_for_file(job.app, work, &stretches, |done| {
+                    replayed.store(true, Ordering::Relaxed);
+                    report(job, Stage::Chat, done * REPLAY_SHARE, LiveProgress::default());
+                })
+                .await;
+                if let Some(log) = &log {
+                    let from = if replayed.load(Ordering::Relaxed) {
+                        REPLAY_SHARE
+                    } else {
+                        0.0
+                    };
+                    self.fetch_chat_images(job, log, &step.placement, first, recorded, |done| {
+                        report(job, Stage::Chat, from + done * (1.0 - from), LiveProgress::default());
+                    })
+                    .await;
+                }
                 report(job, Stage::Finalizing, 0.0, LiveProgress::default());
                 log.map(|log| (log, step.placement))
             }
@@ -1456,6 +1479,55 @@ impl DownloadManager {
             }
         })
         .await
+    }
+
+    /// Fetches the images of the emotes and badges `log` shows in the
+    /// recording's file, those not at hand yet, before its chat is drawn,
+    /// telling `progress` how far it has got (0–1); drawing then has them
+    /// all. Fetched as drawing began, they kept the row at 0% for as long as
+    /// they took: 1,998 images in 103 s for 38 minutes of a busy chat
+    /// (2026-11-23). Those that can't be had are drawn as their words.
+    async fn fetch_chat_images(
+        &self,
+        job: &JobContext<'_>,
+        log: &ChatLog,
+        placement: &Placement,
+        first: &Path,
+        recorded: f64,
+        progress: impl Fn(f64),
+    ) {
+        let (Ok(picture), Ok(folder), Ok(twitch)) = (
+            self.picture(job, first).await,
+            super::chat::image_folder(job.app),
+            Twitch::new(),
+        ) else {
+            return;
+        };
+        // At the sizes the box draws them, from a minute before the file
+        // starts: what is still in the box as it opens.
+        let style = Style::for_width(Geometry::new(placement, picture.width, picture.height).width);
+        let urls = log.images_used(-60.0, recorded, style.emote(), style.badge());
+        let started = Instant::now();
+        let (mut wanted, mut shown) = (0, None);
+        let failed = images::fetch_with(twitch.http(), &folder, urls, |done, of| {
+            wanted = of;
+            // A step at each whole percent, not one for every image.
+            let percent = done * 100 / of;
+            if shown != Some(percent) {
+                shown = Some(percent);
+                progress(done as f64 / of as f64);
+            }
+        })
+        .await;
+        if wanted > 0 {
+            log::line(
+                job.app,
+                &format!(
+                    "chat: {wanted} images fetched before drawing ({failed} failed), {:.1} s",
+                    started.elapsed().as_secs_f64()
+                ),
+            );
+        }
     }
 
     /// Runs the finishing ffmpeg pass with the chat drawn in (see `live_chat`),

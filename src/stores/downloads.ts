@@ -272,8 +272,12 @@ export const useDownloads = create<DownloadsState>((set, get) => {
         case "progress": {
           const { type: _type, id, ...progress } = event;
           // A resumed download reports from zero until yt-dlp finds its partial
-          // file; the bar stays where it was instead of jumping back.
-          const reached = get().byId[id]?.progress.fraction ?? 0;
+          // file; the bar stays where it was instead of jumping back. A
+          // recording is never resumed, and finishing one counts each of its
+          // steps from zero (its chat, then the drawing of it): kept from
+          // going back, the drawing sat at the chat's 100% (2026-11-23).
+          const known = get().byId[id];
+          const reached = known?.record ? 0 : (known?.progress.fraction ?? 0);
           patch(id, {
             status: progress.stage === "queued" ? "queued" : "running",
             progress: { ...progress, fraction: Math.max(progress.fraction, reached) },

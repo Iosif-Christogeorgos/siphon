@@ -28,11 +28,26 @@ pub fn cached_path(dir: &Path, url: &str) -> PathBuf {
 /// again after a failure that may pass (see [`super::send`]). Returns how
 /// many couldn't be had: those are drawn as their words instead.
 pub async fn fetch(http: &reqwest::Client, dir: &Path, urls: Vec<String>) -> usize {
+    fetch_with(http, dir, urls, |_, _| {}).await
+}
+
+/// As [`fetch`], telling `progress` how many of the images it didn't have
+/// are done, and of how many, as each one is; not at all if it had them all.
+pub async fn fetch_with(
+    http: &reqwest::Client,
+    dir: &Path,
+    urls: Vec<String>,
+    mut progress: impl FnMut(usize, usize),
+) -> usize {
     if tokio::fs::create_dir_all(dir).await.is_err() {
         return urls.len();
     }
     let missing: Vec<String> = urls.into_iter().filter(|url| !cached_path(dir, url).exists()).collect();
-    let results = futures_util::stream::iter(missing)
+    let total = missing.len();
+    if total > 0 {
+        progress(0, total);
+    }
+    let mut results = futures_util::stream::iter(missing)
         .map(|url| async move {
             let bytes = async {
                 let response = super::send(|| http.get(&url)).await.ok()?.error_for_status().ok()?;
@@ -59,10 +74,14 @@ pub async fn fetch(http: &reqwest::Client, dir: &Path, urls: Vec<String>) -> usi
             // Should the other fetch have put it in place first, it is there all the same.
             written || file.exists()
         })
-        .buffer_unordered(PARALLEL)
-        .collect::<Vec<bool>>()
-        .await;
-    results.iter().filter(|ok| !**ok).count()
+        .buffer_unordered(PARALLEL);
+    let (mut done, mut failed) = (0, 0);
+    while let Some(ok) = results.next().await {
+        done += 1;
+        failed += usize::from(!ok);
+        progress(done, total);
+    }
+    failed
 }
 
 /// A decoded image: one frame, or an animation's frames, all the same size,
@@ -277,5 +296,29 @@ mod tests {
         assert_eq!(a, cached_path(dir, "https://cdn.7tv.app/emote/1/2x.webp"));
         assert_ne!(a, cached_path(dir, "https://cdn.7tv.app/emote/2/2x.webp"));
         assert_eq!(a.extension().unwrap(), "img");
+    }
+
+    #[tokio::test]
+    async fn says_how_far_it_has_got_only_with_images_it_lacked() {
+        let dir = std::env::temp_dir().join(format!("siphon-images-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let http = reqwest::Client::new();
+        let had = "https://cdn.7tv.app/emote/1/2x.webp".to_string();
+        std::fs::write(cached_path(&dir, &had), two_frame_gif()).unwrap();
+        let mut heard = Vec::new();
+
+        // All at hand: nothing to say, and nothing failed.
+        let failed = fetch_with(&http, &dir, vec![had.clone()], |done, of| heard.push((done, of))).await;
+        assert_eq!((failed, heard.as_slice()), (0, [].as_slice()));
+
+        // One it lacks (an address no request can be made of, so no time is
+        // spent trying again): none of it done, then all of it, and it failed.
+        let failed = fetch_with(&http, &dir, vec![had, "not an address".into()], |done, of| {
+            heard.push((done, of))
+        })
+        .await;
+        assert_eq!((failed, heard.as_slice()), (1, [(0, 1), (1, 1)].as_slice()));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

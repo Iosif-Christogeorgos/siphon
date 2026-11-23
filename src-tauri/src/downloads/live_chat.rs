@@ -371,7 +371,7 @@ impl ChatCapture {
                     to: vod.to + f64::from(attempt) * REPLAY_EVERY.as_secs_f64(),
                     ..vod.clone()
                 };
-                match fetch_replay(&app, &wider).await {
+                match fetch_replay(&app, &wider, |_| {}).await {
                     Some(replay) if replay.origin.is_some() => {
                         let _ = save_json(&replay_file(&work, number), &replay).await;
                         return;
@@ -590,10 +590,11 @@ pub(super) async fn load_json<T: serde::de::DeserializeOwned>(file: &Path) -> Op
 }
 
 /// Fetches what the VOD's replay has for a stretch read from it, and says
-/// what it fetched. `None` if it couldn't be had.
-async fn fetch_replay(app: &AppHandle, vod: &VodRef) -> Option<Before> {
+/// what it fetched. `None` if it couldn't be had. `progress` hears how far
+/// it has got (0–1).
+async fn fetch_replay(app: &AppHandle, vod: &VodRef, progress: impl Fn(f64) + Send + Sync) -> Option<Before> {
     let started = Instant::now();
-    let fetched = async { Twitch::new()?.comments(&vod.id, vod.from, vod.to, |_| {}).await };
+    let fetched = async { Twitch::new()?.comments(&vod.id, vod.from, vod.to, progress).await };
     let replay = match fetched.await {
         Ok(replay) => replay,
         Err(error) => {
@@ -855,27 +856,31 @@ fn parse_framemd5(text: &str) -> Vec<(f64, String)> {
 /// be placed. Deleted messages and timed-out users' messages are left out.
 /// A stretch read from the VOD is placed as the VOD's replay places it
 /// (fetched now if it wasn't while recording: see [`replay_for`]), which
-/// also has what was said before IRC was read. `fetching` is told when the
-/// replay has to be fetched, which can take up to [`BEFORE_AFTER`].
+/// also has what was said before IRC was read. `fetching` hears how far it
+/// has got when a replay has to be fetched, 0–1 over all the stretches: 0
+/// first, while it waits for the replay to have what it wants (up to
+/// [`BEFORE_AFTER`]), then as it comes in.
 pub(super) async fn chat_for_file(
     app: &AppHandle,
     work: &Path,
     stretches: &[Stretch],
-    fetching: impl Fn(),
+    fetching: impl Fn(f64) + Sync,
 ) -> Option<ChatLog> {
     let events = tokio::fs::read_to_string(work.join(EVENTS)).await.unwrap_or_default();
     let mut placed: Vec<(Stretch, Aired)> = Vec::new();
     let mut replays = HashMap::new();
     let fetching = &fetching;
-    for stretch in stretches {
+    let count = stretches.len().max(1) as f64;
+    for (index, stretch) in stretches.iter().enumerate() {
         let Some(aired) = load_json::<Aired>(&aired_file(work, stretch.number)).await else {
             continue;
         };
         if aired.vod.is_some() {
             let length = stretch.length;
+            let progress = move |done: f64| fetching((index as f64 + done) / count);
             let fetch = |vod: VodRef| async move {
                 let vod = vod.for_recorded(length);
-                fetching();
+                progress(0.0);
                 let wait = replay_wait(&vod, now());
                 if !wait.is_zero() {
                     log::line(
@@ -888,7 +893,7 @@ pub(super) async fn chat_for_file(
                     );
                     tokio::time::sleep(wait).await;
                 }
-                fetch_replay(app, &vod).await
+                fetch_replay(app, &vod, progress).await
             };
             if let Some(replay) = replay_for(work, stretch.number, fetch).await {
                 replays.insert(stretch.number, replay);
