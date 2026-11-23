@@ -15,6 +15,23 @@ import { gentleSpring, riseIn } from "@/lib/motion";
 import { parseVideoUrl, playlistUrlOf } from "@/lib/url";
 import { cn } from "@/lib/utils";
 
+const GREETINGS = [
+  "What are we saving today?",
+  "What’s worth keeping?",
+  "Got a link? Let’s get it.",
+  "What should we grab?",
+  "Drop a link, keep the video.",
+  "Save it before it’s gone.",
+  "What are we pulling down today?",
+  "Your next download starts here.",
+  "Found something worth saving?",
+  "Let’s bring it home.",
+  "One link away.",
+] as const;
+
+/** Picked once, as the app starts: the same all session, another next time. */
+const GREETING = GREETINGS[Math.floor(Math.random() * GREETINGS.length)];
+
 function Kbd({ children }: { children: string }) {
   return (
     <kbd className="rounded-md border border-border-strong bg-card px-1.5 py-0.5 font-sans text-[11px] font-medium text-muted-foreground">
@@ -73,9 +90,7 @@ export function Home() {
               exit={{ opacity: 0, height: 0 }}
               transition={gentleSpring}
             >
-              <h1 className="text-[28px] leading-tight font-semibold tracking-[-0.03em]">
-                What are we saving today?
-              </h1>
+              <h1 className="text-[28px] leading-tight font-semibold tracking-[-0.03em]">{GREETING}</h1>
               <p className="mt-2 pb-8 text-[15px] text-muted-foreground">
                 Paste a link from YouTube, Vimeo, X, TikTok and thousands of other sites.
               </p>
