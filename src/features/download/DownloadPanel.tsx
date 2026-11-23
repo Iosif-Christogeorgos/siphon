@@ -210,6 +210,9 @@ function Running({
   const target = useMotionValue(fraction);
   const smooth = useSpring(target, { stiffness: 70, damping: 22, mass: 1 });
   const percent = useTransform(smooth, (value) => `${Math.floor(Math.min(value, 1) * 100)}%`);
+  const width = useTransform(smooth, (value) => `${Math.min(Math.max(value, 0), 1) * 100}%`);
+  // The front edge comes in once there is something to lead, and goes as the bar fills.
+  const edge = useTransform(smooth, [0, 0.02, 0.97, 1], [0, 1, 1, 0]);
   useEffect(() => target.set(fraction), [target, fraction]);
 
   useMotionValueEvent(smooth, "change", (value) => {
@@ -227,8 +230,16 @@ function Running({
 
   return (
     <div className="relative flex size-full items-center gap-3 pr-2 pl-5">
-      <motion.div className="absolute inset-0 origin-left bg-primary/15" style={{ scaleX: smooth }} />
-      <motion.div className="absolute inset-x-0 bottom-0 h-0.5 origin-left bg-primary" style={{ scaleX: smooth }} />
+      {/* The fill: deepening toward its front, which glows, with light drifting through it.
+          Sized rather than stretched, so its gradient and edge keep their shape. */}
+      <motion.div aria-hidden className="absolute inset-y-0 left-0" style={{ width }}>
+        <div className="absolute inset-0 bg-linear-to-r from-primary/5 to-primary/22" />
+        <div className="absolute inset-0 animate-sheen bg-[linear-gradient(100deg,transparent_30%,color-mix(in_oklab,var(--primary)_14%,transparent)_50%,transparent_70%)] bg-size-[200%_100%] motion-reduce:hidden" />
+        <motion.div className="absolute inset-y-0 right-0" style={{ opacity: edge }}>
+          <div className="absolute inset-y-0 -right-4 w-8 bg-[radial-gradient(closest-side,var(--primary-glow),transparent)]" />
+          <div className="absolute inset-y-0 right-0 w-0.5 bg-linear-to-b from-transparent via-primary to-transparent" />
+        </motion.div>
+      </motion.div>
       {stage === "preparing" && (
         <div className="absolute inset-0 animate-shimmer bg-[linear-gradient(100deg,transparent_35%,var(--primary-soft)_50%,transparent_65%)] bg-size-[200%_100%] motion-reduce:animate-none" />
       )}
@@ -363,7 +374,13 @@ function Paused({
 }) {
   return (
     <div className="relative flex size-full items-center gap-3 pr-2 pl-5">
-      <div className="absolute inset-0 origin-left bg-foreground/5" style={{ transform: `scaleX(${fraction})` }} />
+      {/* The running fill, at rest: grey, and no light. */}
+      <div aria-hidden className="absolute inset-y-0 left-0" style={{ width: `${Math.min(fraction, 1) * 100}%` }}>
+        <div className="absolute inset-0 bg-linear-to-r from-foreground/3 to-foreground/8" />
+        {fraction > 0 && (
+          <div className="absolute inset-y-0 right-0 w-0.5 bg-linear-to-b from-transparent via-foreground/25 to-transparent" />
+        )}
+      </div>
       {!label && (
         <span className="relative w-11 text-[15px] font-semibold text-muted-foreground tabular-nums">
           {Math.floor(fraction * 100)}%
