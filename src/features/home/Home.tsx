@@ -16,7 +16,6 @@ import { parseVideoUrl, playlistUrlOf } from "@/lib/url";
 import { cn } from "@/lib/utils";
 
 const GREETINGS = [
-  "What are we saving today?",
   "What’s worth keeping?",
   "Got a link? Let’s get it.",
   "What should we grab?",
