@@ -10,10 +10,13 @@ import { useClipboardLink } from "@/features/link/useClipboardLink";
 import { VideoCardSkeleton } from "@/features/video/VideoCard";
 import { PlaylistPane } from "@/features/playlist/PlaylistPane";
 import { VideoPane } from "@/features/video/VideoPane";
-import { ipc, toAppError } from "@/lib/ipc";
+import { ipc, isFileKey, onFilesDropped, toAppError } from "@/lib/ipc";
 import { gentleSpring, riseIn } from "@/lib/motion";
 import { parseVideoUrl, playlistUrlOf } from "@/lib/url";
 import { cn } from "@/lib/utils";
+import { useToasts } from "@/stores/toasts";
+import { useUi } from "@/stores/ui";
+import type { Intake, LocalFile, Media } from "@/types";
 
 const GREETINGS = [
   "What’s worth keeping?",
@@ -39,27 +42,72 @@ function Kbd({ children }: { children: string }) {
   );
 }
 
+/** Sound files, by extension: the field shows a file's kind before it is read. */
+const SOUND = /\.(mp3|m4a|m4b|aac|opus|ogg|oga|flac|wav|wma|aiff?|alac|ape|wv|mka|ac3|eac3|dts|amr|caf|mp2)$/i;
+
+/** What is said when nothing dropped or picked is a video or sound file. */
+function nothingTaken(intake: Intake): string {
+  const others = intake.left_out;
+  return others > 0
+    ? `${others} ${others === 1 ? "file that isn’t video or sound was" : "files that aren’t video or sound were"} left out.`
+    : "Drop video or sound files, or a folder of them.";
+}
+
 export function Home() {
+  // A link, or the key of a file on this PC (see `file`).
   const [url, setUrl] = useState<string | null>(null);
+  // The file the key stands for, as the backend described it.
+  const [file, setFile] = useState<LocalFile | null>(null);
   const clipboard = useClipboardLink(url);
   // The user asked to look this link up with the site's sign-in ("Try with your sign-in").
   const [withAccount, setWithAccount] = useState<string | null>(null);
 
   const media = useQuery({
     queryKey: ["media", url, withAccount === url],
-    queryFn: () => ipc.fetchMedia(url as string, withAccount === url),
+    queryFn: (): Promise<Media> =>
+      isFileKey(url as string)
+        ? ipc.readFile(url as string).then((video) => ({ type: "video", ...video }))
+        : ipc.fetchMedia(url as string, withAccount === url),
     enabled: url !== null,
   });
+
+  const openLink = (link: string | null) => {
+    setFile(null);
+    setUrl(link);
+  };
+
+  // Files dropped on the window or picked with Browse: the first opens.
+  const takeIn = (intake: Intake) => {
+    useUi.getState().closePanel();
+    const first = intake.files[0];
+    if (!first) {
+      useToasts.getState().show({
+        id: "nothing-taken",
+        title: "No video or sound to convert",
+        description: nothingTaken(intake),
+      });
+      return;
+    }
+    setFile(first);
+    setUrl(first.key);
+  };
+  const browse = () => void ipc.pickFiles().then((intake) => intake && takeIn(intake), () => {});
 
   // Ctrl/Cmd+V anywhere in the window loads the link, not just in the field.
   useEffect(() => {
     const onPaste = (event: ClipboardEvent) => {
       if (event.target instanceof HTMLInputElement) return;
       const link = parseVideoUrl(event.clipboardData?.getData("text"));
-      if (link) setUrl(link);
+      if (link) openLink(link);
     };
     window.addEventListener("paste", onPaste);
     return () => window.removeEventListener("paste", onPaste);
+  }, []);
+
+  // Files dropped anywhere on the window (the backend took them in, see `DropTarget`).
+  useEffect(() => {
+    const unlisten = onFilesDropped(takeIn);
+    return () => void unlisten.then((stop) => stop());
   }, []);
 
   const empty = url === null;
@@ -90,8 +138,8 @@ export function Home() {
               transition={gentleSpring}
             >
               <h1 className="text-[28px] leading-tight font-semibold tracking-[-0.03em]">{GREETING}</h1>
-              <p className="mt-2 pb-8 text-[15px] text-muted-foreground">
-                Paste a link from YouTube, Vimeo, X, TikTok and thousands of other sites.
+              <p className="mt-2 pb-8 text-[15px] text-pretty text-muted-foreground">
+                Paste a link from YouTube, TikTok and thousands of other sites, or drop a file.
               </p>
             </motion.div>
           )}
@@ -99,7 +147,14 @@ export function Home() {
 
         {/* `layout` glides the field from the centre to the top once a link is loaded. */}
         <motion.div layout="position" transition={gentleSpring}>
-          <LinkInput url={url} loading={media.isFetching} onSubmit={setUrl} onClear={() => setUrl(null)} />
+          <LinkInput
+            url={url}
+            file={file && { name: file.name, audio: SOUND.test(file.name) }}
+            loading={media.isFetching}
+            onSubmit={openLink}
+            onClear={() => openLink(null)}
+            onBrowse={browse}
+          />
         </motion.div>
 
         <motion.div layout="position" transition={gentleSpring}>
@@ -115,7 +170,7 @@ export function Home() {
               >
                 <ClipboardOffer
                   url={clipboard.offer}
-                  onAccept={() => setUrl(clipboard.offer)}
+                  onAccept={() => openLink(clipboard.offer)}
                   onDismiss={clipboard.dismiss}
                 />
               </motion.div>
@@ -173,7 +228,7 @@ export function Home() {
                   {playlistUrl && (
                     <button
                       type="button"
-                      onClick={() => setUrl(playlistUrl)}
+                      onClick={() => openLink(playlistUrl)}
                       className="mx-auto flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[13px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                     >
                       <ListVideo className="size-3.5" />
@@ -182,7 +237,7 @@ export function Home() {
                   )}
                 </>
               ) : (
-                <PlaylistPane playlist={media.data} onOpen={setUrl} />
+                <PlaylistPane playlist={media.data} onOpen={openLink} />
               )}
             </motion.section>
           )}

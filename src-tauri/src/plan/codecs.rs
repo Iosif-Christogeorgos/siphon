@@ -71,7 +71,7 @@ pub enum AudioCodec {
     Vorbis,
     Flac,
     Ac3,
-    /// Uncompressed. Only ever an encode target (WAV, or Customize).
+    /// Uncompressed: a WAV, or the sound of a file on this PC; and an encode target (WAV, or Customize).
     Pcm,
     Other,
 }
@@ -102,6 +102,8 @@ impl AudioCodec {
             c if c.starts_with("ac-3") || c.starts_with("ec-3") || c.starts_with("ac3") || c.starts_with("eac3") => {
                 AudioCodec::Ac3
             }
+            // ffprobe's names for uncompressed sound: a WAV, a camera's MOV.
+            c if c.starts_with("pcm_") => AudioCodec::Pcm,
             _ => AudioCodec::Other,
         }
     }

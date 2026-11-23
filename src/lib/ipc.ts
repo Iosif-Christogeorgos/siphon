@@ -7,6 +7,7 @@ import type {
   Choices,
   DownloadEvent,
   DownloadRequest,
+  Intake,
   Measure,
   Media,
   Placement,
@@ -25,6 +26,7 @@ import type {
   ToolStatus,
   Trim,
   UpdateNotice,
+  VideoInfo,
 } from "@/types";
 
 /** Typed wrappers around every backend command (see `src-tauri/src/commands.rs`). */
@@ -34,6 +36,10 @@ export const ipc = {
   binariesSync: (install: boolean) => invoke<ToolStatus[]>("binaries_sync", { install }),
   /** Without an account unless the video needs one; `account` uses the site's sign-in for this lookup. */
   fetchMedia: (url: string, account = false) => invoke<Media>("fetch_media", { url, account }),
+  /** Browse: Windows' file dialog, opened by the backend; null if it was closed. */
+  pickFiles: () => invoke<Intake | null>("pick_files"),
+  /** What a file the user gave holds, by its key. */
+  readFile: (key: string) => invoke<VideoInfo>("read_file", { key }),
   getPresets: () => invoke<Registry>("get_presets"),
   getChoices: () => invoke<Choices>("get_choices"),
   setChoices: (choices: Choices) => invoke<Choices>("set_choices", { choices }),
@@ -107,6 +113,13 @@ export const onSpeed = (handler: (speed: Speed) => void): Promise<UnlistenFn> =>
 /** The sign-in window's state, for its bar. */
 export const onSignInStatus = (handler: (status: SignInStatus) => void): Promise<UnlistenFn> =>
   listen<SignInStatus>("sign-in://status", (event) => handler(event.payload));
+
+/** Files were dropped on the window: what the backend took in from them. */
+export const onFilesDropped = (handler: (intake: Intake) => void): Promise<UnlistenFn> =>
+  listen<Intake>("files://dropped", (event) => handler(event.payload));
+
+/** Whether a "link" is a file's key: a file on this PC the user gave, not a link. */
+export const isFileKey = (url: string) => url.startsWith("siphon-file:");
 
 /** Commands reject with an `AppError`; anything else is wrapped to look like one. */
 export function toAppError(error: unknown): AppError {

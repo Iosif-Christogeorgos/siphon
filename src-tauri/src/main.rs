@@ -110,12 +110,22 @@ fn main() {
                     let _ = sign_in.destroy();
                 }
             }
-            // Files dropped on the window: the event carries their paths, which
-            // the webview never hands the backend itself (see `local`).
+            // Without Tauri's `unstable` feature a drop comes as the window's (see below).
             tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) if window.label() == "main" => {
                 local::dropped(window.app_handle(), paths.clone());
             }
             _ => {}
+        })
+        // Files dropped on the window: the event carries their paths, which the
+        // webview never hands the backend itself (see `local`). With the
+        // `unstable` feature, a window's webview is a child of it, and a drop
+        // comes as the webview's event, not the window's.
+        .on_webview_event(|webview, event| {
+            if let tauri::WebviewEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event {
+                if webview.label() == "main" {
+                    local::dropped(webview.app_handle(), paths.clone());
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             commands::binaries_status,

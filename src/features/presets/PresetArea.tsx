@@ -1,4 +1,4 @@
-import { RefreshCw } from "lucide-react";
+import { FileType, RefreshCw } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { Facet } from "@/components/ui/facet";
 import { Segmented } from "@/components/ui/segmented";
@@ -20,6 +20,17 @@ const FINISHED_ONLY = "share";
 export const CHAT_GROUPS = new Set(["max", "watch"]);
 
 /**
+ * Max quality, for a file on this PC: a file already is its own best, so the
+ * group keeps its streams as they are and puts them in the file type that
+ * suits them (an OBS recording's MPEG-TS becomes an MP4).
+ */
+const FILE_TYPE = {
+  label: "File type",
+  description: "Its own picture and sound, untouched, in the file type that suits them",
+  icon: FileType,
+};
+
+/**
  * Where the download is going: the group (Max quality, Watch, …) on top, then
  * one row of facets: the target in it, the options that target has, the
  * quality and the user's own presets. Each facet shows only its current value
@@ -33,6 +44,7 @@ export function PresetArea({
   from,
   subtitles,
   chat = false,
+  file = false,
 }: {
   /** The plan for the current choice; gives the quality facet its options and sizes. */
   summary: PlanSummary | undefined;
@@ -47,6 +59,8 @@ export function PresetArea({
   subtitles?: SubtitleTrack[] | "playlist";
   /** The video's chat can be drawn into the picture (Twitch). */
   chat?: boolean;
+  /** A file on this PC: Max quality is its file type (see `FILE_TYPE`). */
+  file?: boolean;
 }) {
   const registry = useRegistry();
   const choices = useChoices((state) => state.choices);
@@ -76,13 +90,14 @@ export function PresetArea({
         value={presetActive ? group.id : null}
         onChange={chooseGroup}
         options={registry.groups.map((candidate) => {
-          const Icon = iconFor(candidate.icon);
+          const shown = file && candidate.id === "max" ? FILE_TYPE : { ...candidate, icon: iconFor(candidate.icon) };
+          const Icon = shown.icon;
           const later = live && candidate.id === FINISHED_ONLY;
           return {
             id: candidate.id,
-            label: candidate.label,
+            label: shown.label,
             icon: <Icon />,
-            hint: later ? `${candidate.label} becomes available on the finished recording.` : candidate.description,
+            hint: later ? `${candidate.label} becomes available on the finished recording.` : shown.description,
             disabled: later,
           };
         })}

@@ -167,6 +167,35 @@ export interface VideoInfo {
   subtitles: SubtitleTrack[];
   /** Where its chat comes from, if it can be drawn in: Twitch's VODs and streams (`chat/mod.rs`). */
   chat: ChatSource | null;
+  /** A file on this PC to convert, rather than a link; its `url` is then the file's key (`local/mod.rs`). */
+  file?: LocalFile;
+}
+
+// ── local/mod.rs ────────────────────────────────────────────────────────
+
+/**
+ * A file on this PC the user gave Siphon (dropped, or picked with Browse).
+ * The backend keeps its path; the window knows it by its key, which stands
+ * where a link would, and never names a file itself.
+ */
+export interface LocalFile {
+  /** "siphon-file:…" */
+  key: string;
+  /** "Clip.mp4" */
+  name: string;
+  /** The folder it is in, where what is made from it goes. */
+  folder: string;
+  /** Bytes. */
+  size: number;
+}
+
+/** What came of files dropped on the window or picked with Browse. */
+export interface Intake {
+  files: LocalFile[];
+  /** Files in dropped folders that aren't video or audio, left out. */
+  left_out: number;
+  /** Files past the most Siphon takes at once, left out. */
+  over: number;
 }
 
 /** A Twitch VOD's chat replay, or a channel's chat as it airs. */
@@ -372,6 +401,8 @@ export interface PlanSummary {
   measurable: boolean;
   /** The size of this conversion was measured on the video itself. */
   measured: boolean;
+  /** A file that already is what was asked for: why, and that nothing is made of it. */
+  nothing: string | null;
 }
 
 /** How a size measurement went (`sizing::Measure`). */

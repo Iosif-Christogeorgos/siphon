@@ -1,33 +1,59 @@
-import { ImageOff, LogIn } from "lucide-react";
+import { AudioLines, ImageOff, LogIn } from "lucide-react";
 import { motion } from "motion/react";
 import { type ReactNode, useState } from "react";
 import { Hint } from "@/components/ui/tooltip";
-import { formatCount, formatDuration, formatSpan } from "@/lib/format";
-import { bestVideoFormat, resolutionLabel } from "@/lib/formats";
+import { formatBytes, formatCount, formatDuration, formatSpan } from "@/lib/format";
+import { AUDIO_CODEC_LABELS, bestVideoFormat, resolutionLabel, VIDEO_CODEC_LABELS } from "@/lib/formats";
 import { useNow } from "@/lib/time";
 import { displayHost } from "@/lib/url";
 import { cn } from "@/lib/utils";
-import type { Live, VideoInfo } from "@/types";
+import type { Format, Live, VideoInfo } from "@/types";
+
+/** "C:\Users\Ana\Videos" → "Videos": where a file is, in a word. */
+const folderName = (folder: string) => folder.split(/[\\/]/).filter(Boolean).at(-1) ?? folder;
+
+/** "H.264 + AAC", "MP3": what a file holds. */
+function codecs(format: Format | undefined): string | null {
+  const parts = [
+    format?.video_codec ? VIDEO_CODEC_LABELS[format.video_codec] : null,
+    format?.audio_codec ? AUDIO_CODEC_LABELS[format.audio_codec] : null,
+  ].filter(Boolean);
+  return parts.length > 0 ? parts.join(" + ") : null;
+}
 
 export function VideoCard({ video, action }: { video: VideoInfo; action?: ReactNode }) {
   const best = bestVideoFormat(video.formats);
   const quality = best ? resolutionLabel(best) : null;
-  const byline = [video.channel, displayHost(video.url)].filter(Boolean).join(" · ");
+  const file = video.file;
+  const byline = file
+    ? `${folderName(file.folder)} · ${formatBytes(file.size)}`
+    : [video.channel, displayHost(video.url)].filter(Boolean).join(" · ");
 
   return (
     <article className="group/card flex gap-4 rounded-[1.25rem] border bg-card p-3 shadow-card">
-      <Thumbnail src={video.thumbnail} duration={video.duration} live={video.live} />
+      <Thumbnail
+        src={video.thumbnail}
+        duration={video.duration}
+        live={video.live}
+        sound={file !== undefined && video.formats[0]?.kind === "audio"}
+      />
       <div className="flex min-w-0 flex-1 flex-col py-1 pr-2">
         <h2
           data-selectable
           className="line-clamp-2 text-[15px] leading-snug font-semibold tracking-tight text-pretty"
         >
-          {video.title}
+          {file ? file.name : video.title}
         </h2>
-        <p className="mt-1 truncate text-[13px] text-muted-foreground">{byline}</p>
+        <p className="mt-1 truncate text-[13px] text-muted-foreground" title={file?.folder}>
+          {byline}
+        </p>
         <div className="mt-auto flex flex-wrap items-center gap-1.5 pt-3">
           {video.live && <LiveBadges live={video.live} />}
-          {quality && <Badge accent>Up to {quality}</Badge>}
+          {file ? (
+            <FileBadges format={video.formats[0]} quality={quality} />
+          ) : (
+            quality && <Badge accent>Up to {quality}</Badge>
+          )}
           {best?.dynamic_range && best.dynamic_range !== "SDR" && <Badge>{best.dynamic_range}</Badge>}
           {video.view_count != null && !video.live && <Badge>{formatCount(video.view_count)} views</Badge>}
           {video.with_account && (
@@ -50,6 +76,17 @@ export function VideoCard({ video, action }: { video: VideoInfo; action?: ReactN
   );
 }
 
+/** A file's own picture and sound: "1080p60", "H.264 + AAC". */
+function FileBadges({ format, quality }: { format: Format | undefined; quality: string | null }) {
+  const held = codecs(format);
+  return (
+    <>
+      {quality && <Badge accent>{quality}</Badge>}
+      {held && <Badge>{held}</Badge>}
+    </>
+  );
+}
+
 /** How long it has been on air and how many watch; when it starts; or that the channel is offline. */
 function LiveBadges({ live }: { live: Live }) {
   const now = useNow();
@@ -67,14 +104,25 @@ function LiveBadges({ live }: { live: Live }) {
   );
 }
 
-function Thumbnail({ src, duration, live }: { src: string | null; duration: number | null; live: Live | null }) {
+function Thumbnail({
+  src,
+  duration,
+  live,
+  sound = false,
+}: {
+  src: string | null;
+  duration: number | null;
+  live: Live | null;
+  /** A sound file: without a cover, it shows that rather than a missing picture. */
+  sound?: boolean;
+}) {
   const [state, setState] = useState<"loading" | "loaded" | "failed">(src ? "loading" : "failed");
 
   return (
     <div className="relative aspect-video w-52 shrink-0 overflow-hidden rounded-xl bg-muted">
       {state === "failed" ? (
         <div className="grid size-full place-items-center text-subtle-foreground">
-          <ImageOff className="size-5" />
+          {sound ? <AudioLines className="size-6" /> : <ImageOff className="size-5" />}
         </div>
       ) : (
         <>

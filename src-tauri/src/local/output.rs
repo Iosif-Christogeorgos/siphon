@@ -248,9 +248,11 @@ mod tests {
         assert!(nothing(&mp4, &preset(TargetId::Discord)).is_none());
         let mkv = file("mkv", Some("h264"), Some("aac"), 4000.0);
         assert!(nothing(&mkv, &preset(TargetId::Windows)).is_none());
-        // Max quality: an OBS recording becomes an MP4; an MP4 stays as it is.
+        // Max quality: an OBS recording becomes an MP4, losing nothing; an MP4 stays as it is.
         let ts = file("ts", Some("h264"), Some("aac"), 4000.0);
         assert!(nothing(&ts, &preset(TargetId::Max)).is_none());
+        let remux = plan(&ts, &preset(TargetId::Max), None, &Capabilities::BASIC).unwrap();
+        assert_eq!(remux.badge, crate::plan::Badge::Lossless);
         assert!(nothing(&mp4, &preset(TargetId::Max)).is_some());
     }
 

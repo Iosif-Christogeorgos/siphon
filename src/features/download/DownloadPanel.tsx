@@ -1,4 +1,4 @@
-import { ArrowDownToLine, FolderOpen, Info, Pause, Play, RotateCw, Square, X } from "lucide-react";
+import { ArrowDownToLine, Check, FolderOpen, Info, Pause, Play, RefreshCw, RotateCw, Square, X } from "lucide-react";
 import {
   AnimatePresence,
   motion,
@@ -25,6 +25,7 @@ import { CompletionMark } from "./CompletionMark";
  * Download → live progress (or paused) → "Downloaded" with open/reveal actions.
  * For a live stream: Record → REC with the time and size so far, and Stop
  * (or waiting for the stream to start) → finishing → "Recorded".
+ * For a file on this PC: Convert (or what it makes) → progress → "Converted".
  */
 export function DownloadPanel({
   download,
@@ -32,6 +33,8 @@ export function DownloadPanel({
   disabled,
   label,
   record = false,
+  convert = false,
+  nothing = false,
 }: {
   /** The download (or group of clips) started from this panel, if any. */
   download: DownloadGroup | undefined;
@@ -42,6 +45,10 @@ export function DownloadPanel({
   label: string;
   /** A live stream: the button records it. */
   record?: boolean;
+  /** A file on this PC: the button converts it, and nothing is downloaded. */
+  convert?: boolean;
+  /** The file already is what was asked for: the button rests, saying so. */
+  nothing?: boolean;
 }) {
   const store = useDownloads.getState();
   // The bar is allowed to glide to 100% before the finished state takes over.
@@ -65,13 +72,22 @@ export function DownloadPanel({
       <div
         className={cn(
           "relative h-13 overflow-hidden rounded-2xl transition-[background-color,box-shadow] duration-300",
-          view === "idle" && "bg-primary shadow-[0_8px_24px_-10px_var(--primary)]",
+          view === "idle" && !nothing && "bg-primary shadow-[0_8px_24px_-10px_var(--primary)]",
+          view === "idle" && nothing && "bg-secondary",
           (view === "running" || view === "paused" || view === "recording") && "bg-secondary",
           view === "finished" && "bg-card shadow-card ring-1 ring-border",
         )}
       >
         <AnimatePresence initial={false}>
-          {view === "idle" && (
+          {view === "idle" && nothing && (
+            <Face key="nothing">
+              <div className="flex size-full items-center justify-center gap-2.5 text-[15px] font-medium text-muted-foreground">
+                <Check className="size-4.5 text-primary" />
+                {label}
+              </div>
+            </Face>
+          )}
+          {view === "idle" && !nothing && (
             <Face key="idle">
               <button
                 type="button"
@@ -81,6 +97,8 @@ export function DownloadPanel({
               >
                 {download ? (
                   <RotateCw className="size-4.5 transition-transform duration-300 group-hover:rotate-45" />
+                ) : convert ? (
+                  <RefreshCw className="size-4.5 transition-transform duration-500 ease-out-expo group-hover:rotate-180" />
                 ) : record ? (
                   // The one touch of red: the button goes on air with the stream.
                   <span
@@ -125,6 +143,7 @@ export function DownloadPanel({
                 fraction={download.progress.fraction}
                 label={download.record ? "Stopped waiting for the stream" : undefined}
                 resume={download.record ? "Wait again" : undefined}
+                cancel={convert ? "Cancel" : undefined}
                 onResume={() => download.ids.forEach(store.resume)}
                 onCancel={() => download.ids.forEach(store.remove)}
               />
@@ -136,7 +155,15 @@ export function DownloadPanel({
                 path={download.path}
                 size={download.size}
                 count={download.count}
-                done={download.record ? "Recorded" : undefined}
+                done={
+                  download.record
+                    ? "Recorded"
+                    : convert
+                      ? download.count > 1
+                        ? `${download.count} clips cut`
+                        : "Converted"
+                      : undefined
+                }
               />
             </Face>
           )}
@@ -375,6 +402,7 @@ function Paused({
   fraction,
   label,
   resume,
+  cancel,
   onResume,
   onCancel,
 }: {
@@ -382,6 +410,8 @@ function Paused({
   /** In place of "Paused" (a recording that stopped waiting for its stream). */
   label?: string;
   resume?: string;
+  /** What cancelling does, in place of deleting what was downloaded. */
+  cancel?: string;
   onResume: () => void;
   onCancel: () => void;
 }) {
@@ -403,7 +433,7 @@ function Paused({
       <Button size="sm" className="relative" onClick={onResume}>
         <Play className="fill-current" /> {resume ?? "Resume"}
       </Button>
-      <Hint label="Cancel and delete what was downloaded">
+      <Hint label={cancel ?? "Cancel and delete what was downloaded"}>
         <button type="button" aria-label="Cancel download" onClick={onCancel} className={iconButton}>
           <X className="size-4" />
         </button>

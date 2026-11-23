@@ -17,7 +17,7 @@ import { spring } from "@/lib/motion";
 import { useChoice, useChoices } from "@/stores/choices";
 import { isActive, useDownloadGroup, useDownloads } from "@/stores/downloads";
 import { useTrim } from "@/stores/trim";
-import type { SubtitleDelivery, Trim, VideoInfo } from "@/types";
+import type { GroupId, PlanSummary, SubtitleDelivery, Trim, VideoInfo } from "@/types";
 import { AlreadyDownloaded } from "./AlreadyDownloaded";
 import { useMeasuredSize } from "./useMeasuredSize";
 import { VideoCard } from "./VideoCard";
@@ -40,8 +40,39 @@ function missingSubtitles(wanted: string, video: VideoInfo): string {
   return `No ${languageName(wanted)} subtitles for this video. ${has}`;
 }
 
+/**
+ * What the button says for a file on this PC: what it makes of it. A file
+ * that already is what was asked for has nothing to make.
+ */
+function convertLabel({
+  plan,
+  group,
+  clips,
+  clip,
+  picture,
+}: {
+  plan: PlanSummary | undefined;
+  /** The preset group chosen, or null while customizing. */
+  group: GroupId | null;
+  clips: number;
+  clip: boolean;
+  /** The file has a picture, not only sound. */
+  picture: boolean;
+}): string {
+  if (plan?.nothing) return "Nothing to convert";
+  if (plan?.blocked) return "Too long for this limit";
+  if (clips > 1) return `Cut ${clips} clips`;
+  if (clip) return "Cut the clip";
+  if (group === "share") return "Make it fit";
+  if (group === "audio" && picture) return "Take the audio";
+  if (plan?.badge === "lossless") return "Change the file type";
+  return "Convert";
+}
+
 /** Everything shown for a loaded video: the card, the trimmer, the choices, the plan and the button. */
 export function VideoPane({ video }: { video: VideoInfo }) {
+  // A file on this PC, converted rather than downloaded.
+  const local = video.file !== undefined;
   const customizing = useChoices((state) => state.choices !== null && state.choices.active.kind !== "preset");
   // A Twitch video's or stream's chat can be drawn into the picture, with the presets that keep it as it is.
   const chatSource = video.chat;
@@ -161,7 +192,8 @@ export function VideoPane({ video }: { video: VideoInfo }) {
     setPlacingChat(!placingChat);
   };
   const blocked = plan.data?.blocked ?? null;
-  const canTrim = video.duration && !trimOpen && !live;
+  const nothing = plan.data?.nothing ?? null;
+  const canTrim = video.duration && !trimOpen && !live && !local;
   const record = live ? { from_start: recordFromStart } : null;
 
   return (
@@ -194,7 +226,7 @@ export function VideoPane({ video }: { video: VideoInfo }) {
       />
 
       {/* A channel's link is the same for every stream it records. */}
-      {!live && <AlreadyDownloaded url={video.url} exclude={downloadIds} />}
+      {!live && !local && <AlreadyDownloaded url={video.url} exclude={downloadIds} />}
 
       <AnimatePresence initial={false}>
         {placingChat && chatOn && chatSource && (
@@ -243,6 +275,7 @@ export function VideoPane({ video }: { video: VideoInfo }) {
           from={fromStartOffered.data ? { start: fromStart, onChange: setFromStart } : undefined}
           subtitles={live ? undefined : video.subtitles}
           chat={chatSource !== null}
+          file={local}
         />
         <AnimatePresence initial={false}>
           {customizing && (
@@ -298,10 +331,20 @@ export function VideoPane({ video }: { video: VideoInfo }) {
       <DownloadPanel
         download={download}
         onStart={() => choice && setDownloadIds(trims.map((trim) => start(video, choice, trim, null, record)))}
-        disabled={waitsForStart ? choice === null : !plan.isSuccess || blocked !== null}
+        disabled={waitsForStart ? choice === null : !plan.isSuccess || blocked !== null || nothing !== null}
         record={live !== null}
+        convert={local}
+        nothing={nothing !== null}
         label={
-          waitsForStart
+          local
+            ? convertLabel({
+                plan: plan.data,
+                group: customizing ? null : (group ?? null),
+                clips: trims.length,
+                clip: shownTrim !== null,
+                picture: video.formats[0]?.kind !== "audio",
+              })
+            : waitsForStart
             ? "Record when it starts"
             : live
               ? "Record"

@@ -862,6 +862,11 @@ pub fn plan(video: &VideoInfo, choice: &Choice, trim: Option<Trim>, caps: &Capab
         fallback.section_request_size = recipe.section_request_size;
     }
     recipe.badge = badge(&recipe, choice);
+    // A file on this PC already is what it is: keeping its own streams in
+    // another file type changes nothing about where it plays.
+    if video.file.is_some() && recipe.badge == Badge::MayNotPlay {
+        recipe.badge = Badge::Lossless;
+    }
     // What was measured on this video, if anything (see `sizes`).
     video.sizes.apply(&mut recipe);
     Ok(recipe)

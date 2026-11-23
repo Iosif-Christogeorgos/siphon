@@ -4,6 +4,7 @@ import { CloseGuard } from "@/components/CloseGuard";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { TitleBar } from "@/components/TitleBar";
 import { Toaster } from "@/components/Toaster";
+import { DropTarget } from "@/features/files/DropTarget";
 import { Home } from "@/features/home/Home";
 import { QueueSheet } from "@/features/queue/QueueSheet";
 import { SettingsSheet } from "@/features/settings/SettingsSheet";
@@ -102,6 +103,8 @@ export function App() {
           <SettingsSheet />
         </ErrorBoundary>
       </main>
+      {/* Files dragged over the window: once the tools are there to read them. */}
+      {usable && <DropTarget />}
       <Toaster />
       <CloseGuard />
     </div>

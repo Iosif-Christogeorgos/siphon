@@ -1,4 +1,4 @@
-import { Clock, Info, RefreshCw, Scissors, Shrink, SlidersHorizontal, TriangleAlert, Zap } from "lucide-react";
+import { Check, Clock, Info, RefreshCw, Scissors, Shrink, SlidersHorizontal, TriangleAlert, Zap } from "lucide-react";
 import {
   AnimatePresence,
   motion,
@@ -62,6 +62,34 @@ export function PlanCard({
           <div className="skeleton h-3.5 w-2/5" />
           <div className="skeleton h-3 w-4/5" />
         </div>
+      </div>
+    );
+  }
+
+  const customize = (
+    <button
+      type="button"
+      onClick={onCustomize}
+      aria-pressed={customizing}
+      className="-mr-1 flex items-center gap-1 rounded-md px-1 text-xs text-subtle-foreground transition-colors hover:text-primary focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-none"
+    >
+      <SlidersHorizontal className="size-3" />
+      {customizing ? "Back to presets" : "Customize"}
+    </button>
+  );
+
+  // A file that already is what was asked for: said plainly, and nothing to make.
+  if (plan.nothing) {
+    return (
+      <div className="flex items-center gap-3 px-1 py-1.5">
+        <div className="grid size-9 shrink-0 place-items-center rounded-xl bg-primary-soft text-primary">
+          <Check className="size-4" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="truncate font-medium">{plan.nothing.replace(/\s*Nothing to convert\.$/, "")}</p>
+          <p className="truncate text-xs text-muted-foreground">{plan.headline}, as it is</p>
+        </div>
+        <div className="flex shrink-0 flex-col items-end self-end">{customize}</div>
       </div>
     );
   }
@@ -158,15 +186,7 @@ export function PlanCard({
           ) : (
             <span className="h-[22px]" />
           )}
-          <button
-            type="button"
-            onClick={onCustomize}
-            aria-pressed={customizing}
-            className="-mr-1 flex items-center gap-1 rounded-md px-1 text-xs text-subtle-foreground transition-colors hover:text-primary focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-none"
-          >
-            <SlidersHorizontal className="size-3" />
-            {customizing ? "Back to presets" : "Customize"}
-          </button>
+          {customize}
         </div>
       </div>
 
