@@ -11,7 +11,7 @@ import { type ReactNode, useEffect, useState } from "react";
 import { ErrorCard } from "@/components/ErrorCard";
 import { Button } from "@/components/ui/button";
 import { Hint } from "@/components/ui/tooltip";
-import { formatBitrate, formatBytes, formatDuration, formatEta, formatSpan, formatSpeed } from "@/lib/format";
+import { formatBytes, formatDuration, formatEta, formatSpan, formatSpeed, formatStreamSpeed } from "@/lib/format";
 import { ipc } from "@/lib/ipc";
 import { riseIn, spring } from "@/lib/motion";
 import { isIndeterminate, isLive, STAGE_LABELS } from "@/lib/stages";
@@ -320,7 +320,7 @@ function Recording({
           : null;
   const detail = waiting
     ? ""
-    : [live && formatBytes(live.bytes), stage === "recording" && formatBitrate(live?.bitrate)].filter(Boolean).join(" · ");
+    : [live && formatBytes(live.bytes), stage === "recording" && formatStreamSpeed(live?.bitrate)].filter(Boolean).join(" · ");
 
   return (
     <div className="relative flex size-full items-center gap-3 pr-2 pl-5">

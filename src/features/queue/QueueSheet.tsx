@@ -20,7 +20,7 @@ import { type ReactNode, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Sheet } from "@/components/ui/sheet";
 import { Hint } from "@/components/ui/tooltip";
-import { formatBitrate, formatBytes, formatDuration, formatEta, formatSpan, formatSpeed } from "@/lib/format";
+import { formatBytes, formatDuration, formatEta, formatSpan, formatSpeed, formatStreamSpeed } from "@/lib/format";
 import { ipc } from "@/lib/ipc";
 import { spring } from "@/lib/motion";
 import { isIndeterminate, isLive, STAGE_LABELS } from "@/lib/stages";
@@ -323,7 +323,7 @@ function recordingPieces(download: Download): ({ key: string; node: ReactNode } 
         </span>
       ),
     },
-    progress.stage === "recording" && formatBitrate(live?.bitrate) && { key: "rate", node: formatBitrate(live?.bitrate) },
+    progress.stage === "recording" && formatStreamSpeed(live?.bitrate) && { key: "rate", node: formatStreamSpeed(live?.bitrate) },
   ];
 }
 
@@ -409,7 +409,7 @@ function fullStatus(download: Download): string {
                 live && progress.stage !== "waiting_live" && formatBytes(live.bytes),
                 live?.stop_in != null && `catching up to Stop, ${formatSpan(live.stop_in)}`,
                 live?.behind != null && `${formatSpan(live.behind)} behind live`,
-                formatBitrate(live?.bitrate),
+                formatStreamSpeed(live?.bitrate),
                 live?.disk_left != null && `the disk is full in ${formatSpan(live.disk_left)}`,
               ]
             : [

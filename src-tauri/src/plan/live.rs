@@ -212,9 +212,10 @@ fn warning(text: impl Into<String>) -> Hint {
 }
 
 /// Bytes per second as the interface shows speeds: "2.4 MB/s", "500 KB/s".
+/// MB from 1000 KB, as in the interface (`formatBytes`): never "1012 KB/s".
 fn rate(bytes_per_second: u64) -> String {
     let mb = bytes_per_second as f64 / (1024.0 * 1024.0);
-    if mb < 1.0 {
+    if bytes_per_second < 1000 * 1024 {
         format!("{} KB/s", (bytes_per_second as f64 / 1024.0).round())
     } else {
         format!("{} MB/s", (mb * 10.0).round() / 10.0)
@@ -405,6 +406,15 @@ mod tests {
             .text
             .contains("ads are left out"));
         assert!(hints(&recipe, None, None, None).is_empty());
+    }
+
+    #[test]
+    fn speeds_turn_to_mb_before_they_reach_four_digits() {
+        assert_eq!(rate(500 * 1024), "500 KB/s");
+        assert_eq!(rate(999 * 1024), "999 KB/s");
+        // An 8.4 Mbit/s stream: "1 MB/s", not "1023 KB/s".
+        assert_eq!(rate(1023 * 1024), "1 MB/s");
+        assert_eq!(rate(2_516_582), "2.4 MB/s");
     }
 
     #[test]

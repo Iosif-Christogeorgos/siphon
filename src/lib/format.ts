@@ -1,11 +1,17 @@
 const BYTE_UNITS = ["B", "KB", "MB", "GB", "TB"] as const;
 
-/** 1536 → "1.5 KB". Binary units, matching what Windows Explorer shows. */
+/**
+ * The next unit from 1000 of one, not 1024: a speed at the stream rates of
+ * many recordings read "998 KB/s", "1023 KB/s", "1.0 MB/s" in turn.
+ */
+const NEXT_UNIT = 1000;
+
+/** 1536 → "1.5 KB", 1_020_000 → "1.0 MB". Binary units, matching what Windows Explorer shows. */
 export function formatBytes(bytes: number | null | undefined): string {
   if (bytes == null || !Number.isFinite(bytes) || bytes < 0) return "—";
   let value = bytes;
   let unit = 0;
-  while (value >= 1024 && unit < BYTE_UNITS.length - 1) {
+  while (value >= NEXT_UNIT && unit < BYTE_UNITS.length - 1) {
     value /= 1024;
     unit += 1;
   }
@@ -17,7 +23,7 @@ export function formatBytes(bytes: number | null | undefined): string {
 export function formatBytesRange(low: number, high: number): string {
   let unit = 0;
   let scale = 1;
-  while (high / scale >= 1024 && unit < BYTE_UNITS.length - 1) {
+  while (high / scale >= NEXT_UNIT && unit < BYTE_UNITS.length - 1) {
     scale *= 1024;
     unit += 1;
   }
@@ -37,7 +43,7 @@ export const MB_PER_SECOND = 1024 * 1024;
 /** A speed limit, without needless decimals: "5 MB/s", "53.5 MB/s", "500 KB/s". */
 export function formatLimit(bytesPerSecond: number): string {
   const mb = bytesPerSecond / MB_PER_SECOND;
-  if (mb < 1) return `${Math.round(bytesPerSecond / 1024)} KB/s`;
+  if (bytesPerSecond < NEXT_UNIT * 1024) return `${Math.round(bytesPerSecond / 1024)} KB/s`;
   return `${Number(mb.toFixed(1))} MB/s`;
 }
 
@@ -96,9 +102,11 @@ export function formatSpan(seconds: number): string {
   return rest === 0 || hours >= 10 ? `${hours} h` : `${hours} h ${rest} min`;
 }
 
-/** Bits per second as a stream's rate: "5.4 Mbit/s", "850 kbit/s". */
-export function formatBitrate(bitsPerSecond: number | null | undefined): string {
-  if (bitsPerSecond == null || !Number.isFinite(bitsPerSecond) || bitsPerSecond <= 0) return "";
-  if (bitsPerSecond < 1_000_000) return `${Math.round(bitsPerSecond / 1000)} kbit/s`;
-  return `${(bitsPerSecond / 1_000_000).toFixed(1)} Mbit/s`;
+/**
+ * A recording's bitrate, given in bits per second, as the speed it comes in at,
+ * in the unit of every other speed and of the speed limit: "1.1 MB/s", not "8.8 Mbit/s".
+ */
+export function formatStreamSpeed(bitsPerSecond: number | null | undefined): string {
+  if (bitsPerSecond == null || !Number.isFinite(bitsPerSecond)) return "";
+  return formatSpeed(bitsPerSecond / 8);
 }
