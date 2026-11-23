@@ -9,14 +9,37 @@ export function useSettings() {
   return useQuery({ queryKey: SETTINGS_KEY, queryFn: ipc.getSettings, staleTime: Number.POSITIVE_INFINITY });
 }
 
-/** Saves settings; everything showing them updates with what was stored. */
+/**
+ * Saves settings; everything showing them updates with what was stored.
+ * A choice shows at once, before the backend has answered, and goes back if
+ * it refuses. Not a custom file-name template: the backend checks it, and
+ * one it refuses must stay in its field to be corrected.
+ */
 export function useSaveSettings() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (next: Settings) => ipc.setSettings(next),
-    onSuccess: (saved) => queryClient.setQueryData(SETTINGS_KEY, saved),
+    onMutate: async (next) => {
+      const turn = ++saves;
+      const before = queryClient.getQueryData<SettingsView>(SETTINGS_KEY);
+      if (!before || next.custom_template !== before.custom_template) return { turn, before: undefined };
+      await queryClient.cancelQueries({ queryKey: SETTINGS_KEY });
+      queryClient.setQueryData<SettingsView>(SETTINGS_KEY, { ...before, ...next });
+      return { turn, before };
+    },
+    // Only the latest save's answer is shown: an earlier one arriving after a
+    // newer choice would flick the control back for a moment.
+    onError: (_error, _next, context) => {
+      if (context?.before && context.turn === saves) queryClient.setQueryData(SETTINGS_KEY, context.before);
+    },
+    onSuccess: (saved, _next, context) => {
+      if (context?.turn === saves) queryClient.setQueryData(SETTINGS_KEY, saved);
+    },
   });
 }
+
+/** Counts saves, so an answer can tell whether a newer save has been made since. */
+let saves = 0;
 
 /** The backend wants plain settings back, without the display-only extras. */
 export function stripView({ default_output_dir: _default, ...settings }: SettingsView): Settings {
