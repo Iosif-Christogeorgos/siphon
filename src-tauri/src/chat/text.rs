@@ -20,11 +20,10 @@ const FAMILY: &str = "Segoe UI";
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Ink(pub [u8; 3]);
 
-/// A stretch of the text drawn in its own colour, bold or not.
+/// A stretch of the text drawn in its own colour.
 pub struct Run {
     pub range: Range<usize>,
     pub ink: Ink,
-    pub bold: bool,
 }
 
 /// Room for an image at byte `index` of the text, where a U+FFFC stands.
@@ -79,6 +78,40 @@ impl Canvas {
             }
             let color = pixel.0.map(|channel| f32::from(channel) / 255.0);
             self.blend(x + dx as i32, y + dy as i32, color);
+        }
+    }
+
+    /// How much of each pixel is covered: what casts a shadow.
+    pub fn coverage(&self) -> Vec<f32> {
+        self.pixels.iter().map(|pixel| pixel[3]).collect()
+    }
+
+    /// Lays black over each pixel, as much as `shadow` says (0–1 each, one
+    /// per pixel).
+    pub fn darken(&mut self, shadow: &[f32]) {
+        for (pixel, &black) in self.pixels.iter_mut().zip(shadow) {
+            if black > 0.0 {
+                let keep = 1.0 - black;
+                *pixel = [
+                    pixel[0] * keep,
+                    pixel[1] * keep,
+                    pixel[2] * keep,
+                    black + pixel[3] * keep,
+                ];
+            }
+        }
+    }
+
+    /// Lays `other`, a canvas as wide, over this one, from its row `from` on.
+    pub fn lay(&mut self, other: &Canvas, from: usize) {
+        let rows = &other.pixels[(from * other.width).min(other.pixels.len())..];
+        for (pixel, over) in self.pixels.iter_mut().zip(rows) {
+            if over[3] > 0.0 {
+                let keep = 1.0 - over[3];
+                for (channel, value) in pixel.iter_mut().enumerate() {
+                    *value = over[channel] + *value * keep;
+                }
+            }
         }
     }
 
@@ -139,23 +172,23 @@ impl Typesetter {
         }
     }
 
-    /// Lays out `text` in lines at most `width` wide: white unless a run
-    /// says otherwise, `size` pixels high, always left to right as Twitch's
-    /// chat is (a right-to-left message still reads right to left inside).
+    /// Lays out `text` in lines at most `width` wide: bold, white unless a
+    /// run says otherwise, `size` pixels high, always left to right as
+    /// Twitch's chat is (a right-to-left message still reads right to left
+    /// inside).
     pub fn layout(&mut self, text: &str, runs: &[Run], slots: &[Slot], size: f32, width: f32) -> Layout<Ink> {
         let mut builder = self.layouts.ranged_builder(&mut self.fonts, text, 1.0, true);
         builder.set_base_direction(BaseDirection::Ltr);
         builder.push_default(StyleProperty::FontFamily(FontFamily::named(FAMILY)));
         builder.push_default(StyleProperty::FontSize(size));
+        // Bold throughout, as overlays draw chat: thin strokes get lost in a busy picture.
+        builder.push_default(StyleProperty::FontWeight(FontWeight::BOLD));
         builder.push_default(StyleProperty::LineHeight(LineHeight::FontSizeRelative(1.3)));
-        builder.push_default(StyleProperty::Brush(Ink([0xEF, 0xEF, 0xF1])));
+        builder.push_default(StyleProperty::Brush(Ink([0xFF, 0xFF, 0xFF])));
         // A long link or a word typed as one long run still wraps.
         builder.push_default(StyleProperty::OverflowWrap(OverflowWrap::Anywhere));
         for run in runs {
             builder.push(StyleProperty::Brush(run.ink), run.range.clone());
-            if run.bold {
-                builder.push(StyleProperty::FontWeight(FontWeight::BOLD), run.range.clone());
-            }
         }
         for slot in slots {
             builder.push_inline_box(InlineBox {
@@ -192,7 +225,9 @@ impl Typesetter {
     }
 
     /// Draws the text of `layout` into `canvas` with its top left at `x`,
-    /// `y`: plain glyphs in their colour, with no outline or shadow.
+    /// `y`: the glyphs in their colour, with no outline. The shadow under a
+    /// message is cast once its badges and emotes are in too (see
+    /// [`super::shadow`]).
     pub fn paint(&mut self, layout: &Layout<Ink>, canvas: &mut Canvas, x: f32, y: f32) {
         for line in layout.lines() {
             for item in line.items() {

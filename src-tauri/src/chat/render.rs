@@ -11,6 +11,7 @@ use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 
 use super::images::Pictures;
+use super::shadow::{Cast, Shadow};
 use super::text::{Canvas, Ink, Run, Slot, Typesetter};
 use super::{image_for, twitch_emote_images, Badge, BadgeRef, ChatLog, Emote, Message, Part, Placement};
 
@@ -111,6 +112,20 @@ impl Style {
     fn fade(&self) -> f64 {
         18.0 * self.scale
     }
+
+    /// How far right and down a message's shadow falls. With
+    /// [`Self::shadow_blur`] and [`super::shadow::STRENGTH`], fitted to the
+    /// pixels of an overlay's chat over a white picture the owner chose
+    /// (2026-11-23): 1 px and a blur of 1.65 px, on capitals 10 px tall,
+    /// which are 10.5 units here.
+    fn shadow_offset(&self) -> f64 {
+        1.05 * self.scale
+    }
+
+    /// How soft that shadow is: its blur's standard deviation.
+    fn shadow_blur(&self) -> f64 {
+        1.73 * self.scale
+    }
 }
 
 /// A picture at the height it's drawn: its address and its height in pixels.
@@ -205,6 +220,19 @@ struct Shown {
     /// Straight RGBA, the box's width across, with the shade behind.
     pixels: Vec<u8>,
     moving: Vec<Moving>,
+    /// Its shadow where it falls past its own rows.
+    spill: Vec<Spill>,
+}
+
+/// A row of a message's shadow that falls past the message's own rows: under
+/// its descenders, onto the spacing above the next message.
+struct Spill {
+    /// Which row, counted from the message's first (above it if negative).
+    row: i64,
+    /// The first column with any shadow on it.
+    start: usize,
+    /// How much black each column from there gets (0–255).
+    black: Vec<u8>,
 }
 
 /// The chat layer of a video. Frames must be asked for in time order.
@@ -218,6 +246,10 @@ pub struct Layer {
     badges: HashMap<BadgeRef, Badge>,
     pictures: Pictures,
     typesetter: Typesetter,
+    /// The shadow under every message.
+    shadow: Shadow,
+    /// The shadows of animated emotes' frames, worked out as they first show.
+    casts: HashMap<(Key, usize), Cast>,
     shown: VecDeque<Shown>,
     frame: Vec<u8>,
     drawn: bool,
@@ -278,6 +310,8 @@ impl Layer {
             badges,
             pictures: Pictures::new(images),
             typesetter: Typesetter::new(),
+            shadow: Shadow::new(style.shadow_offset(), style.shadow_blur()),
+            casts: HashMap::new(),
             shown: VecDeque::new(),
             frame: vec![0; geometry.width as usize * geometry.height as usize * 4],
             drawn: false,
@@ -368,8 +402,10 @@ impl Layer {
         }
         let millis = (seconds.max(0.0) * 1000.0) as u64;
         let mut bottom = height as i64 - self.style.padding().round() as i64;
+        let mut tops = Vec::with_capacity(self.shown.len());
         for shown in self.shown.iter().rev() {
             let top = bottom - shown.height as i64;
+            tops.push(top);
             for row in 0..shown.height {
                 let y = top + row as i64;
                 if y < 0 || y >= height as i64 {
@@ -380,18 +416,45 @@ impl Layer {
             }
             for moving in &shown.moving {
                 let y = top as i32 + moving.y;
-                for key in std::iter::once(&moving.base).chain(&moving.overlays) {
-                    if let Some(picture) = self.pictures.get(&key.url, key.height) {
-                        let frame = picture.frame_at(millis);
+                // Every shadow first, so none falls on an emote of the stack.
+                for shadows in [true, false] {
+                    for key in std::iter::once(&moving.base).chain(&moving.overlays) {
+                        let Some(picture) = self.pictures.get(&key.url, key.height) else {
+                            continue;
+                        };
+                        let index = picture.frame_index_at(millis);
+                        let frame = &picture.frames[index];
                         // Overlays are centred on the emote under them.
                         let x = moving.x + (moving.width as i32 - picture.width as i32) / 2;
-                        blend_straight(&mut self.frame, width, height, frame, x, y);
+                        if shadows {
+                            let cast = self
+                                .casts
+                                .entry((key.clone(), index))
+                                .or_insert_with(|| self.shadow.cast_image(frame));
+                            shade_straight(&mut self.frame, width, height, cast, x, y);
+                        } else {
+                            blend_straight(&mut self.frame, width, height, frame, x, y);
+                        }
                     }
                 }
             }
             bottom = top;
             if bottom <= 0 {
                 break;
+            }
+        }
+        // Each message's shadow past its own rows, onto the rows around it.
+        for (shown, top) in self.shown.iter().rev().zip(tops) {
+            for spill in &shown.spill {
+                let y = top + spill.row;
+                if y < 0 || y >= height as i64 {
+                    continue;
+                }
+                let row = &mut self.frame[y as usize * width * 4..][..width * 4];
+                for (x, &black) in spill.black.iter().enumerate() {
+                    let at = (spill.start + x) * 4;
+                    blend_pixel(&mut row[at..at + 4], [0, 0, 0, black]);
+                }
             }
         }
         for (row, &shows) in self.fade.iter().enumerate() {
@@ -470,7 +533,6 @@ impl Layer {
             runs.push(Run {
                 range: notice_start..text.len(),
                 ink: name_ink(message),
-                bold: true,
             });
             text.push_str(": ");
         }
@@ -513,7 +575,6 @@ impl Layer {
             runs.push(Run {
                 range: notice_start..text.len(),
                 ink: NOTICE_INK,
-                bold: false,
             });
         }
         let inner = width as f64 - 2.0 * padding;
@@ -522,18 +583,24 @@ impl Layer {
             .layout(&text, &runs, &slots, style.font() as f32, inner as f32);
         let spacing = style.spacing().round() as usize;
         let height = layout.height().ceil() as usize + spacing;
-        let mut canvas = Canvas::new(width, height, [0.0, 0.0, 0.0, self.shade]);
         let top = spacing as f32;
-        self.typesetter.paint(&layout, &mut canvas, padding as f32, top);
+        // What the message shows, drawn apart so that all of it casts the
+        // shadow, with `reach` rows above and below its own for the shadow
+        // to fall on.
+        let reach = self.shadow.reach();
+        let mut canvas = Canvas::new(width, height + 2 * reach, [0.0; 4]);
+        self.typesetter
+            .paint(&layout, &mut canvas, padding as f32, top + reach as f32);
 
         let mut moving = Vec::new();
         for placed in Typesetter::slots(&layout) {
             let x = (padding as f32 + placed.x).round() as i32;
             let y = (top + placed.y).round() as i32;
+            let drawn_y = y + reach as i32;
             match &contents[placed.id as usize] {
                 Content::Badge(key) => {
                     if let Some(picture) = self.pictures.get(&key.url, key.height) {
-                        canvas.draw_image(&picture.frames[0], x, y);
+                        canvas.draw_image(&picture.frames[0], x, drawn_y);
                     }
                 }
                 Content::Emote { base, overlays } => {
@@ -560,17 +627,38 @@ impl Layer {
                         for key in keys {
                             if let Some(picture) = self.pictures.get(&key.url, key.height) {
                                 let centred = x + (base_width as i32 - picture.width as i32) / 2;
-                                canvas.draw_image(&picture.frames[0], centred, y);
+                                canvas.draw_image(&picture.frames[0], centred, drawn_y);
                             }
                         }
                     }
                 }
             }
         }
+        let shadow = self.shadow.cast(&canvas.coverage(), width, canvas.height);
+        let mut drawn = Canvas::new(width, height, [0.0, 0.0, 0.0, self.shade]);
+        drawn.darken(&shadow[reach * width..][..height * width]);
+        drawn.lay(&canvas, reach);
+        let past = (0..reach).chain(reach + height..canvas.height);
+        let spill = past
+            .filter_map(|row| {
+                let black: Vec<u8> = shadow[row * width..][..width]
+                    .iter()
+                    .map(|black| (black * 255.0).round() as u8)
+                    .collect();
+                let start = black.iter().position(|&black| black > 0)?;
+                let end = black.iter().rposition(|&black| black > 0)?;
+                Some(Spill {
+                    row: row as i64 - reach as i64,
+                    start,
+                    black: black[start..=end].to_vec(),
+                })
+            })
+            .collect();
         Shown {
             height,
-            pixels: canvas.to_straight_rgba(),
+            pixels: drawn.to_straight_rgba(),
             moving,
+            spill,
         }
     }
 }
@@ -579,29 +667,43 @@ impl Layer {
 /// pixels wide, with its top left at `x`, `y`; what falls outside is cut.
 fn blend_straight(frame: &mut [u8], width: usize, height: usize, image: &image::RgbaImage, x: i32, y: i32) {
     for (dx, dy, pixel) in image.enumerate_pixels() {
-        let source_alpha = u32::from(pixel[3]);
-        if source_alpha == 0 {
-            continue;
+        if let Some(at) = inside(width, height, x + dx as i32, y + dy as i32) {
+            blend_pixel(&mut frame[at..at + 4], pixel.0);
         }
-        let (px, py) = (x + dx as i32, y + dy as i32);
-        if px < 0 || py < 0 || px as usize >= width || py as usize >= height {
-            continue;
-        }
-        let at = (py as usize * width + px as usize) * 4;
-        let target = &mut frame[at..at + 4];
-        let target_alpha = u32::from(target[3]);
-        let keep = 255 - source_alpha;
-        let alpha = source_alpha + (target_alpha * keep + 127) / 255;
-        if alpha == 0 {
-            continue;
-        }
-        for channel in 0..3 {
-            let under = u32::from(target[channel]) * target_alpha / 255;
-            let premultiplied = u32::from(pixel[channel]) + (under * keep + 127) / 255;
-            target[channel] = (premultiplied * 255 / alpha).min(255) as u8;
-        }
-        target[3] = alpha.min(255) as u8;
     }
+}
+
+/// Lays an image's shadow over a straight RGBA frame `width` pixels wide,
+/// the image's top left being at `x`, `y`; what falls outside is cut.
+fn shade_straight(frame: &mut [u8], width: usize, height: usize, cast: &Cast, x: i32, y: i32) {
+    for (index, &black) in cast.alpha.iter().enumerate() {
+        let (dx, dy) = ((index % cast.width) as i32, (index / cast.width) as i32);
+        if let Some(at) = inside(width, height, x + cast.left + dx, y + cast.top + dy) {
+            blend_pixel(&mut frame[at..at + 4], [0, 0, 0, black]);
+        }
+    }
+}
+
+/// Where the pixel at `x`, `y` of a frame `width` × `height` starts, if it is on it.
+fn inside(width: usize, height: usize, x: i32, y: i32) -> Option<usize> {
+    (x >= 0 && y >= 0 && (x as usize) < width && (y as usize) < height).then(|| (y as usize * width + x as usize) * 4)
+}
+
+/// Lays a premultiplied RGBA pixel over a straight RGBA one.
+fn blend_pixel(target: &mut [u8], pixel: [u8; 4]) {
+    let source_alpha = u32::from(pixel[3]);
+    if source_alpha == 0 {
+        return;
+    }
+    let target_alpha = u32::from(target[3]);
+    let keep = 255 - source_alpha;
+    let alpha = source_alpha + (target_alpha * keep + 127) / 255;
+    for channel in 0..3 {
+        let under = u32::from(target[channel]) * target_alpha / 255;
+        let premultiplied = u32::from(pixel[channel]) + (under * keep + 127) / 255;
+        target[channel] = (premultiplied * 255 / alpha).min(255) as u8;
+    }
+    target[3] = alpha.min(255) as u8;
 }
 
 /// For each pixel in the box's corners outside a radius-`radius` rounding,
@@ -967,6 +1069,85 @@ mod tests {
         );
         assert_ne!(layer.frame(6.0), &burst[..]);
         assert_eq!(layer.shown.len(), 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_message_casts_a_soft_shadow_below_and_right() {
+        // Twitch's own line, so no name: only the emote, a yellow square.
+        let mut notice = message("1", 1.0, "KEKW");
+        notice.notice = true;
+        let (mut layer, dir) = layer_with(vec![notice], 0.0);
+        let width = layer.geometry().width as usize;
+        let frame = layer.frame(2.0).to_vec();
+        let pixel = |x: usize, y: usize| &frame[(y * width + x) * 4..][..4];
+        let (mut left, mut right, mut top, mut bottom) = (usize::MAX, 0, usize::MAX, 0);
+        for (i, p) in frame.chunks(4).enumerate() {
+            if p[0] > 0 {
+                let (x, y) = (i % width, i / width);
+                (left, right, top, bottom) = (left.min(x), right.max(x), top.min(y), bottom.max(y));
+            }
+        }
+        assert!(left < right && top < bottom, "the emote is drawn");
+        let darkness = |columns: std::ops::Range<usize>, rows: std::ops::Range<usize>| -> u32 {
+            rows.flat_map(|y| columns.clone().map(move |x| (x, y)))
+                .map(|(x, y)| {
+                    let p = pixel(x, y);
+                    assert_eq!(p[..3], [0, 0, 0], "the shadow is black");
+                    u32::from(p[3])
+                })
+                .sum()
+        };
+        let below = darkness(left..right + 1, bottom + 1..bottom + 4);
+        let above = darkness(left..right + 1, top - 3..top);
+        let after = darkness(right + 1..right + 4, top..bottom + 1);
+        let before = darkness(left - 3..left, top..bottom + 1);
+        assert!(
+            below > 2 * above && after > 2 * before,
+            "{below} {above} {after} {before}"
+        );
+        assert!(above > 0 && before > 0, "the blur spills a little above and left");
+        // Next to its edge, about two fifths black: 45% in the overlay it was fitted to.
+        let next_to = pixel(right + 1, (top + bottom) / 2)[3];
+        assert!((95..=125).contains(&next_to), "{next_to}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_shadow_under_descenders_carries_on_past_the_message() {
+        let dir = std::env::temp_dir().join(format!("siphon-chat-descenders-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (width, height) in [(1280, 720), (1920, 1080), (3840, 2160)] {
+            let log = ChatLog {
+                messages: vec![message("1", 1.0, "gjpqy gjpqy")],
+                ..ChatLog::default()
+            };
+            let placement = Placement {
+                shade: 0.0,
+                ..Placement::DEFAULT
+            };
+            let mut layer = Layer::new(log, &placement, width, height, &dir);
+            let box_width = layer.geometry().width as usize;
+            // The message's last row, the box's padding under it.
+            let last = layer.geometry().height as usize - layer.style.padding().round() as usize - 1;
+            let frame = layer.frame(2.0);
+            let darkest = |row: usize| {
+                frame[row * box_width * 4..][..box_width * 4]
+                    .chunks(4)
+                    .filter(|p| p[..3] == [0, 0, 0])
+                    .map(|p| p[3])
+                    .max()
+                    .unwrap_or(0)
+            };
+            // Under the descenders the shadow runs on into the padding,
+            // fading, rather than stopping where the message's rows do.
+            let fading: Vec<u8> = (last..last + 5).map(darkest).collect();
+            assert!(fading[1] > 0, "{width}×{height}: {fading:?}");
+            assert!(
+                fading.windows(2).all(|pair| pair[1] <= pair[0]),
+                "{width}×{height}: {fading:?}"
+            );
+        }
         let _ = std::fs::remove_dir_all(dir);
     }
 

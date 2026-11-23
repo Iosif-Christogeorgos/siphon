@@ -13,6 +13,7 @@ pub mod images;
 pub mod irc;
 pub mod preview;
 pub mod render;
+mod shadow;
 mod text;
 pub mod twitch;
 

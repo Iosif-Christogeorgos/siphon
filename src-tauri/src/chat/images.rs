@@ -100,16 +100,15 @@ impl Picture {
         self.frames.len() > 1
     }
 
-    /// The frame showing `millis` into the video. Every copy of an emote
+    /// Which frame shows `millis` into the video. Every copy of an emote
     /// moves in step, as in the browser.
-    pub fn frame_at(&self, millis: u64) -> &RgbaImage {
+    pub fn frame_index_at(&self, millis: u64) -> usize {
         let total = self.ends.last().copied().unwrap_or(0);
         if total == 0 || self.frames.len() == 1 {
-            return &self.frames[0];
+            return 0;
         }
         let into = (millis % u64::from(total)) as u32;
-        let index = self.ends.partition_point(|end| *end <= into);
-        &self.frames[index.min(self.frames.len() - 1)]
+        self.ends.partition_point(|end| *end <= into).min(self.frames.len() - 1)
     }
 
     /// The same picture `height` pixels high, every frame resized smoothly.
@@ -268,10 +267,14 @@ mod tests {
             vec![50, 150],
             "a 10 ms frame lasts 100 ms, as in browsers"
         );
-        assert_eq!(picture.frame_at(0).get_pixel(0, 0)[0], 255);
-        assert_eq!(picture.frame_at(49).get_pixel(0, 0)[0], 255);
-        assert_eq!(picture.frame_at(50).get_pixel(0, 0)[2], 255);
-        assert_eq!(picture.frame_at(150).get_pixel(0, 0)[0], 255, "loops");
+        assert_eq!(picture.frames[picture.frame_index_at(0)].get_pixel(0, 0)[0], 255);
+        assert_eq!(picture.frames[picture.frame_index_at(49)].get_pixel(0, 0)[0], 255);
+        assert_eq!(picture.frames[picture.frame_index_at(50)].get_pixel(0, 0)[2], 255);
+        assert_eq!(
+            picture.frames[picture.frame_index_at(150)].get_pixel(0, 0)[0],
+            255,
+            "loops"
+        );
     }
 
     #[test]
