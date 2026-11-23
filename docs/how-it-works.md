@@ -111,7 +111,6 @@ The theme follows Windows' light or dark mode by default (**System**), and chang
 | Title | `Big Buck Bunny.mp4` |
 | Channel - Title | `Blender - Big Buck Bunny.mp4` |
 | Date Title | `2014-11-10 Big Buck Bunny.mp4` |
-| Custom | Your own yt-dlp template, for example `%(channel)s - %(title)s` |
 
 ## Signing in
 

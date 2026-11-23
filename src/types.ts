@@ -413,14 +413,12 @@ export interface Choices {
 
 // ── settings.rs ────────────────────────────────────────────────────────
 
-export type FilenameStyle = "title" | "title_id" | "channel_title" | "date_title" | "custom";
+export type FilenameStyle = "title" | "title_id" | "channel_title" | "date_title";
 
 export interface Settings {
   /** Where downloads are saved; null means the system Downloads folder. */
   output_dir: string | null;
   filename: FilenameStyle;
-  /** A yt-dlp output template without extension; used when `filename` is "custom". */
-  custom_template: string;
   /** How many downloads run at once. */
   max_concurrent: number;
   /** yt-dlp's release channel. */

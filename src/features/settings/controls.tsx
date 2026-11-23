@@ -1,7 +1,7 @@
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { Check, FileVideo, FolderOpen, RotateCcw } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
-import { type KeyboardEvent, type ReactNode, useEffect, useState } from "react";
+import { type KeyboardEvent, useEffect, useState } from "react";
 import { onRadioKeys } from "@/components/ui/radio-keys";
 import { Segmented } from "@/components/ui/segmented";
 import { Hint } from "@/components/ui/tooltip";
@@ -105,90 +105,17 @@ export function FolderTile({
 
 // ── File names ──────────────────────────────────────────────────────────
 
-const FILENAME_STYLES: { id: FilenameStyle; label: string; hint: string; template: string }[] = [
-  { id: "title_id", label: "Title [id]", hint: "The title and the video’s id", template: "%(title)s [%(id)s]" },
-  { id: "title", label: "Title", hint: "The title alone", template: "%(title)s" },
-  { id: "channel_title", label: "Channel", hint: "The channel, then the title", template: "%(channel)s - %(title)s" },
-  { id: "date_title", label: "Date", hint: "The upload date, then the title", template: "%(upload_date>%Y-%m-%d)s %(title)s" },
-  { id: "custom", label: "Custom", hint: "Your own yt-dlp template", template: "" },
+/** Each style, with the name it gives Big Buck Bunny (without its extension). */
+const FILENAME_STYLES: { id: FilenameStyle; label: string; hint: string; example: string }[] = [
+  { id: "title_id", label: "Title [id]", hint: "The title and the video’s id", example: "Big Buck Bunny [aqz-KE-bpKQ]" },
+  { id: "title", label: "Title", hint: "The title alone", example: "Big Buck Bunny" },
+  { id: "channel_title", label: "Channel", hint: "The channel, then the title", example: "Blender - Big Buck Bunny" },
+  { id: "date_title", label: "Date", hint: "The upload date, then the title", example: "2014-11-10 Big Buck Bunny" },
 ];
 
-/** The video the examples are of. */
-const SAMPLE: Record<string, string> = {
-  title: "Big Buck Bunny",
-  fulltitle: "Big Buck Bunny",
-  id: "aqz-KE-bpKQ",
-  display_id: "aqz-KE-bpKQ",
-  channel: "Blender",
-  uploader: "Blender",
-  creator: "Blender",
-  channel_id: "UCSMOQeBJ2RAnuFungnQOxLg",
-  upload_date: "20141110",
-  release_date: "20141110",
-  extractor: "youtube",
-  extractor_key: "Youtube",
-  webpage_url_domain: "youtube.com",
-  duration: "634",
-  duration_string: "10:34",
-  width: "3840",
-  height: "2160",
-  resolution: "3840x2160",
-  fps: "60",
-  vcodec: "vp09",
-  acodec: "opus",
-  format_id: "315+251",
-  ext: "mp4",
-};
-
-/**
- * What a yt-dlp output template makes of the sample video, near enough for a
- * preview: fields, alternatives (`a,b`), defaults (`|x`) and date formats
- * (`>%Y-%m-%d`). A field the sample doesn't have comes out as yt-dlp writes
- * it, "NA".
- */
-function renderTemplate(template: string): string {
-  return template.replace(/%%|%\(([^)]*)\)[-#0+ ]*\d*(?:\.\d+)?[a-zA-Z]/g, (_match, inner: string | undefined) => {
-    if (inner === undefined) return "%";
-    const [expression = "", fallback] = inner.split("|");
-    for (const alternative of expression.split(",")) {
-      const [field = "", format] = alternative.split(">");
-      const value = SAMPLE[field.trim()];
-      if (value === undefined) continue;
-      if (format && /^\d{8}$/.test(value)) {
-        const parts: Record<string, string> = { Y: value.slice(0, 4), y: value.slice(2, 4), m: value.slice(4, 6), d: value.slice(6, 8) };
-        return format.replace(/%([Yymd])/g, (_, key: string) => parts[key] ?? "");
-      }
-      return value;
-    }
-    return fallback ?? "NA";
-  });
-}
-
-/**
- * How downloads are named: a style, and the name it gives the sample video,
- * changing as the style does. Custom opens a template field whose example
- * follows the typing.
- */
-export function FileNames({
-  style,
-  template,
-  onStyle,
-  onTemplate,
-  error,
-}: {
-  style: FilenameStyle;
-  template: string;
-  onStyle: (style: FilenameStyle) => void;
-  onTemplate: (template: string) => void;
-  error: string | null;
-}) {
-  // Saved when the field loses focus, not on every keystroke; the example follows every keystroke.
-  const [draft, setDraft] = useState(template);
-  useEffect(() => setDraft(template), [template]);
-  const custom = style === "custom";
-  const chosen = FILENAME_STYLES.find((candidate) => candidate.id === style);
-  const example = renderTemplate(custom ? draft : (chosen?.template ?? "")).trim();
-
+/** How downloads are named: a style, and the name it gives a video, changing as the style does. */
+export function FileNames({ style, onChange }: { style: FilenameStyle; onChange: (style: FilenameStyle) => void }) {
+  const example = FILENAME_STYLES.find((candidate) => candidate.id === style)?.example ?? "";
   return (
     <div className="space-y-2">
       <Segmented
@@ -197,67 +124,30 @@ export function FileNames({
         className="w-full"
         value={style}
         options={FILENAME_STYLES.map(({ id, label, hint }) => ({ id, label, hint }))}
-        onChange={onStyle}
+        onChange={onChange}
       />
-      <Reveal open={custom}>
-        <div className="pt-0.5">
-          <input
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            onBlur={() => draft !== template && onTemplate(draft)}
-            onKeyDown={(event) => event.key === "Enter" && event.currentTarget.blur()}
-            spellCheck={false}
-            placeholder="%(channel)s - %(title)s"
-            aria-label="Custom file name template"
-            className={cn(fieldClass, "w-full font-mono text-xs")}
-          />
+      <div className="flex h-9 items-center gap-2.5 rounded-lg border border-dashed border-border-strong px-3">
+        <FileVideo className="size-3.5 shrink-0 text-subtle-foreground" />
+        <div className="relative min-w-0 flex-1">
+          {/* Each style slides its example in. */}
+          <AnimatePresence mode="popLayout" initial={false}>
+            <motion.p
+              key={style}
+              data-selectable
+              className="truncate font-mono text-[11.5px] text-foreground/90"
+              initial={{ opacity: 0, x: 10, filter: "blur(3px)" }}
+              animate={{ opacity: 1, x: 0, filter: "blur(0px)" }}
+              exit={{ opacity: 0, x: -10, filter: "blur(3px)" }}
+              transition={spring}
+            >
+              {example}
+              <span className="text-subtle-foreground">.mp4</span>
+            </motion.p>
+          </AnimatePresence>
         </div>
-      </Reveal>
-      <FilePreview id={style} stem={example || "…"} />
-      {error && (
-        <p role="alert" className="text-xs text-destructive">
-          {error}
-        </p>
-      )}
-      <Reveal open={custom}>
-        <p className="pb-0.5 text-xs text-pretty text-muted-foreground">
-          yt-dlp’s fields, such as <Code>%(title)s</Code>, <Code>%(channel)s</Code>, <Code>%(id)s</Code> and{" "}
-          <Code>%(upload_date)s</Code>. The extension is added for you.
-        </p>
-      </Reveal>
-    </div>
-  );
-}
-
-/** A file as it will be named: the name, then its extension, a little fainter. */
-function FilePreview({ id, stem }: { id: string; stem: string }) {
-  return (
-    <div className="flex min-h-9 items-center gap-2.5 rounded-lg border border-dashed border-border-strong px-3 py-2">
-      <FileVideo className="size-3.5 shrink-0 text-subtle-foreground" />
-      <div className="relative min-w-0 flex-1">
-        {/* A new style slides its example in; typing a template only changes the text. */}
-        <AnimatePresence mode="popLayout" initial={false}>
-          <motion.p
-            key={id}
-            data-selectable
-            title={`${stem}.mp4`}
-            className="line-clamp-2 font-mono text-[11.5px] leading-snug wrap-break-word text-foreground/90"
-            initial={{ opacity: 0, x: 10, filter: "blur(3px)" }}
-            animate={{ opacity: 1, x: 0, filter: "blur(0px)" }}
-            exit={{ opacity: 0, x: -10, filter: "blur(3px)" }}
-            transition={spring}
-          >
-            {stem}
-            <span className="text-subtle-foreground">.mp4</span>
-          </motion.p>
-        </AnimatePresence>
       </div>
     </div>
   );
-}
-
-function Code({ children }: { children: ReactNode }) {
-  return <code className="rounded bg-secondary px-1 py-0.5 font-mono text-[11px]">{children}</code>;
 }
 
 // ── At the same time ────────────────────────────────────────────────────

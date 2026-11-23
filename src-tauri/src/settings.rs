@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use tauri::{AppHandle, Manager};
 
 use crate::binaries::sources::Channel;
@@ -11,33 +11,39 @@ use crate::binaries::UpdatePolicy;
 use crate::error::{AppError, Result};
 
 /// How downloaded files are named. The extension is always added by Siphon.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FilenameStyle {
     /// `Title`
     Title,
     /// `Title [id]`: unique per video, so two uploads with one title don't collide.
+    #[default]
     TitleId,
     /// `Channel - Title`
     ChannelTitle,
     /// `2026-11-16 Title` (upload date)
     DateTitle,
-    /// The user's own yt-dlp output template.
-    Custom,
 }
 
 impl FilenameStyle {
     /// The yt-dlp output template for this style, without extension.
     /// Lengths are capped in bytes so paths stay within OS limits.
-    pub fn template(self, custom: &str) -> String {
+    pub fn template(self) -> &'static str {
         match self {
-            FilenameStyle::Title => "%(title).180B".into(),
-            FilenameStyle::TitleId => "%(title).180B [%(id)s]".into(),
-            FilenameStyle::ChannelTitle => "%(channel,uploader|Unknown).60B - %(title).150B".into(),
-            FilenameStyle::DateTitle => "%(upload_date>%Y-%m-%d|undated)s %(title).180B".into(),
-            FilenameStyle::Custom => custom.trim().to_string(),
+            FilenameStyle::Title => "%(title).180B",
+            FilenameStyle::TitleId => "%(title).180B [%(id)s]",
+            FilenameStyle::ChannelTitle => "%(channel,uploader|Unknown).60B - %(title).150B",
+            FilenameStyle::DateTitle => "%(upload_date>%Y-%m-%d|undated)s %(title).180B",
         }
     }
+}
+
+/// A style this version doesn't know is read as the default rather than
+/// failing the file, which would lose every other setting with it. Up to
+/// 0.18.1 there was `custom`, the user's own yt-dlp template.
+fn known_style<'de, D: Deserializer<'de>>(deserializer: D) -> std::result::Result<FilenameStyle, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(FilenameStyle::deserialize(value).unwrap_or_default())
 }
 
 /// Whether newer versions of yt-dlp, FFmpeg and Deno are installed without asking.
@@ -59,9 +65,8 @@ pub const MAX_SPEED_LIMIT: u64 = 1000 * 1024 * 1024;
 pub struct Settings {
     /// Where downloads are saved. `None` means the system Downloads folder.
     pub output_dir: Option<PathBuf>,
+    #[serde(deserialize_with = "known_style")]
     pub filename: FilenameStyle,
-    /// Used when `filename` is `custom`: a yt-dlp output template without extension.
-    pub custom_template: String,
     /// How many downloads run at once; the rest wait in the queue.
     pub max_concurrent: usize,
     /// yt-dlp's release channel. Nightly gets site fixes sooner.
@@ -77,7 +82,6 @@ impl Default for Settings {
         Self {
             output_dir: None,
             filename: FilenameStyle::TitleId,
-            custom_template: "%(title)s [%(id)s]".into(),
             max_concurrent: 3,
             update_channel: Channel::Stable,
             update_mode: UpdateMode::Auto,
@@ -88,26 +92,12 @@ impl Default for Settings {
 
 impl Settings {
     /// Brings values from disk or the UI into their allowed ranges.
-    fn sanitized(mut self) -> Result<Self> {
+    fn sanitized(mut self) -> Self {
         self.max_concurrent = self.max_concurrent.clamp(1, MAX_CONCURRENT_LIMIT);
         self.speed_limit = self
             .speed_limit
             .map(|limit| limit.clamp(MIN_SPEED_LIMIT, MAX_SPEED_LIMIT));
-        self.custom_template = self.custom_template.trim().to_string();
-        if self.filename == FilenameStyle::Custom {
-            let template = &self.custom_template;
-            // A name has to vary per video, or every download overwrites the last.
-            if !template.contains("%(") {
-                return Err(AppError::internal(
-                    "A custom file name needs at least one field, such as %(title)s, so each video gets its own name.",
-                ));
-            }
-            // Folders are chosen with the folder setting, not smuggled into the name.
-            if template.contains(['/', '\\']) || template.contains("..") {
-                return Err(AppError::internal("A custom file name can’t contain folders."));
-            }
-        }
-        Ok(self)
+        self
     }
 
     pub fn update_policy(&self) -> UpdatePolicy {
@@ -118,8 +108,8 @@ impl Settings {
     }
 
     /// The yt-dlp output template for file names, without extension.
-    pub fn filename_template(&self) -> String {
-        self.filename.template(&self.custom_template)
+    pub fn filename_template(&self) -> &'static str {
+        self.filename.template()
     }
 }
 
@@ -140,9 +130,7 @@ impl SettingsStore {
 
     /// The settings stored in `file`. A missing or damaged file just means defaults.
     fn open(file: PathBuf) -> Self {
-        let current = read(&file)
-            .and_then(|settings| settings.sanitized().ok())
-            .unwrap_or_default();
+        let current = read(&file).map(Settings::sanitized).unwrap_or_default();
         Self::at(file, current)
     }
 
@@ -159,7 +147,7 @@ impl SettingsStore {
 
     /// Validates, saves and returns the settings as stored.
     pub fn set(&self, settings: Settings) -> Result<Settings> {
-        let settings = settings.sanitized()?;
+        let settings = settings.sanitized();
         // Write-then-rename so a crash can't leave a half-written file.
         let tmp = self.file.with_extension("json.tmp");
         std::fs::write(&tmp, serde_json::to_vec_pretty(&settings)?)?;
@@ -183,32 +171,29 @@ mod tests {
             max_concurrent: 99,
             ..Settings::default()
         }
-        .sanitized()
-        .unwrap();
+        .sanitized();
         assert_eq!(settings.max_concurrent, MAX_CONCURRENT_LIMIT);
         let settings = Settings {
             max_concurrent: 0,
             ..Settings::default()
         }
-        .sanitized()
-        .unwrap();
+        .sanitized();
         assert_eq!(settings.max_concurrent, 1);
     }
 
     #[test]
-    fn custom_names_must_vary_and_stay_in_the_folder() {
-        let custom = |template: &str| {
-            Settings {
-                filename: FilenameStyle::Custom,
-                custom_template: template.into(),
-                ..Settings::default()
-            }
-            .sanitized()
-        };
-        assert!(custom("%(uploader)s - %(title)s").is_ok());
-        assert!(custom("video").is_err());
-        assert!(custom("../%(title)s").is_err());
-        assert!(custom("sub\\%(title)s").is_err());
+    fn a_custom_name_from_before_falls_back_without_losing_the_rest() {
+        // Up to 0.18.1 a file could name its own template; that style is gone.
+        let file = r#"{"output_dir": "D:\\Videos", "filename": "custom", "custom_template": "%(uploader)s - %(title)s",
+                       "max_concurrent": 5, "speed_limit": 5242880}"#;
+        let settings: Settings = serde_json::from_str(file).unwrap();
+        assert_eq!(settings.filename, FilenameStyle::TitleId);
+        assert_eq!(settings.output_dir, Some(PathBuf::from(r"D:\Videos")));
+        assert_eq!(settings.max_concurrent, 5);
+        assert_eq!(settings.speed_limit, Some(5 * 1024 * 1024));
+        // The styles still there are read as they were.
+        let settings: Settings = serde_json::from_str(r#"{"filename": "date_title"}"#).unwrap();
+        assert_eq!(settings.filename, FilenameStyle::DateTitle);
     }
 
     #[test]
@@ -228,7 +213,6 @@ mod tests {
                 ..Settings::default()
             }
             .sanitized()
-            .unwrap()
             .speed_limit
         };
         assert_eq!(limited(None), None);
@@ -246,7 +230,7 @@ mod tests {
             let bytes = mb * 1024 * 1024;
             let file = format!(r#"{{"max_concurrent": 3, "speed_limit": {bytes}}}"#);
             let settings: Settings = serde_json::from_str(&file).unwrap();
-            assert_eq!(settings.sanitized().unwrap().speed_limit, Some(bytes), "{mb} MB/s");
+            assert_eq!(settings.sanitized().speed_limit, Some(bytes), "{mb} MB/s");
         }
     }
 

@@ -12,8 +12,7 @@ export function useSettings() {
 /**
  * Saves settings; everything showing them updates with what was stored.
  * A choice shows at once, before the backend has answered, and goes back if
- * it refuses. Not a custom file-name template: the backend checks it, and
- * one it refuses must stay in its field to be corrected.
+ * it couldn't be stored.
  */
 export function useSaveSettings() {
   const queryClient = useQueryClient();
@@ -22,7 +21,7 @@ export function useSaveSettings() {
     onMutate: async (next) => {
       const turn = ++saves;
       const before = queryClient.getQueryData<SettingsView>(SETTINGS_KEY);
-      if (!before || next.custom_template !== before.custom_template) return { turn, before: undefined };
+      if (!before) return { turn, before };
       await queryClient.cancelQueries({ queryKey: SETTINGS_KEY });
       queryClient.setQueryData<SettingsView>(SETTINGS_KEY, { ...before, ...next });
       return { turn, before };

@@ -1,4 +1,4 @@
-import { ArrowDownToLine, KeyRound, Palette, RefreshCw } from "lucide-react";
+import { ArrowDownToLine, CircleAlert, KeyRound, Palette, RefreshCw } from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
 import { Segmented } from "@/components/ui/segmented";
@@ -11,7 +11,7 @@ import { useTheme } from "@/stores/theme";
 import { useUi } from "@/stores/ui";
 import type { Settings, SettingsView } from "@/types";
 import { FileNames, FolderTile, Lanes, SpeedLimit, ThemePicker } from "./controls";
-import { Card, Row, Section, type SectionId, SECTIONS } from "./parts";
+import { Card, Reveal, Row, Section, type SectionId, SECTIONS } from "./parts";
 import { SignedInSites } from "./SignedInSites";
 import { Versions } from "./Versions";
 
@@ -64,6 +64,15 @@ function SettingsForm({
 
   return (
     <div className="space-y-7 pt-4">
+      {/* A change the backend couldn't store has already gone back; this says why. */}
+      <Reveal open={error !== null}>
+        <p role="alert" className="flex gap-2 rounded-xl bg-destructive-soft px-3.5 py-2.5 text-xs text-destructive">
+          <CircleAlert className="mt-px size-3.5 shrink-0" />
+          <span>
+            <span className="font-medium">That change couldn’t be saved.</span> {error}
+          </span>
+        </p>
+      </Reveal>
       <Section id="downloads" index={0} icon={ArrowDownToLine} title="Downloads">
         <Card>
           <Row title="Save to">
@@ -74,13 +83,7 @@ function SettingsForm({
             />
           </Row>
           <Row title="File names" hint="Clips cut from a video also get their time range added.">
-            <FileNames
-              style={settings.filename}
-              template={settings.custom_template}
-              onStyle={(filename) => onChange({ filename })}
-              onTemplate={(custom_template) => onChange({ custom_template })}
-              error={error}
-            />
+            <FileNames style={settings.filename} onChange={(filename) => onChange({ filename })} />
           </Row>
           <Row
             title="At the same time"
