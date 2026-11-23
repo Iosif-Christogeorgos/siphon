@@ -230,14 +230,18 @@ function Running({
 
   return (
     <div className="relative flex size-full items-center gap-3 pr-2 pl-5">
-      {/* The fill: deepening toward its front, which glows, with light drifting through it.
-          Sized rather than stretched, so its gradient and edge keep their shape. */}
+      {/* The fill: deepening toward its front, with light drifting through it. Sized
+          rather than stretched, so its gradient and edge keep their shape. */}
       <motion.div aria-hidden className="absolute inset-y-0 left-0" style={{ width }}>
         <div className="absolute inset-0 bg-linear-to-r from-primary/5 to-primary/22" />
         <div className="absolute inset-0 animate-sheen bg-[linear-gradient(100deg,transparent_30%,color-mix(in_oklab,var(--primary)_14%,transparent)_50%,transparent_70%)] bg-size-[200%_100%] motion-reduce:hidden" />
-        <motion.div className="absolute inset-y-0 right-0" style={{ opacity: edge }}>
-          <div className="absolute inset-y-0 -right-4 w-8 bg-[radial-gradient(closest-side,var(--primary-glow),transparent)]" />
-          <div className="absolute inset-y-0 right-0 w-0.5 bg-linear-to-b from-transparent via-primary to-transparent" />
+        {/* The front: a bright edge and the light it casts back into the fill, breathing
+            together. Not a glow around it: a fixed one read as a lamp following the bar. */}
+        <motion.div className="absolute inset-y-0 right-0 w-12" style={{ opacity: edge }}>
+          <div className="absolute inset-0 animate-breathe motion-reduce:animate-none">
+            <div className="absolute inset-0 bg-linear-to-r from-transparent to-primary/25" />
+            <div className="absolute inset-y-0 right-0 w-0.5 bg-linear-to-b from-transparent via-primary to-transparent" />
+          </div>
         </motion.div>
       </motion.div>
       {stage === "preparing" && (

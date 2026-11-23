@@ -101,6 +101,13 @@
   --animate-shimmer: shimmer 1.6s linear infinite;
   /* A band of light drifting through a download's progress, slower and softer. */
   --animate-sheen: shimmer 2.8s ease-in-out infinite;
+  /* The front of a download's progress, brightening and softening like something alive. */
+  --animate-breathe: breathe 2.4s ease-in-out infinite;
+  @keyframes breathe {
+    50% {
+      opacity: 0.4;
+    }
+  }
   /* A recording's dot, breathing slowly. */
   --animate-rec: rec 2s ease-in-out infinite;
   @keyframes rec {
