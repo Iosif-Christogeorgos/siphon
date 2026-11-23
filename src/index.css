@@ -21,6 +21,8 @@
   --card-foreground: var(--foreground);
   --popover: light-dark(oklch(1 0 0), oklch(0.225 0.009 232));
   --popover-foreground: var(--foreground);
+  /* A slide-over panel: tinted in light mode, as the window is, so white cards stand out on it. */
+  --sheet: light-dark(oklch(0.978 0.004 205), oklch(0.225 0.009 232));
   --primary: light-dark(oklch(0.53 0.1 196), oklch(0.8 0.125 192));
   --primary-hover: light-dark(oklch(0.48 0.095 196), oklch(0.86 0.115 192));
   --primary-foreground: light-dark(oklch(0.99 0.01 196), oklch(0.18 0.03 200));
@@ -47,6 +49,8 @@
   --input: var(--border-strong);
   --ring: var(--primary);
   --shadow-color: light-dark(hsl(220 30% 20%), hsl(230 50% 2%));
+  /* A raised card's top edge catching the light; on a white card in light mode there is none to see. */
+  --card-edge: inset 0 1px 0 light-dark(transparent, rgb(255 255 255 / 0.045));
 }
 
 :root[data-theme="light"] {
@@ -67,6 +71,7 @@
   --color-card-foreground: var(--card-foreground);
   --color-popover: var(--popover);
   --color-popover-foreground: var(--popover-foreground);
+  --color-sheet: var(--sheet);
   --color-primary: var(--primary);
   --color-primary-hover: var(--primary-hover);
   --color-primary-foreground: var(--primary-foreground);
