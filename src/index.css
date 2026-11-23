@@ -151,8 +151,13 @@
     user-select: text;
   }
 
-  button {
-    cursor: default;
+  /* Whatever can be clicked shows the hand: buttons (all of Siphon's controls
+     are, tabs and choices included), a list's options and sliders. Not while
+     disabled, or only marked so to keep its hint: then it is the arrow. */
+  button:not(:disabled, [aria-disabled="true"]),
+  [role="option"]:not([aria-disabled="true"], [data-disabled]),
+  input[type="range"]:not(:disabled) {
+    cursor: pointer;
   }
 
   :focus-visible {
