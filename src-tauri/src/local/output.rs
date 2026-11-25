@@ -196,6 +196,7 @@ mod tests {
                 folder: r"C:\Videos".into(),
                 size: 1,
                 version: "1-0".into(),
+                matroska: false,
                 start: 0.0,
                 cover: false,
                 tracks: Default::default(),

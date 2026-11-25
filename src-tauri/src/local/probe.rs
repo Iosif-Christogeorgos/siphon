@@ -220,6 +220,7 @@ impl Probe {
             saved: None,
             sizes: SizeFacts::default(),
             file: Some(LocalFile {
+                matroska: self.format.split(',').any(|name| name == "matroska"),
                 start: self.start,
                 cover: self.cover,
                 tracks: self.tracks.clone(),

@@ -72,8 +72,7 @@ pub fn cast(contents: &mut Contents, file_name: &str) {
         for (this, other) in [(a, b), (b, a)] {
             let other = &contents.tracks[other];
             let doubt = format!(
-                "Sound track {} is {} too, in the same codec and channels: one of them may be another language.",
-                other.index,
+                "Another sound track is {} too, in the same codec and channels: one of them may be another language.",
                 name(other.language.as_deref().unwrap_or_default()),
             );
             contents.tracks[this].doubts.push(doubt);
@@ -275,7 +274,7 @@ mod tests {
         cast(&mut film, "Film.mkv");
         assert_eq!(
             film.tracks[0].doubts,
-            ["Sound track 2 is English too, in the same codec and channels: one of them may be another language."]
+            ["Another sound track is English too, in the same codec and channels: one of them may be another language."]
         );
         assert_eq!(film.tracks[1].doubts.len(), 1);
         assert!(certain(&film.tracks[2]) && certain(&film.tracks[3]));

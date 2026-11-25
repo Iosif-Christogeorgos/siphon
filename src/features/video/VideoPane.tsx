@@ -10,6 +10,7 @@ import { DownloadPanel } from "@/features/download/DownloadPanel";
 import { ManualPanel } from "@/features/options/ManualPanel";
 import { LiveWaitCard, Note, PlanCard } from "@/features/options/PlanCard";
 import { CHAT_GROUPS, PresetArea } from "@/features/presets/PresetArea";
+import { TracksPanel } from "@/features/tracks/TracksPanel";
 import { TrimPanel } from "@/features/trim/TrimPanel";
 import { ipc, toAppError } from "@/lib/ipc";
 import { languageName, subtitleLanguages } from "@/lib/languages";
@@ -73,6 +74,9 @@ function convertLabel({
 export function VideoPane({ video }: { video: VideoInfo }) {
   // A file on this PC, converted rather than downloaded.
   const local = video.file !== undefined;
+  // An MKV's tracks can be chosen instead (docs/mkv-editor.md).
+  const tracksOffered = video.file?.matroska === true;
+  const [tracksOn, setTracksOn] = useState(false);
   const customizing = useChoices((state) => state.choices !== null && state.choices.active.kind !== "preset");
   // A Twitch video's or stream's chat can be drawn into the picture, with the presets that keep it as it is.
   const chatSource = video.chat;
@@ -194,7 +198,7 @@ export function VideoPane({ video }: { video: VideoInfo }) {
   };
   const blocked = plan.data?.blocked ?? null;
   const nothing = plan.data?.nothing ?? null;
-  const canTrim = video.duration && !trimOpen && !live;
+  const canTrim = video.duration && !trimOpen && !live && !tracksOn;
   const record = live ? { from_start: recordFromStart } : null;
 
   return (
@@ -249,7 +253,7 @@ export function VideoPane({ video }: { video: VideoInfo }) {
       </AnimatePresence>
 
       <AnimatePresence initial={false}>
-        {trimOpen && video.duration && (
+        {trimOpen && video.duration && !tracksOn && (
           <motion.div
             key="trim"
             initial={{ opacity: 0, height: 0 }}
@@ -277,9 +281,10 @@ export function VideoPane({ video }: { video: VideoInfo }) {
           subtitles={live ? undefined : video.subtitles}
           chat={chatSource !== null}
           file={local}
+          tracks={tracksOffered ? { on: tracksOn, onChange: setTracksOn } : undefined}
         />
         <AnimatePresence initial={false}>
-          {customizing && (
+          {customizing && !tracksOn && (
             <motion.div
               key="custom"
               initial={{ opacity: 0, height: 0 }}
@@ -293,7 +298,9 @@ export function VideoPane({ video }: { video: VideoInfo }) {
         </AnimatePresence>
       </div>
 
-      {live && live.status !== "live" ? (
+      {tracksOn && video.file ? (
+        <TracksPanel fileKey={video.file.key} version={video.file.version} />
+      ) : live && live.status !== "live" ? (
         <LiveWaitCard status={live.status} />
       ) : plan.isError ? (
         <ErrorCard error={toAppError(plan.error)} />
@@ -314,7 +321,7 @@ export function VideoPane({ video }: { video: VideoInfo }) {
       )}
 
       <AnimatePresence initial={false}>
-        {subtitlesMissing && (
+        {subtitlesMissing && !tracksOn && (
           <Note key="no-subtitles" warning={false}>
             {missingSubtitles(wantedSubtitles, video)}
           </Note>
@@ -330,40 +337,42 @@ export function VideoPane({ video }: { video: VideoInfo }) {
         )}
       </AnimatePresence>
 
-      <DownloadPanel
-        download={download}
-        onStart={() => {
-          if (!choice) return;
-          // A file is listed by its name, as in a list of files.
-          const source = video.file ? { ...video, title: video.file.name } : video;
-          setDownloadIds(trims.map((trim) => start(source, choice, trim, null, record)));
-        }}
-        disabled={waitsForStart ? choice === null : !plan.isSuccess || blocked !== null || nothing !== null}
-        record={live !== null}
-        convert={local}
-        nothing={nothing !== null}
-        label={
-          local
-            ? convertLabel({
-                plan: plan.data,
-                group: customizing ? null : (group ?? null),
-                clips: trims.length,
-                clip: shownTrim !== null,
-                picture: video.formats[0]?.kind !== "audio",
-              })
-            : waitsForStart
-            ? "Record when it starts"
-            : live
-              ? "Record"
-              : blocked
-                ? "Too long for this limit"
-                : trims.length > 1
-                  ? `Download ${trims.length} clips`
-                  : shownTrim
-                    ? "Download clip"
-                    : "Download"
-        }
-      />
+      {!tracksOn && (
+        <DownloadPanel
+          download={download}
+          onStart={() => {
+            if (!choice) return;
+            // A file is listed by its name, as in a list of files.
+            const source = video.file ? { ...video, title: video.file.name } : video;
+            setDownloadIds(trims.map((trim) => start(source, choice, trim, null, record)));
+          }}
+          disabled={waitsForStart ? choice === null : !plan.isSuccess || blocked !== null || nothing !== null}
+          record={live !== null}
+          convert={local}
+          nothing={nothing !== null}
+          label={
+            local
+              ? convertLabel({
+                  plan: plan.data,
+                  group: customizing ? null : (group ?? null),
+                  clips: trims.length,
+                  clip: shownTrim !== null,
+                  picture: video.formats[0]?.kind !== "audio",
+                })
+              : waitsForStart
+              ? "Record when it starts"
+              : live
+                ? "Record"
+                : blocked
+                  ? "Too long for this limit"
+                  : trims.length > 1
+                    ? `Download ${trims.length} clips`
+                    : shownTrim
+                      ? "Download clip"
+                      : "Download"
+          }
+        />
+      )}
     </>
   );
 }

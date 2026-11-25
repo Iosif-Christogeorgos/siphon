@@ -10,6 +10,7 @@ import type {
   Intake,
   Measure,
   Media,
+  MkvContents,
   Placement,
   PlanSummary,
   Preview,
@@ -40,6 +41,8 @@ export const ipc = {
   pickFiles: () => invoke<Intake | null>("pick_files"),
   /** What a file the user gave holds, by its key. */
   readFile: (key: string) => invoke<VideoInfo>("read_file", { key }),
+  /** Every track of an MKV the user gave, with how certain its language is. */
+  readTracks: (key: string) => invoke<MkvContents>("read_tracks", { key }),
   getPresets: () => invoke<Registry>("get_presets"),
   getChoices: () => invoke<Choices>("get_choices"),
   setChoices: (choices: Choices) => invoke<Choices>("set_choices", { choices }),

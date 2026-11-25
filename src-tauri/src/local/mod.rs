@@ -130,6 +130,7 @@ impl Original {
                 .unwrap_or_default(),
             size: stamp.size,
             version: stamp.version(),
+            matroska: false,
             start: 0.0,
             cover: false,
             tracks: FileTracks::default(),
@@ -160,6 +161,9 @@ pub struct LocalFile {
     /// since it was read is read and planned again, by the window too, which
     /// keeps what it was told by key and version.
     pub version: String,
+    /// It is a Matroska file inside, whatever its name says: its tracks can
+    /// be chosen (docs/mkv-editor.md). Known once it is read.
+    pub matroska: bool,
     /// Where its timestamps start, in seconds: an MPEG-TS from OBS starts a
     /// second or so in. A part to cut out is chosen from its start, and cut
     /// by its timestamps.

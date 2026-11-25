@@ -189,6 +189,62 @@ export interface LocalFile {
   size: number;
   /** Its size and when it last changed: a file changed since is read and planned again. */
   version: string;
+  /** A Matroska file inside, whatever its name says: its tracks can be chosen. Known once it is read. */
+  matroska: boolean;
+}
+
+// ── local/mkv/mod.rs ────────────────────────────────────────────────────
+
+/** What an MKV holds, track by track (docs/mkv-editor.md). */
+export interface MkvContents {
+  tracks: MkvTrack[];
+  chapters: MkvChapters;
+  /** Files carried in it: fonts for its ASS subtitles, a cover. */
+  attachments: { name: string; mime: string | null }[];
+  /** What casts doubt on the file as a whole. */
+  doubts: string[];
+}
+
+export type MkvKind = "video" | "sound" | "subtitles";
+
+export interface MkvTrack {
+  /** Its place among the file's streams, as FFmpeg counts them. */
+  index: number;
+  kind: MkvKind;
+  /** ffprobe's codec name: "hevc", "truehd", "subrip", "hdmv_pgs_subtitle". */
+  codec: string;
+  /** The name the file gives it: "Surround". */
+  name: string | null;
+  /** Its language as a tag ("el"); null when unknown. */
+  language: string | null;
+  default: boolean;
+  forced: boolean;
+  /** Subtitles for the deaf and hard of hearing. */
+  sdh: boolean;
+  commentary: boolean;
+  /** Sound describing the picture, for the blind. */
+  described: boolean;
+  original: boolean;
+  channels: number | null;
+  width: number | null;
+  height: number | null;
+  /** Lines, packets or frames it holds, where the file says. */
+  entries: number | null;
+  /** What casts doubt on its language: it is kept, never left out for it. */
+  doubts: string[];
+  /** What reading it found, besides: a tag put right, SDH, forced. */
+  notes: string[];
+  /** Its language was found, or its tag borne out, by reading its words. */
+  read: boolean;
+  /** Its language is known and nothing casts doubt on it (always, for video). */
+  certain: boolean;
+}
+
+export interface MkvChapters {
+  /** The chapters a player lists. */
+  count: number;
+  /** Said when a copy would flatten them: other versions, hidden ones… */
+  note: string | null;
 }
 
 /** What came of files dropped on the window or picked with Browse. */
