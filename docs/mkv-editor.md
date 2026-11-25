@@ -1,6 +1,6 @@
-# MKV editor (planned)
+# MKV editor
 
-Planned 2026-11-25 with the owner; not built yet. Choosing which tracks an MKV keeps, adding tracks from other files, and fixing their details, for one film or a whole season, without losing any quality: every track is copied as it is, never converted. It belongs with [Files on this PC](local-files.md).
+Planned 2026-11-25 with the owner, and being built in the steps at the end: one file can be read, edited and saved, with my languages applied (steps 1 to 4); seasons, adding tracks, and chapters and fonts are still to come. Choosing which tracks an MKV keeps, adding tracks from other files, and fixing their details, for one film or a whole season, without losing any quality: every track is copied as it is, never converted. It belongs with [Files on this PC](local-files.md).
 
 ## What it does
 
@@ -105,3 +105,10 @@ Each a commit that leaves Siphon working.
 5. **Seasons**: the files list, one choice for every file, marks where something is uncertain.
 6. **Adding tracks**: to one file, then to a season by name.
 7. **Chapters and fonts.**
+
+## Open questions
+
+Waiting on the owner (2026-11-25); none is to be built before they decide.
+
+- **Where Tracks sits in the window.** Today it is a fifth choice in the presets' row. Proposed: take it out of the row and put a chip among the card's description chips (beside *1080p*, *HEVC + AAC*), such as *6 tracks ›* or *6 tracks · Greek, English*, shown only for a file with more than one picture or sound track to choose from. Clicking it switches to tracks: the presets, their facets **and Trim** go away (Trim adds to a conversion, Tracks replaces it, so the two must not look alike), a header *← Convert instead · Tracks* leads back, and the chip shows it is open (✕). This answered the owner's concern about putting Tracks beside Trim.
+- **Tracks for more than MKV.** Proposed: MP4 and MOV stay MP4 (picture subtitles can't go in MP4: say so and offer MKV, as Customize does); TS and M2TS become MKV; files with one picture and one sound track don't get Tracks. Not decided whether before or after the next release.
