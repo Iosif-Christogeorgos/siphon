@@ -19,6 +19,8 @@
   --foreground: light-dark(oklch(0.21 0.012 225), oklch(0.955 0.004 210));
   --card: light-dark(oklch(1 0 0), oklch(0.192 0.008 232));
   --card-foreground: var(--foreground);
+  /* A card tucked behind another (an MKV's tracks): a shade below the card in front. */
+  --card-behind: light-dark(oklch(0.965 0.005 210), oklch(0.172 0.008 232));
   --popover: light-dark(oklch(1 0 0), oklch(0.225 0.009 232));
   --popover-foreground: var(--foreground);
   /* A slide-over panel: tinted in light mode, as the window is, so white cards stand out on it. */
@@ -69,6 +71,7 @@
   --color-foreground: var(--foreground);
   --color-card: var(--card);
   --color-card-foreground: var(--card-foreground);
+  --color-card-behind: var(--card-behind);
   --color-popover: var(--popover);
   --color-popover-foreground: var(--popover-foreground);
   --color-sheet: var(--sheet);
@@ -102,6 +105,8 @@
     0 16px 40px -8px color-mix(in srgb, var(--shadow-color) 28%, transparent);
 
   --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  /* A drawer's, iOS-like: what slides and grows into place (an MKV's tracks). */
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
 
   --animate-shimmer: shimmer 1.6s linear infinite;
   /* A band of light drifting through a download's progress, slower and softer. */
@@ -111,6 +116,13 @@
   @keyframes breathe {
     50% {
       opacity: 0.4;
+    }
+  }
+  /* The card tucked behind a file's card peeks out once, to show it can be pulled. */
+  --animate-peek: peek 1.5s 0.9s cubic-bezier(0.45, 0, 0.2, 1) 1;
+  @keyframes peek {
+    45% {
+      margin-top: -1.25rem;
     }
   }
   /* A recording's dot, breathing slowly. */

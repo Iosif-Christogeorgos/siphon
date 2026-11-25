@@ -7,7 +7,7 @@ use std::path::Path;
 
 use serde_json::Value;
 
-use super::{LocalFile, Original, Stamp, TrackCounts};
+use super::{mkv, LocalFile, Original, Stamp, TrackOverview};
 use crate::error::{AppError, ErrorKind, Result};
 use crate::plan::codecs::{AudioCodec, VideoCodec};
 use crate::plan::sizes::SizeFacts;
@@ -60,6 +60,9 @@ pub struct Probe {
     pub cover: bool,
     /// How many video tracks it holds, covers aside.
     pub pictures: usize,
+    /// The sound and subtitle tracks' languages as tagged, each once ("el").
+    pub sound_languages: Vec<String>,
+    pub subtitle_languages: Vec<String>,
     /// Every sound and subtitle track, and which sound is the main one.
     pub tracks: FileTracks,
 }
@@ -152,6 +155,18 @@ impl Probe {
                         probe.video = Some(picture(stream));
                     }
                 }
+                Some(kind @ ("audio" | "subtitle")) => {
+                    let languages = if kind == "audio" {
+                        &mut probe.sound_languages
+                    } else {
+                        &mut probe.subtitle_languages
+                    };
+                    if let Some(language) = tag(&stream["tags"], "language").and_then(mkv::language) {
+                        if !languages.contains(&language) {
+                            languages.push(language);
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -230,10 +245,12 @@ impl Probe {
             sizes: SizeFacts::default(),
             file: Some(LocalFile {
                 matroska: self.format.split(',').any(|name| name == "matroska"),
-                counts: TrackCounts {
+                overview: TrackOverview {
                     video: self.pictures,
                     sound: self.tracks.sounds.len(),
                     subtitles: self.tracks.subtitles.len(),
+                    sound_languages: self.sound_languages.clone(),
+                    subtitle_languages: self.subtitle_languages.clone(),
                 },
                 start: self.start,
                 cover: self.cover,
@@ -575,13 +592,15 @@ mod tests {
         let info = probe.video_info(&original("Film.mkv"), stamp(3_000_000)).unwrap();
         let file = info.file.unwrap();
         assert_eq!(file.tracks, probe.tracks);
-        // The window is told how many of each, to offer the tracks to choose.
+        // The window is told how many of each, and their languages, to offer the tracks to choose.
         assert_eq!(
-            file.counts,
-            crate::local::TrackCounts {
+            file.overview,
+            crate::local::TrackOverview {
                 video: 1,
                 sound: 3,
-                subtitles: 2
+                subtitles: 2,
+                sound_languages: vec!["en".into(), "el".into()],
+                subtitle_languages: Vec::new(),
             }
         );
         // None marked: the first.

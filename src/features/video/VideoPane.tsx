@@ -1,5 +1,5 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { ArrowLeft, MessageSquareText, Scissors } from "lucide-react";
+import { MessageSquareText, Scissors } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ErrorCard } from "@/components/ErrorCard";
@@ -11,7 +11,7 @@ import { ManualPanel } from "@/features/options/ManualPanel";
 import { LiveWaitCard, Note, PlanCard } from "@/features/options/PlanCard";
 import { CHAT_GROUPS, PresetArea } from "@/features/presets/PresetArea";
 import { changesOf, type Draft, editOf } from "@/features/tracks/draft";
-import { TracksPanel } from "@/features/tracks/TracksPanel";
+import { TracksCard } from "@/features/tracks/TracksCard";
 import { TrimPanel } from "@/features/trim/TrimPanel";
 import { ipc, toAppError } from "@/lib/ipc";
 import { languageName, subtitleLanguages } from "@/lib/languages";
@@ -77,11 +77,11 @@ export function VideoPane({ video }: { video: VideoInfo }) {
   const local = video.file !== undefined;
   // An MKV's tracks can be chosen instead (docs/mkv-editor.md), when there is
   // more to choose than one picture and one sound.
-  const counts = video.file?.counts;
+  const overview = video.file?.overview;
   const tracksOffered =
     video.file?.matroska === true &&
-    counts !== undefined &&
-    (counts.video > 1 || counts.sound > 1 || counts.subtitles > 0);
+    overview !== undefined &&
+    (overview.video > 1 || overview.sound > 1 || overview.subtitles > 0);
   const [tracksOn, setTracksOn] = useState(false);
   // What has been chosen of its tracks so far.
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -212,42 +212,48 @@ export function VideoPane({ video }: { video: VideoInfo }) {
 
   return (
     <>
-      <VideoCard
-        video={video}
-        tracks={
-          tracksOffered && counts
-            ? {
-                count: counts.video + counts.sound + counts.subtitles,
-                open: tracksOn,
-                onToggle: () => setTracksOn(!tracksOn),
-                disabled: running,
-              }
-            : undefined
-        }
-        action={
-          chatOn || canTrim ? (
-            <div className="flex gap-1.5">
-              {chatOn && chatSource && (
-                <Hint label={placingChat ? "Done placing the chat" : "Where the chat goes in the picture"}>
-                  <Button
-                    variant={placingChat ? "secondary" : "outline"}
-                    size="sm"
-                    disabled={running}
-                    onClick={togglePlacingChat}
-                  >
-                    <MessageSquareText /> Chat
+      {/* An MKV's tracks are a card tucked behind the file's (docs/mkv-editor.md). */}
+      <div className="relative">
+        <VideoCard
+          video={video}
+          compact={tracksOn}
+          action={
+            chatOn || canTrim ? (
+              <div className="flex gap-1.5">
+                {chatOn && chatSource && (
+                  <Hint label={placingChat ? "Done placing the chat" : "Where the chat goes in the picture"}>
+                    <Button
+                      variant={placingChat ? "secondary" : "outline"}
+                      size="sm"
+                      disabled={running}
+                      onClick={togglePlacingChat}
+                    >
+                      <MessageSquareText /> Chat
+                    </Button>
+                  </Hint>
+                )}
+                {canTrim && (
+                  <Button variant="outline" size="sm" disabled={running} onClick={openTrim}>
+                    <Scissors /> Trim
                   </Button>
-                </Hint>
-              )}
-              {canTrim && (
-                <Button variant="outline" size="sm" disabled={running} onClick={openTrim}>
-                  <Scissors /> Trim
-                </Button>
-              )}
-            </div>
-          ) : null
-        }
-      />
+                )}
+              </div>
+            ) : null
+          }
+        />
+        {tracksOffered && video.file && overview && (
+          <TracksCard
+            fileKey={video.file.key}
+            version={video.file.version}
+            overview={overview}
+            open={tracksOn}
+            onOpenChange={setTracksOn}
+            draft={draft}
+            onDraft={setDraft}
+            disabled={running}
+          />
+        )}
+      </div>
 
       {/* A channel's link is the same for every stream it records. */}
       {!live && !local && <AlreadyDownloaded url={video.url} exclude={downloadIds} />}
@@ -290,32 +296,17 @@ export function VideoPane({ video }: { video: VideoInfo }) {
         )}
       </AnimatePresence>
 
-      {/* Choosing its tracks replaces converting: the presets, their facets and Trim go away. */}
-      <AnimatePresence initial={false} mode="popLayout">
-        {tracksOn ? (
-          <motion.div
-            key="tracks-header"
-            className="flex items-center gap-1 pt-1"
-            initial={{ opacity: 0, y: -4 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, transition: { duration: 0.1 } }}
-            transition={spring}
-          >
-            <Button variant="ghost" size="sm" className="-ml-2" disabled={running} onClick={() => setTracksOn(false)}>
-              <ArrowLeft /> Convert instead
-            </Button>
-            <span aria-hidden className="text-subtle-foreground">
-              ·
-            </span>
-            <h3 className="px-1.5 text-[13px] font-semibold">Tracks</h3>
-          </motion.div>
-        ) : (
+      {/* Choosing an MKV's tracks replaces converting: its choices and plan fold away, as Trim does. */}
+      <AnimatePresence initial={false}>
+        {!tracksOn && (
           <motion.div
             key="convert"
-            initial={{ opacity: 0, y: -4 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, transition: { duration: 0.1 } }}
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto", filter: "blur(0px)" }}
+            exit={{ opacity: 0, height: 0, filter: "blur(3px)" }}
             transition={spring}
+            // Its parts keep the pane's spacing between them.
+            className="space-y-3"
           >
             {/* Extra room below: the choices end here and the summary of the result begins. */}
             <div className="space-y-2 pt-1 pb-2">
@@ -342,37 +333,28 @@ export function VideoPane({ video }: { video: VideoInfo }) {
                 )}
               </AnimatePresence>
             </div>
+            {live && live.status !== "live" ? (
+              <LiveWaitCard status={live.status} />
+            ) : plan.isError ? (
+              <ErrorCard error={toAppError(plan.error)} />
+            ) : (
+              <PlanCard
+                plan={plan.data}
+                clips={trims.length}
+                customizing={customizing}
+                onCustomize={() =>
+                  customizing ? useChoices.getState().chooseGroup(useChoices.getState().choices?.group ?? "") : useChoices.getState().customize()
+                }
+                customizable={!local}
+                onTrim={canTrim ? openTrim : undefined}
+                perHour={live !== null}
+                subtitles={subtitleLabel}
+                measuring={measuring}
+              />
+            )}
           </motion.div>
         )}
       </AnimatePresence>
-
-      {tracksOn && video.file ? (
-        <TracksPanel
-          fileKey={video.file.key}
-          version={video.file.version}
-          draft={draft}
-          onDraft={setDraft}
-          disabled={running}
-        />
-      ) : live && live.status !== "live" ? (
-        <LiveWaitCard status={live.status} />
-      ) : plan.isError ? (
-        <ErrorCard error={toAppError(plan.error)} />
-      ) : (
-        <PlanCard
-          plan={plan.data}
-          clips={trims.length}
-          customizing={customizing}
-          onCustomize={() =>
-            customizing ? useChoices.getState().chooseGroup(useChoices.getState().choices?.group ?? "") : useChoices.getState().customize()
-          }
-          customizable={!local}
-          onTrim={canTrim ? openTrim : undefined}
-          perHour={live !== null}
-          subtitles={subtitleLabel}
-          measuring={measuring}
-        />
-      )}
 
       <AnimatePresence initial={false}>
         {subtitlesMissing && !tracksOn && (

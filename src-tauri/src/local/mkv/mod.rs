@@ -27,6 +27,7 @@ use crate::error::{AppError, ErrorKind, Result};
 use crate::process;
 use crate::settings::SettingsStore;
 pub use chapters::Shape;
+pub(crate) use probe::language;
 
 /// What an MKV holds.
 #[derive(Debug, Clone, PartialEq, Serialize)]

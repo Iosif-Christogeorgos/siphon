@@ -1,4 +1,4 @@
-import { AudioLines, ChevronRight, ImageOff, LogIn, X } from "lucide-react";
+import { AudioLines, ImageOff, LogIn } from "lucide-react";
 import { motion } from "motion/react";
 import { type ReactNode, useState } from "react";
 import { Hint } from "@/components/ui/tooltip";
@@ -21,15 +21,16 @@ function codecs(format: Format | undefined): string | null {
   return parts.length > 0 ? parts.join(" + ") : null;
 }
 
-/** An MKV's tracks, offered as a chip among the card's: opens them to choose which it keeps. */
-export interface TracksChip {
-  count: number;
-  open: boolean;
-  onToggle: () => void;
-  disabled: boolean;
-}
-
-export function VideoCard({ video, action, tracks }: { video: VideoInfo; action?: ReactNode; tracks?: TracksChip }) {
+export function VideoCard({
+  video,
+  action,
+  compact = false,
+}: {
+  video: VideoInfo;
+  action?: ReactNode;
+  /** A slim header, its picture small: while an MKV's tracks have the room below. */
+  compact?: boolean;
+}) {
   const best = bestVideoFormat(video.formats);
   const quality = best ? resolutionLabel(best) : null;
   const file = video.file;
@@ -38,8 +39,15 @@ export function VideoCard({ video, action, tracks }: { video: VideoInfo; action?
     : [video.channel, displayHost(video.url)].filter(Boolean).join(" · ");
 
   return (
-    <article className="group/card flex gap-4 rounded-[1.25rem] border bg-card p-3 shadow-card">
+    <article
+      className={cn(
+        // Above the card tucked behind it (an MKV's tracks).
+        "group/card relative z-10 flex rounded-[1.25rem] border bg-card shadow-card transition-[padding,gap] duration-700 ease-drawer motion-reduce:transition-none",
+        compact ? "gap-3.5 p-2.5" : "gap-4 p-3",
+      )}
+    >
       <Thumbnail
+        compact={compact}
         src={video.thumbnail}
         duration={video.duration}
         live={video.live}
@@ -48,15 +56,17 @@ export function VideoCard({ video, action, tracks }: { video: VideoInfo; action?
       <div className="flex min-w-0 flex-1 flex-col py-1 pr-2">
         <h2
           data-selectable
-          className="line-clamp-2 text-[15px] leading-snug font-semibold tracking-tight text-pretty"
+          className={cn(
+            "text-[15px] leading-snug font-semibold tracking-tight text-pretty",
+            compact ? "line-clamp-1" : "line-clamp-2",
+          )}
         >
           {file ? file.name : video.title}
         </h2>
         <p className="mt-1 truncate text-[13px] text-muted-foreground" title={file?.folder}>
           {byline}
         </p>
-        {/* With its tracks open, Trim goes away: the row keeps its height, so the chips don't move. */}
-        <div className={cn("mt-auto flex flex-wrap items-center gap-1.5 pt-3", tracks && "min-h-11")}>
+        <div className={cn("mt-auto flex flex-wrap items-center gap-1.5", compact ? "pt-1.5" : "pt-3")}>
           {video.live && <LiveBadges live={video.live} />}
           {file ? (
             <FileBadges format={video.formats[0]} quality={quality} />
@@ -64,7 +74,6 @@ export function VideoCard({ video, action, tracks }: { video: VideoInfo; action?
             quality && <Badge accent>Up to {quality}</Badge>
           )}
           {best?.dynamic_range && best.dynamic_range !== "SDR" && <Badge>{best.dynamic_range}</Badge>}
-          {tracks && <TracksChipButton {...tracks} />}
           {video.view_count != null && !video.live && <Badge>{formatCount(video.view_count)} views</Badge>}
           {video.with_account && (
             <Hint
@@ -97,29 +106,6 @@ function FileBadges({ format, quality }: { format: Format | undefined; quality: 
   );
 }
 
-/** "6 tracks ›": a chip like the others that can be pressed; open, it shows ✕ to close them. */
-function TracksChipButton({ count, open, onToggle, disabled }: TracksChip) {
-  return (
-    <Hint label={open ? "Back to converting" : "Choose which tracks it keeps, without converting"}>
-      <button
-        type="button"
-        aria-pressed={open}
-        disabled={disabled}
-        onClick={onToggle}
-        className={cn(
-          "inline-flex items-center gap-0.5 rounded-md py-0.5 pr-1 pl-1.5 text-xs font-medium tabular-nums transition-colors outline-none focus-visible:ring-[3px] focus-visible:ring-ring/40 disabled:pointer-events-none disabled:opacity-50",
-          open
-            ? "bg-primary text-primary-foreground hover:bg-primary-hover"
-            : "bg-primary-soft text-primary hover:bg-primary/15",
-        )}
-      >
-        {count} tracks
-        {open ? <X className="size-3" aria-hidden /> : <ChevronRight className="size-3" aria-hidden />}
-      </button>
-    </Hint>
-  );
-}
-
 /** How long it has been on air and how many watch; when it starts; or that the channel is offline. */
 function LiveBadges({ live }: { live: Live }) {
   const now = useNow();
@@ -142,17 +128,24 @@ function Thumbnail({
   duration,
   live,
   sound = false,
+  compact = false,
 }: {
   src: string | null;
   duration: number | null;
   live: Live | null;
   /** A sound file: without a cover, it shows that rather than a missing picture. */
   sound?: boolean;
+  compact?: boolean;
 }) {
   const [state, setState] = useState<"loading" | "loaded" | "failed">(src ? "loading" : "failed");
 
   return (
-    <div className="relative aspect-video w-52 shrink-0 overflow-hidden rounded-xl bg-muted">
+    <div
+      className={cn(
+        "relative aspect-video shrink-0 overflow-hidden bg-muted transition-[width,border-radius] duration-700 ease-drawer motion-reduce:transition-none",
+        compact ? "w-28 rounded-[0.6rem]" : "w-52 rounded-xl",
+      )}
+    >
       {state === "failed" ? (
         <div className="grid size-full place-items-center text-subtle-foreground">
           {sound ? <AudioLines className="size-6" /> : <ImageOff className="size-5" />}
@@ -176,7 +169,7 @@ function Thumbnail({
           />
         </>
       )}
-      {duration != null && !live && (
+      {duration != null && !live && !compact && (
         <span className="absolute right-1.5 bottom-1.5 rounded-md bg-black/70 px-1.5 py-0.5 text-[11px] leading-none font-medium text-white tabular-nums backdrop-blur-sm">
           {formatDuration(duration)}
         </span>

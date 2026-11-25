@@ -103,7 +103,7 @@ pub fn parse(json: &str) -> Option<Contents> {
 
 /// A track's language tag as Siphon names languages ("gre" → "el"); None for
 /// the tags that name none: undetermined, several, none at all.
-fn language(tag: &str) -> Option<String> {
+pub(crate) fn language(tag: &str) -> Option<String> {
     let tag = tag.trim().to_ascii_lowercase();
     (!tag.is_empty() && !["und", "mul", "zxx", "mis"].contains(&tag.as_str())).then(|| language_tag(&tag))
 }

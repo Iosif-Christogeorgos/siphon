@@ -131,7 +131,7 @@ impl Original {
             size: stamp.size,
             version: stamp.version(),
             matroska: false,
-            counts: TrackCounts::default(),
+            overview: TrackOverview::default(),
             start: 0.0,
             cover: false,
             tracks: FileTracks::default(),
@@ -165,9 +165,10 @@ pub struct LocalFile {
     /// It is a Matroska file inside, whatever its name says: its tracks can
     /// be chosen (docs/mkv-editor.md). Known once it is read.
     pub matroska: bool,
-    /// How many tracks of each kind it holds: its tracks are offered to be
-    /// chosen when there is more than one picture and one sound.
-    pub counts: TrackCounts,
+    /// How many tracks of each kind it holds, and in which languages: its
+    /// tracks are offered to be chosen when there is more than one picture
+    /// and one sound.
+    pub overview: TrackOverview,
     /// Where its timestamps start, in seconds: an MPEG-TS from OBS starts a
     /// second or so in. A part to cut out is chosen from its start, and cut
     /// by its timestamps.
@@ -181,12 +182,18 @@ pub struct LocalFile {
     pub tracks: FileTracks,
 }
 
-/// How many video (covers aside), sound and subtitle tracks a file holds.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
-pub struct TrackCounts {
+/// What a file holds, track by track, as its tags say: how many video
+/// (covers aside), sound and subtitle tracks, and their languages. Enough to
+/// say what is in it before its tracks are read for what they are.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct TrackOverview {
     pub video: usize,
     pub sound: usize,
     pub subtitles: usize,
+    /// The sound tracks' languages as tagged, each once, in the file's order ("el").
+    pub sound_languages: Vec<String>,
+    /// The subtitle tracks' languages, the same way.
+    pub subtitle_languages: Vec<String>,
 }
 
 /// What came of files dropped on the window or picked with Browse.
