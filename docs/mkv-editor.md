@@ -25,18 +25,24 @@ An ordered list in Settings (1. Greek, 2. English); the subtitle language alread
 
 ## Certain before anything is left out
 
-A track is only left out when Siphon is certain of its language. Anything else is kept and marked, never guessed.
+A track is only left out when Siphon is certain of its language. Anything else is kept and marked, never guessed. Subtitles are read for what they say, not only for what they are labelled (the owner's call, 2026-11-25); sound is taken by its label, as nothing short of a speech model can hear it.
 
-| What tells a track's language | How it is taken |
+| Track | How its language is known |
 | --- | --- |
-| The language tag in the file | Trusted |
-| No language element at all | English, by Matroska's own rule: MKVToolNix long left it out for English tracks, and every player reads it so (the Korra episodes' English tracks have none) |
-| `und` | Unknown: kept, marked *Language unknown* |
-| A text subtitle (SRT, ASS) without a tag | Its text is read and its language told from it; acted on only when the answer is clear (Greek from English is plain from the alphabet) |
-| Sound or picture subtitles (PGS, VobSub) without a tag | Can't be told without recognising speech or text: always kept, marked |
-| The track's name ("English", "Ελληνικά") | Never enough on its own to leave a track out. Shown; where it disagrees with the tag (tagged English, named Greek), the track is kept and marked *Check this one* |
+| Text subtitles (SRT, ASS, WebVTT) | **Read.** Their words are taken out with FFmpeg and their language told from them by a small detector built into Siphon (under 1 MB, nothing to download). An episode's hundreds of lines leave no doubt; Greek is plain from its alphabet alone |
+| Picture subtitles (PGS, VobSub) | **Read with Windows' own OCR** (`Windows.Media.Ocr`, part of Windows, nothing to download): a few dozen of its pictures are drawn with FFmpeg, black on white, read, and their words told as above. Windows reads only the languages installed on the PC; a track in another comes out as nonsense, and is unknown |
+| Sound | **Its tag.** No tag, or `und`: kept, marked *Language unknown*. A tag that looks wrong is kept and marked *Check this one*, never acted on: two sound tracks with the same language and channels, neither named commentary; a file named for a language (`EN-GR`) with no track tagged so; a name that says another language than the tag |
+| No language element at all | English, by Matroska's own rule: MKVToolNix long left it out for English tracks, and every player reads it so (the Korra episodes' English tracks have none). For subtitles, read all the same |
+| The track's name ("English", "Ελληνικά") | Never enough on its own. Shown, and a reason to mark a track when it disagrees |
 | Which sound is the original | The file's original flag, else the one marked to play first; if neither settles it, every sound track is kept and the file marked |
-| Which subtitles are forced | The forced flag, or Forced in the name; this only decides what plays first, never what is left out |
+
+What subtitles say settles more than their language:
+
+- **A wrong tag is found and put right.** A track tagged English whose words are Greek is Greek, and the new file says so.
+- **SDH** is known by its words too: sounds in brackets (`[door slams]`), `♪`, speakers named in capitals (`JOHN:`), besides the hearing-impaired flag or SDH in the name.
+- **Forced subtitles** are known by having far fewer lines than the full track in the same language, besides the forced flag or Forced in the name. This only decides what plays first, never what is left out.
+
+Tried 2026-11-25 on Korra S01E01: six of its English PGS pictures were read word for word by Windows' Greek and English readers alike ("Hey, you! Stop! You can't fish here!"), Greek lines by the Greek reader ("Δεν έχω λεφτά."), while the English reader made nonsense of them ("Atv éxw ÅEQTå."); about 12 ms a picture. Whisper (a speech model, 35–80 MB with what runs it) was weighed for sound and left out: tags on sound are nearly always right, untagged sound is kept anyway, and a small model's confident mistake would be worse than a mark.
 
 In a season, a file with anything uncertain is marked (*2 tracks to check*), so nothing is left out unseen.
 
