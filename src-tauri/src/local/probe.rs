@@ -7,7 +7,7 @@ use std::path::Path;
 
 use serde_json::Value;
 
-use super::{LocalFile, Original, Stamp};
+use super::{LocalFile, Original, Stamp, TrackCounts};
 use crate::error::{AppError, ErrorKind, Result};
 use crate::plan::codecs::{AudioCodec, VideoCodec};
 use crate::plan::sizes::SizeFacts;
@@ -58,6 +58,8 @@ pub struct Probe {
     pub audio: Option<Sound>,
     /// A cover picture (an audio file's art), not video.
     pub cover: bool,
+    /// How many video tracks it holds, covers aside.
+    pub pictures: usize,
     /// Every sound and subtitle track, and which sound is the main one.
     pub tracks: FileTracks,
 }
@@ -144,7 +146,12 @@ impl Probe {
             let is_cover = stream["disposition"]["attached_pic"].as_i64() == Some(1);
             match stream["codec_type"].as_str() {
                 Some("video") if is_cover => probe.cover = true,
-                Some("video") if probe.video.is_none() => probe.video = Some(picture(stream)),
+                Some("video") => {
+                    probe.pictures += 1;
+                    if probe.video.is_none() {
+                        probe.video = Some(picture(stream));
+                    }
+                }
                 _ => {}
             }
         }
@@ -223,6 +230,11 @@ impl Probe {
             sizes: SizeFacts::default(),
             file: Some(LocalFile {
                 matroska: self.format.split(',').any(|name| name == "matroska"),
+                counts: TrackCounts {
+                    video: self.pictures,
+                    sound: self.tracks.sounds.len(),
+                    subtitles: self.tracks.subtitles.len(),
+                },
                 start: self.start,
                 cover: self.cover,
                 tracks: self.tracks.clone(),
@@ -502,6 +514,8 @@ mod tests {
         let probe = Probe::parse(SONG_WITH_COVER).unwrap();
         assert!(probe.cover);
         assert!(probe.video.is_none());
+        // A cover is no video track to choose.
+        assert_eq!(probe.pictures, 0);
         let info = probe.video_info(&original("Song.mp3"), stamp(195_034)).unwrap();
         let format = &info.formats[0];
         assert_eq!(format.kind, FormatKind::Audio);
@@ -559,7 +573,17 @@ mod tests {
             .collect();
         assert_eq!(subtitles, [(0, "subrip"), (1, "ass")]);
         let info = probe.video_info(&original("Film.mkv"), stamp(3_000_000)).unwrap();
-        assert_eq!(info.file.unwrap().tracks, probe.tracks);
+        let file = info.file.unwrap();
+        assert_eq!(file.tracks, probe.tracks);
+        // The window is told how many of each, to offer the tracks to choose.
+        assert_eq!(
+            file.counts,
+            crate::local::TrackCounts {
+                video: 1,
+                sound: 3,
+                subtitles: 2
+            }
+        );
         // None marked: the first.
         let unmarked = FILM.replace(r#""default": 1"#, r#""default": 0"#);
         assert_eq!(Probe::parse(&unmarked).unwrap().tracks.main, 0);

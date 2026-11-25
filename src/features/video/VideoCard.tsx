@@ -1,4 +1,4 @@
-import { AudioLines, ImageOff, LogIn } from "lucide-react";
+import { AudioLines, ChevronRight, ImageOff, LogIn, X } from "lucide-react";
 import { motion } from "motion/react";
 import { type ReactNode, useState } from "react";
 import { Hint } from "@/components/ui/tooltip";
@@ -21,7 +21,15 @@ function codecs(format: Format | undefined): string | null {
   return parts.length > 0 ? parts.join(" + ") : null;
 }
 
-export function VideoCard({ video, action }: { video: VideoInfo; action?: ReactNode }) {
+/** An MKV's tracks, offered as a chip among the card's: opens them to choose which it keeps. */
+export interface TracksChip {
+  count: number;
+  open: boolean;
+  onToggle: () => void;
+  disabled: boolean;
+}
+
+export function VideoCard({ video, action, tracks }: { video: VideoInfo; action?: ReactNode; tracks?: TracksChip }) {
   const best = bestVideoFormat(video.formats);
   const quality = best ? resolutionLabel(best) : null;
   const file = video.file;
@@ -47,7 +55,8 @@ export function VideoCard({ video, action }: { video: VideoInfo; action?: ReactN
         <p className="mt-1 truncate text-[13px] text-muted-foreground" title={file?.folder}>
           {byline}
         </p>
-        <div className="mt-auto flex flex-wrap items-center gap-1.5 pt-3">
+        {/* With its tracks open, Trim goes away: the row keeps its height, so the chips don't move. */}
+        <div className={cn("mt-auto flex flex-wrap items-center gap-1.5 pt-3", tracks && "min-h-11")}>
           {video.live && <LiveBadges live={video.live} />}
           {file ? (
             <FileBadges format={video.formats[0]} quality={quality} />
@@ -55,6 +64,7 @@ export function VideoCard({ video, action }: { video: VideoInfo; action?: ReactN
             quality && <Badge accent>Up to {quality}</Badge>
           )}
           {best?.dynamic_range && best.dynamic_range !== "SDR" && <Badge>{best.dynamic_range}</Badge>}
+          {tracks && <TracksChipButton {...tracks} />}
           {video.view_count != null && !video.live && <Badge>{formatCount(video.view_count)} views</Badge>}
           {video.with_account && (
             <Hint
@@ -84,6 +94,29 @@ function FileBadges({ format, quality }: { format: Format | undefined; quality: 
       {quality && <Badge accent>{quality}</Badge>}
       {held && <Badge>{held}</Badge>}
     </>
+  );
+}
+
+/** "6 tracks ›": a chip like the others that can be pressed; open, it shows ✕ to close them. */
+function TracksChipButton({ count, open, onToggle, disabled }: TracksChip) {
+  return (
+    <Hint label={open ? "Back to converting" : "Choose which tracks it keeps, without converting"}>
+      <button
+        type="button"
+        aria-pressed={open}
+        disabled={disabled}
+        onClick={onToggle}
+        className={cn(
+          "inline-flex items-center gap-0.5 rounded-md py-0.5 pr-1 pl-1.5 text-xs font-medium tabular-nums transition-colors outline-none focus-visible:ring-[3px] focus-visible:ring-ring/40 disabled:pointer-events-none disabled:opacity-50",
+          open
+            ? "bg-primary text-primary-foreground hover:bg-primary-hover"
+            : "bg-primary-soft text-primary hover:bg-primary/15",
+        )}
+      >
+        {count} tracks
+        {open ? <X className="size-3" aria-hidden /> : <ChevronRight className="size-3" aria-hidden />}
+      </button>
+    </Hint>
   );
 }
 

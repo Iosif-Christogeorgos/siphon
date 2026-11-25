@@ -1,4 +1,4 @@
-import { Layers, RefreshCw, SlidersHorizontal } from "lucide-react";
+import { RefreshCw, SlidersHorizontal } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect } from "react";
 import { Facet } from "@/components/ui/facet";
@@ -29,9 +29,6 @@ const NOT_FOR_FILES = "max";
 /** For a file, Customize is the row's last choice rather than a link under the summary. */
 const CUSTOMIZE = "customize";
 
-/** For an MKV, choosing which of its tracks it keeps (docs/mkv-editor.md). */
-const TRACKS = "tracks";
-
 /**
  * Where the download is going: the group (Max quality, Watch, …) on top, then
  * one row of facets: the target in it, the options that target has, the
@@ -47,7 +44,6 @@ export function PresetArea({
   subtitles,
   chat = false,
   file = false,
-  tracks,
 }: {
   /** The plan for the current choice; gives the quality facet its options and sizes. */
   summary: PlanSummary | undefined;
@@ -64,8 +60,6 @@ export function PresetArea({
   chat?: boolean;
   /** A file on this PC: Max quality isn't offered (see `NOT_FOR_FILES`), and Customize is in the row. */
   file?: boolean;
-  /** An MKV: Tracks ends the row, and while it is chosen the choices for converting are put away. */
-  tracks?: { on: boolean; onChange: (on: boolean) => void };
 }) {
   const registry = useRegistry();
   const choices = useChoices((state) => state.choices);
@@ -97,10 +91,8 @@ export function PresetArea({
         label="What it’s for"
         group="preset-group"
         size="md"
-        value={tracks?.on ? TRACKS : presetActive ? group.id : file ? CUSTOMIZE : null}
+        value={presetActive ? group.id : file ? CUSTOMIZE : null}
         onChange={(id) => {
-          if (id === TRACKS) return tracks?.onChange(true);
-          tracks?.onChange(false);
           if (id === CUSTOMIZE) useChoices.getState().customize();
           else chooseGroup(id);
         }}
@@ -129,17 +121,6 @@ export function PresetArea({
                 },
               ]
             : []),
-          ...(tracks
-            ? [
-                {
-                  id: TRACKS,
-                  label: "Tracks",
-                  icon: <Layers />,
-                  hint: "Its sound, subtitle and video tracks, and which it keeps",
-                  disabled: false,
-                },
-              ]
-            : []),
         ]}
       />
 
@@ -148,8 +129,6 @@ export function PresetArea({
           // A new group brings its own facets: they rise in together.
           key={presetActive ? group.id : choices.active.kind}
           data-facet-row
-          // Choosing an MKV's tracks puts the choices for converting away.
-          hidden={tracks?.on}
           // `empty:hidden` takes the margin too, so a group without options (Max quality) leaves no gap.
           className="relative mt-3 flex flex-wrap items-center gap-2 empty:hidden"
           initial={{ opacity: 0, y: -4 }}

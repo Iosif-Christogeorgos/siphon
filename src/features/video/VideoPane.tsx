@@ -1,5 +1,5 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { MessageSquareText, Scissors } from "lucide-react";
+import { ArrowLeft, MessageSquareText, Scissors } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ErrorCard } from "@/components/ErrorCard";
@@ -75,8 +75,13 @@ function convertLabel({
 export function VideoPane({ video }: { video: VideoInfo }) {
   // A file on this PC, converted rather than downloaded.
   const local = video.file !== undefined;
-  // An MKV's tracks can be chosen instead (docs/mkv-editor.md).
-  const tracksOffered = video.file?.matroska === true;
+  // An MKV's tracks can be chosen instead (docs/mkv-editor.md), when there is
+  // more to choose than one picture and one sound.
+  const counts = video.file?.counts;
+  const tracksOffered =
+    video.file?.matroska === true &&
+    counts !== undefined &&
+    (counts.video > 1 || counts.sound > 1 || counts.subtitles > 0);
   const [tracksOn, setTracksOn] = useState(false);
   // What has been chosen of its tracks so far.
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -209,6 +214,16 @@ export function VideoPane({ video }: { video: VideoInfo }) {
     <>
       <VideoCard
         video={video}
+        tracks={
+          tracksOffered && counts
+            ? {
+                count: counts.video + counts.sound + counts.subtitles,
+                open: tracksOn,
+                onToggle: () => setTracksOn(!tracksOn),
+                disabled: running,
+              }
+            : undefined
+        }
         action={
           chatOn || canTrim ? (
             <div className="flex gap-1.5">
@@ -275,32 +290,61 @@ export function VideoPane({ video }: { video: VideoInfo }) {
         )}
       </AnimatePresence>
 
-      {/* Extra room below: the choices end here and the summary of the result begins. */}
-      <div className="space-y-2 pt-1 pb-2">
-        <PresetArea
-          summary={plan.data}
-          disabled={running}
-          live={live !== null}
-          from={fromStartOffered.data ? { start: fromStart, onChange: setFromStart } : undefined}
-          subtitles={live ? undefined : video.subtitles}
-          chat={chatSource !== null}
-          file={local}
-          tracks={tracksOffered ? { on: tracksOn, onChange: setTracksOn } : undefined}
-        />
-        <AnimatePresence initial={false}>
-          {customizing && !tracksOn && (
-            <motion.div
-              key="custom"
-              initial={{ opacity: 0, height: 0 }}
-              animate={{ opacity: 1, height: "auto" }}
-              exit={{ opacity: 0, height: 0 }}
-              transition={spring}
-            >
-              <ManualPanel video={video} disabled={running} />
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </div>
+      {/* Choosing its tracks replaces converting: the presets, their facets and Trim go away. */}
+      <AnimatePresence initial={false} mode="popLayout">
+        {tracksOn ? (
+          <motion.div
+            key="tracks-header"
+            className="flex items-center gap-1 pt-1"
+            initial={{ opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, transition: { duration: 0.1 } }}
+            transition={spring}
+          >
+            <Button variant="ghost" size="sm" className="-ml-2" disabled={running} onClick={() => setTracksOn(false)}>
+              <ArrowLeft /> Convert instead
+            </Button>
+            <span aria-hidden className="text-subtle-foreground">
+              ·
+            </span>
+            <h3 className="px-1.5 text-[13px] font-semibold">Tracks</h3>
+          </motion.div>
+        ) : (
+          <motion.div
+            key="convert"
+            initial={{ opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, transition: { duration: 0.1 } }}
+            transition={spring}
+          >
+            {/* Extra room below: the choices end here and the summary of the result begins. */}
+            <div className="space-y-2 pt-1 pb-2">
+              <PresetArea
+                summary={plan.data}
+                disabled={running}
+                live={live !== null}
+                from={fromStartOffered.data ? { start: fromStart, onChange: setFromStart } : undefined}
+                subtitles={live ? undefined : video.subtitles}
+                chat={chatSource !== null}
+                file={local}
+              />
+              <AnimatePresence initial={false}>
+                {customizing && (
+                  <motion.div
+                    key="custom"
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: "auto" }}
+                    exit={{ opacity: 0, height: 0 }}
+                    transition={spring}
+                  >
+                    <ManualPanel video={video} disabled={running} />
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {tracksOn && video.file ? (
         <TracksPanel

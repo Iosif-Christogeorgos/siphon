@@ -191,6 +191,8 @@ export interface LocalFile {
   version: string;
   /** A Matroska file inside, whatever its name says: its tracks can be chosen. Known once it is read. */
   matroska: boolean;
+  /** How many video (covers aside), sound and subtitle tracks it holds. */
+  counts: { video: number; sound: number; subtitles: number };
 }
 
 // ── local/mkv/mod.rs ────────────────────────────────────────────────────

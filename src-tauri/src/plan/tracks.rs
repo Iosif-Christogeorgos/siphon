@@ -381,6 +381,7 @@ mod tests {
                 size: 1,
                 version: "1-0".into(),
                 matroska: false,
+                counts: Default::default(),
                 start: 0.0,
                 cover: false,
                 tracks: FileTracks {

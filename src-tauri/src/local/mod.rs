@@ -131,6 +131,7 @@ impl Original {
             size: stamp.size,
             version: stamp.version(),
             matroska: false,
+            counts: TrackCounts::default(),
             start: 0.0,
             cover: false,
             tracks: FileTracks::default(),
@@ -164,6 +165,9 @@ pub struct LocalFile {
     /// It is a Matroska file inside, whatever its name says: its tracks can
     /// be chosen (docs/mkv-editor.md). Known once it is read.
     pub matroska: bool,
+    /// How many tracks of each kind it holds: its tracks are offered to be
+    /// chosen when there is more than one picture and one sound.
+    pub counts: TrackCounts,
     /// Where its timestamps start, in seconds: an MPEG-TS from OBS starts a
     /// second or so in. A part to cut out is chosen from its start, and cut
     /// by its timestamps.
@@ -175,6 +179,14 @@ pub struct LocalFile {
     /// Its sound and subtitle tracks, and which sound is its main one (see `plan::tracks`).
     #[serde(skip)]
     pub tracks: FileTracks,
+}
+
+/// How many video (covers aside), sound and subtitle tracks a file holds.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+pub struct TrackCounts {
+    pub video: usize,
+    pub sound: usize,
+    pub subtitles: usize,
 }
 
 /// What came of files dropped on the window or picked with Browse.
