@@ -26,7 +26,8 @@ use std::path::Path;
 use crate::ffmpeg::encoders::Hardware;
 use crate::plan::codecs::{Container, VideoCodec};
 use crate::plan::subtitles::SubtitleStep;
-use crate::plan::{ReadFrom, Trim};
+use crate::plan::tracks::{subtitle_encoder, KeptSubtitle};
+use crate::plan::{AudioAction, ReadFrom, Trim};
 
 /// Two timestamps closer than this are the same frame. Containers store
 /// times in milliseconds or 1/90000 s, so a frame's time can move by up to
@@ -659,33 +660,59 @@ pub fn copy_args(source: &Path, from: f64, until: Option<f64>, codec: VideoCodec
     args
 }
 
-/// How the clip's audio is made.
-#[derive(Debug, Clone, PartialEq)]
-pub enum AudioPiece {
-    /// Copy the packets whose middle falls inside the clip.
-    Copy,
-    /// Encode exactly the clip's span with these encoder arguments.
-    Encode(Vec<String>),
-}
-
-/// The audio of `[from, until)` (source times), kept on the source's timestamps.
-pub fn audio_args(source: &Path, from: f64, until: f64, piece: &AudioPiece, output: &Path) -> Vec<OsString> {
+/// The audio of `[from, until)` (source times), kept on the source's
+/// timestamps: the sound tracks `tracks` (their places among the source's,
+/// `0:a:N`), the main one first, each made as `action` says.
+pub fn audio_args(
+    source: &Path,
+    from: f64,
+    until: f64,
+    tracks: &[(usize, &AudioAction)],
+    output: &Path,
+) -> Vec<OsString> {
     let mut args = os(&["-hide_banner", "-nostdin", "-y", "-loglevel", "error", "-copyts", "-i"]);
     args.push(source.into());
-    args.extend(os(&["-map", "0:a:0", "-vn", "-sn", "-dn"]));
-    match piece {
-        AudioPiece::Copy => args.extend(os(&[
-            "-c:a",
-            "copy",
-            "-bsf:a",
-            &format!("noise=drop=lt(pts*tb+duration*tb/2\\,{from})+gte(pts*tb+duration*tb/2\\,{until})"),
-        ])),
-        AudioPiece::Encode(encoder) => {
-            args.extend(os(&["-af", &format!("atrim=start={from}:end={until}")]));
-            args.extend(encoder.iter().map(OsString::from));
-        }
+    for (track, _) in tracks {
+        args.extend(os(&["-map", &format!("0:a:{track}")]));
     }
+    args.extend(os(&["-vn", "-sn", "-dn"]));
+    let actions: Vec<&AudioAction> = tracks.iter().map(|(_, action)| *action).collect();
+    args.extend(
+        super::sound_tracks_args(&actions, Some((from, until)))
+            .into_iter()
+            .map(OsString::from),
+    );
     args.extend(os(&["-f", "matroska"]));
+    args.push(output.into());
+    args
+}
+
+/// A file's own subtitle tracks (`kept`) for the clip `[from, until)`
+/// (source times), moved to start at zero as the joined clip does: in
+/// Matroska, which holds every kind, until they are put in the file type
+/// asked for with the clip (see `ffmpeg::rewrap_args`). A cue that starts
+/// before the clip is dropped.
+pub fn subtitles_args(source: &Path, from: f64, until: f64, kept: &[KeptSubtitle], output: &Path) -> Vec<OsString> {
+    let mut args = os(&["-hide_banner", "-nostdin", "-y", "-loglevel", "error", "-copyts", "-i"]);
+    args.push(source.into());
+    for subtitle in kept {
+        args.extend(os(&["-map", &format!("0:s:{}", subtitle.track)]));
+    }
+    args.extend(os(&["-vn", "-an", "-dn"]));
+    for (index, subtitle) in kept.iter().enumerate() {
+        args.extend(os(&[
+            &format!("-c:s:{index}"),
+            subtitle_encoder(&subtitle.source, subtitle.in_piece()),
+        ]));
+    }
+    args.extend(os(&[
+        "-bsf:s",
+        &format!("noise=drop=lt(pts*tb\\,{from})+gte(pts*tb\\,{until})"),
+        "-output_ts_offset",
+        &format!("-{from}"),
+        "-f",
+        "matroska",
+    ]));
     args.push(output.into());
     args
 }
@@ -737,12 +764,13 @@ impl Index {
 }
 
 ///
+/// `audio` is the audio's file, and how many sound tracks it holds.
 /// `subtitles` is the subtitle file and its step, on the video's own clock
 /// like the pieces: the join shifts it with them.
 #[allow(clippy::too_many_arguments)]
 pub fn join_args(
     pieces: &[&str],
-    audio: Option<&str>,
+    audio: Option<(&str, usize)>,
     subtitles: Option<(&Path, &SubtitleStep)>,
     start: f64,
     codec: VideoCodec,
@@ -753,7 +781,7 @@ pub fn join_args(
     let mut args = os(&["-hide_banner", "-nostdin", "-y", "-loglevel", "error", "-copyts", "-i"]);
     // The concat protocol reads the pieces as one stream, timestamps as they are.
     args.push(format!("concat:{}", pieces.join("|")).into());
-    if let Some(audio) = audio {
+    if let Some((audio, _)) = audio {
         args.extend(os(&["-i", audio]));
     }
     if let Some((file, _)) = subtitles {
@@ -761,8 +789,11 @@ pub fn join_args(
         args.push(file.into());
     }
     args.extend(os(&["-map", "0:v:0"]));
-    if audio.is_some() {
-        args.extend(os(&["-map", "1:a:0"]));
+    match audio {
+        Some((_, 1)) => args.extend(os(&["-map", "1:a:0"])),
+        // A file's other sound tracks, after its main one.
+        Some(_) => args.extend(os(&["-map", "1:a"])),
+        None => {}
     }
     args.extend(os(&["-c", "copy"]));
     if let Some((_, step)) = subtitles {
@@ -1477,7 +1508,7 @@ mod tests {
 
         let join = join_args(
             &["head.ts", "mid.ts", "tail.ts"],
-            Some("audio.mka"),
+            Some(("audio.mka", 1)),
             None,
             3600.5,
             VideoCodec::H264,
@@ -1517,7 +1548,7 @@ mod tests {
         };
         let with = join_args(
             &["mid.ts"],
-            Some("audio.mka"),
+            Some(("audio.mka", 1)),
             Some((Path::new("subtitles.srt"), &step)),
             3600.5,
             VideoCodec::H264,

@@ -93,7 +93,12 @@ impl AudioCodec {
                 _ => AudioCodec::Other,
             };
         };
-        match raw.as_str() {
+        AudioCodec::named(&raw)
+    }
+
+    /// The codec a site or ffprobe names: "mp4a.40.2", "aac", "opus", "pcm_s16le".
+    pub fn named(name: &str) -> Self {
+        match name.to_ascii_lowercase().as_str() {
             c if c.starts_with("mp4a") || c.starts_with("aac") => AudioCodec::Aac,
             c if c.starts_with("opus") => AudioCodec::Opus,
             c if c.starts_with("mp3") => AudioCodec::Mp3,
@@ -172,6 +177,15 @@ impl Container {
             Container::Flac => "FLAC",
             Container::Wav => "WAV",
         }
+    }
+
+    /// "an MP4", "a WebM": as the name is said.
+    pub fn with_article(self) -> String {
+        let vowel = matches!(
+            self,
+            Container::Mp4 | Container::Mkv | Container::M4a | Container::Mp3 | Container::Opus | Container::Ogg
+        );
+        format!("{} {}", if vowel { "an" } else { "a" }, self.label())
     }
 
     pub fn is_audio_only(self) -> bool {

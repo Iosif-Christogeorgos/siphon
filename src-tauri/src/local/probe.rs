@@ -11,6 +11,7 @@ use super::{LocalFile, Original, Stamp};
 use crate::error::{AppError, ErrorKind, Result};
 use crate::plan::codecs::{AudioCodec, VideoCodec};
 use crate::plan::sizes::SizeFacts;
+use crate::plan::tracks::{FileSound, FileSubtitle, FileTracks};
 use crate::ytdlp::metadata::{Format, FormatKind, VideoInfo};
 
 /// The arguments that make ffprobe print what [`Probe::parse`] reads.
@@ -26,7 +27,7 @@ pub fn probe_args(file: &Path) -> Vec<OsString> {
             ":stream=index,codec_type,codec_name,width,height,avg_frame_rate,r_frame_rate,bit_rate,",
             "channels,sample_rate,color_transfer,duration",
             // Matroska states a track's bitrate (if at all) and length as tags.
-            ":stream_tags=language,BPS,DURATION",
+            ":stream_tags=language,title,BPS,DURATION",
             // An MP3's or M4A's cover art is a picture marked as one, not video.
             ":stream_disposition=default,attached_pic",
             // A phone's video is stored on its side, with how to turn it.
@@ -39,8 +40,8 @@ pub fn probe_args(file: &Path) -> Vec<OsString> {
     args
 }
 
-/// What ffprobe says a file holds: its first video track and its main
-/// audio track, which is what a conversion of it keeps.
+/// What ffprobe says a file holds: its first video track, its main audio
+/// track (which a conversion takes as its sound), and its other tracks.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Probe {
     /// ffprobe's names for the file type: "mov,mp4,m4a,3gp,3g2,mj2".
@@ -55,6 +56,8 @@ pub struct Probe {
     pub audio: Option<Sound>,
     /// A cover picture (an audio file's art), not video.
     pub cover: bool,
+    /// Every sound and subtitle track, and which sound is the main one.
+    pub tracks: FileTracks,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -94,11 +97,41 @@ impl Probe {
             ..Probe::default()
         };
         let streams = value["streams"].as_array().map(Vec::as_slice).unwrap_or_default();
-        // The default sound track, or the first.
-        let sounds = || streams.iter().filter(|stream| stream["codec_type"] == "audio");
-        let audio = sounds()
-            .find(|stream| stream["disposition"]["default"].as_i64() == Some(1))
-            .or_else(|| sounds().next());
+        let sounds: Vec<&Value> = streams
+            .iter()
+            .filter(|stream| stream["codec_type"] == "audio")
+            .collect();
+        // The main sound: the track marked to play first, or the first. A
+        // conversion takes it by its place among the sound tracks (`0:a:N`).
+        let main = sounds
+            .iter()
+            .position(|stream| stream["disposition"]["default"].as_i64() == Some(1))
+            .unwrap_or(0);
+        probe.tracks = FileTracks {
+            main,
+            sounds: sounds
+                .iter()
+                .enumerate()
+                .map(|(track, stream)| {
+                    let sound = sound(stream);
+                    FileSound {
+                        track,
+                        codec: AudioCodec::named(&sound.codec),
+                        kbps: sound.bit_rate.map(|bits| bits / 1000.0),
+                    }
+                })
+                .collect(),
+            subtitles: streams
+                .iter()
+                .filter(|stream| stream["codec_type"] == "subtitle")
+                .enumerate()
+                .map(|(track, stream)| FileSubtitle {
+                    track,
+                    codec: stream["codec_name"].as_str().unwrap_or_default().to_string(),
+                })
+                .collect(),
+        };
+        let audio = sounds.get(main).copied();
         let mut longest = None::<f64>;
         for stream in streams {
             let length = number(&stream["duration"]).or_else(|| clock(&stream["tags"]["DURATION"]));
@@ -189,6 +222,7 @@ impl Probe {
             file: Some(LocalFile {
                 start: self.start,
                 cover: self.cover,
+                tracks: self.tracks.clone(),
                 ..original.describe(stamp)
             }),
         })
@@ -352,6 +386,22 @@ mod tests {
         "format": {"format_name": "matroska,webm", "start_time": "0.000000", "duration": "8.023000",
          "size": "8929801", "bit_rate": "8904201"}}"#;
 
+    /// A film's tracks as ffprobe printed them (2026-11-25): three sound
+    /// tracks, the second marked to play first, and two subtitle tracks.
+    const FILM: &str = r#"{"streams": [
+        {"index": 0, "codec_name": "h264", "codec_type": "video", "width": 1280, "height": 720,
+         "r_frame_rate": "30/1", "avg_frame_rate": "30/1", "disposition": {"default": 0, "attached_pic": 0}},
+        {"index": 1, "codec_name": "aac", "codec_type": "audio", "sample_rate": "44100", "channels": 1,
+         "disposition": {"default": 0, "attached_pic": 0}, "tags": {"language": "eng", "title": "Game"}},
+        {"index": 2, "codec_name": "aac", "codec_type": "audio", "sample_rate": "44100", "channels": 1,
+         "disposition": {"default": 1, "attached_pic": 0}, "tags": {"language": "eng", "title": "Mic"}},
+        {"index": 3, "codec_name": "ac3", "codec_type": "audio", "sample_rate": "44100", "channels": 1,
+         "bit_rate": "192000", "disposition": {"default": 0, "attached_pic": 0}, "tags": {"language": "ell"}},
+        {"index": 4, "codec_name": "subrip", "codec_type": "subtitle", "disposition": {"default": 0, "attached_pic": 0}},
+        {"index": 5, "codec_name": "ass", "codec_type": "subtitle", "disposition": {"default": 0, "attached_pic": 0}}],
+        "format": {"format_name": "matroska,webm", "start_time": "0.000000", "duration": "10.000000",
+         "size": "3000000", "bit_rate": "2400000"}}"#;
+
     const STILL: &str = r#"{"streams": [
         {"index": 0, "codec_name": "png", "codec_type": "video", "width": 640, "height": 360,
          "r_frame_rate": "25/1", "avg_frame_rate": "25/1", "disposition": {"default": 0, "attached_pic": 0}}],
@@ -429,6 +479,35 @@ mod tests {
         let args = frame_args(Path::new("Recording.mkv"), &probe, Path::new("out.jpg")).unwrap();
         assert!(args.windows(2).any(|pair| pair[0] == "-ss" && pair[1] == "0.802"));
         assert!(args.windows(2).any(|pair| pair[0] == "-map" && pair[1] == "0:V:0"));
+    }
+
+    #[test]
+    fn every_track_is_read_and_the_main_sound_is_the_one_marked_to_play_first() {
+        let probe = Probe::parse(FILM).unwrap();
+        assert_eq!(probe.tracks.main, 1);
+        // The card and the plan describe the main sound, as it is converted.
+        assert_eq!(
+            probe.audio.as_ref().map(|audio| audio.language.as_deref()),
+            Some(Some("eng"))
+        );
+        let sounds: Vec<(usize, AudioCodec)> = probe.tracks.sounds.iter().map(|s| (s.track, s.codec)).collect();
+        assert_eq!(
+            sounds,
+            [(0, AudioCodec::Aac), (1, AudioCodec::Aac), (2, AudioCodec::Ac3)]
+        );
+        assert_eq!(probe.tracks.sounds[2].kbps, Some(192.0));
+        let subtitles: Vec<(usize, &str)> = probe
+            .tracks
+            .subtitles
+            .iter()
+            .map(|s| (s.track, s.codec.as_str()))
+            .collect();
+        assert_eq!(subtitles, [(0, "subrip"), (1, "ass")]);
+        let info = probe.video_info(&original("Film.mkv"), stamp(3_000_000)).unwrap();
+        assert_eq!(info.file.unwrap().tracks, probe.tracks);
+        // None marked: the first.
+        let unmarked = FILM.replace(r#""default": 1"#, r#""default": 0"#);
+        assert_eq!(Probe::parse(&unmarked).unwrap().tracks.main, 0);
     }
 
     #[test]

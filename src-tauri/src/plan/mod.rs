@@ -24,6 +24,7 @@ pub mod registry;
 mod share;
 pub mod sizes;
 pub mod subtitles;
+pub mod tracks;
 mod watch;
 
 use std::cmp::Ordering;
@@ -221,6 +222,10 @@ pub struct Recipe {
     /// starts near the cut anyway.
     #[serde(default)]
     pub read_from: Option<ReadFrom>,
+    /// A file on this PC's own tracks: which sound is its main one, and the
+    /// other sound and subtitle tracks kept beside it (see [`tracks`]).
+    #[serde(default)]
+    pub tracks: tracks::Tracks,
 }
 
 /// Where a cut reads a whole file from: a little before the part, rather
@@ -358,7 +363,17 @@ impl Recipe {
         )
     }
 
+    /// The main sound, or another of a file's sound tracks, is converted.
     pub fn encodes_audio(&self) -> bool {
+        self.encodes_main_audio()
+            || self
+                .tracks
+                .sounds
+                .iter()
+                .any(|sound| matches!(sound.action, AudioAction::Encode { .. }))
+    }
+
+    pub fn encodes_main_audio(&self) -> bool {
         matches!(
             self.audio,
             Some(AudioStep {
@@ -552,7 +567,27 @@ impl Recipe {
                 AudioAction::Encode { .. } => step.source_kbps.and_then(bitrate),
             },
         }?;
-        Some(video.plus(audio))
+        // A file's other sound tracks: copied with copied video, they are in
+        // its size already.
+        let video_copied = matches!(&self.video, Some(step) if step.action == VideoAction::Copy);
+        let others: f64 = self
+            .tracks
+            .sounds
+            .iter()
+            .filter_map(|sound| match sound.action {
+                AudioAction::Copy if video_copied => Some(0.0),
+                AudioAction::Copy => sound.source_kbps.and_then(bitrate),
+                AudioAction::Encode {
+                    codec: AudioCodec::Pcm, ..
+                } => bitrate(1536.0),
+                AudioAction::Encode {
+                    bitrate_kbps: Some(kbps),
+                    ..
+                } => bitrate(f64::from(kbps)),
+                AudioAction::Encode { .. } => sound.source_kbps.and_then(bitrate),
+            })
+            .sum();
+        Some(video.plus(audio + others))
     }
 
     /// A constant-quality encode's size: by the rule of thumb below, with a
@@ -879,6 +914,10 @@ pub fn plan(video: &VideoInfo, choice: &Choice, trim: Option<Trim>, caps: &Capab
     if let Some(fallback) = recipe.fallback.as_deref_mut() {
         fallback.section_request_size = recipe.section_request_size;
     }
+    // A file on this PC's other sound and subtitle tracks, and its main sound.
+    if let Some(file) = &video.file {
+        tracks::keep(&mut recipe, &file.tracks, choice, caps);
+    }
     recipe.badge = badge(&recipe, choice);
     // A file on this PC already is what it is: keeping its own streams in
     // another file type changes nothing about where it plays.
@@ -1104,6 +1143,7 @@ impl<'a> Planner<'a> {
             chat: None,
             measured: sizes::Measured::default(),
             read_from: None,
+            tracks: Default::default(),
         }
     }
 

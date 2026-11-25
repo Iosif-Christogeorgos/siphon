@@ -46,23 +46,13 @@ pub fn nothing_to_do(video: &VideoInfo, choice: &Choice, recipe: &Recipe) -> Opt
             None => "This already fits, and plays there.".to_string(),
         },
         (Some(Group::Audio), Some(preset)) if preset.target == TargetId::Music => {
-            format!("This is already {} at that quality.", article(recipe.container))
+            format!("This is already {} at that quality.", recipe.container.with_article())
         }
         _ if recipe.video.is_none() => "This is already the sound alone, as it is.".to_string(),
         (Some(Group::Max), _) => "This already has its streams as they are, in the file type that suits them.".into(),
-        _ => format!("This is already {} like that.", article(recipe.container)),
+        _ => format!("This is already {} like that.", recipe.container.with_article()),
     };
     Some(format!("{said} Nothing to convert."))
-}
-
-/// "an MP4", "a WebM": as the name is said.
-fn article(container: Container) -> String {
-    let label = container.label();
-    let vowel = matches!(
-        container,
-        Container::Mp4 | Container::Mkv | Container::M4a | Container::Mp3 | Container::Opus | Container::Ogg
-    );
-    format!("{} {label}", if vowel { "an" } else { "a" })
 }
 
 /// Whether a file with this extension already is the kind of file `container` makes.
@@ -208,6 +198,7 @@ mod tests {
                 version: "1-0".into(),
                 start: 0.0,
                 cover: false,
+                tracks: Default::default(),
             }),
         }
     }

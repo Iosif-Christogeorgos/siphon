@@ -32,7 +32,7 @@ use tokio::sync::Notify;
 
 use crate::binaries::{BinaryManager, Tool};
 use crate::error::{AppError, Chance, ErrorKind, Result, Retry};
-use crate::ffmpeg::smart_cut::{self, AudioPiece, Fallback};
+use crate::ffmpeg::smart_cut::{self, Fallback};
 use crate::ffmpeg::{self, encoders::Hardware, Pass};
 use crate::local::{self, Grants, Original};
 use crate::log;
@@ -1316,8 +1316,10 @@ impl DownloadManager {
         if recipe.smart_cut() {
             let started = Instant::now();
             // Joined and checked as MP4 (the checks read decode times, which
-            // Matroska doesn't keep), then copied into the file type asked for.
-            let rewrap = !matches!(recipe.container, Container::Mp4 | Container::Mov);
+            // Matroska doesn't keep), then copied into the file type asked for,
+            // a file's own subtitle tracks with it (an MP4 can't hold every kind).
+            let file_subtitles = !recipe.tracks.subtitles.is_empty();
+            let rewrap = !matches!(recipe.container, Container::Mp4 | Container::Mov) || file_subtitles;
             let (cut_recipe, cut_file) = if rewrap {
                 let mut as_mp4 = recipe.clone();
                 as_mp4.container = Container::Mp4;
@@ -1329,11 +1331,14 @@ impl DownloadManager {
                 .smart_cut(job, &cut_recipe, source, &cut_file, work, tracker, subtitles)
                 .await?;
             if rewrap && result.is_ok() {
-                let args = ffmpeg::rewrap_args(&cut_file, &partial, recipe.subtitles.as_ref(), recipe.container);
+                let piece = work.join(SUBTITLES_PIECE);
+                let kept = file_subtitles.then_some((piece.as_path(), recipe.tracks.subtitles.as_slice()));
+                let args = ffmpeg::rewrap_args(&cut_file, &partial, recipe.subtitles.as_ref(), recipe.container, kept);
                 if let Err(fallback) = self.tool(job, &job.bins.ffmpeg(), args, None).await? {
                     result = Err(fallback);
                 }
                 let _ = tokio::fs::remove_file(&cut_file).await;
+                let _ = tokio::fs::remove_file(&piece).await;
             }
             match result {
                 Ok(note) => {
@@ -1529,16 +1534,12 @@ impl DownloadManager {
         let plan = step!(smart_cut::plan(&source_video, trim, &restarts));
         progress(tracker);
 
-        let audio = match (&recipe.audio, recipe.strip_audio) {
-            (Some(step), false) => Some(match &step.action {
-                AudioAction::Copy => AudioPiece::Copy,
-                AudioAction::Encode {
-                    codec,
-                    bitrate_kbps,
-                    stereo,
-                } => AudioPiece::Encode(ffmpeg::audio_encode_args(*codec, *bitrate_kbps, *stereo)),
-            }),
-            _ => None,
+        // The main sound, then a file's other sound tracks (see `plan::tracks`).
+        let sounds: Vec<(usize, &AudioAction)> = match (&recipe.audio, recipe.strip_audio) {
+            (Some(step), false) => std::iter::once((recipe.tracks.main, &step.action))
+                .chain(recipe.tracks.sounds.iter().map(|sound| (sound.track, &sound.action)))
+                .collect(),
+            _ => Vec::new(),
         };
 
         // The re-encoded start, the copied middle, the re-encoded end, the audio.
@@ -1593,20 +1594,33 @@ impl DownloadManager {
         step!(self.tool(job, &ffmpeg, args, None).await?, "re-encoding the end");
         names.push("tail.ts");
         progress(tracker);
-        if let Some(piece) = &audio {
+        if !sounds.is_empty() {
             let args = read(
-                smart_cut::audio_args(source, plan.first(), plan.end(), piece, &pieces.join("audio.mka")),
+                smart_cut::audio_args(source, plan.first(), plan.end(), &sounds, &pieces.join("audio.mka")),
                 plan.end(),
             );
             step!(self.tool(job, &ffmpeg, args, None).await?, "cutting the audio");
+        }
+        // A file's own subtitle tracks, kept apart until the clip is put in its file type.
+        if !recipe.tracks.subtitles.is_empty() {
+            let args = read(
+                smart_cut::subtitles_args(
+                    source,
+                    plan.first(),
+                    plan.end(),
+                    &recipe.tracks.subtitles,
+                    &pieces.with_file_name(SUBTITLES_PIECE),
+                ),
+                plan.end(),
+            );
+            step!(self.tool(job, &ffmpeg, args, None).await?, "cutting the subtitles");
         }
         progress(tracker);
 
         // Join them, on the video's own timestamps, starting at zero.
         // Audio packets are at most a hundred a second (AAC at 48 kHz is 47).
-        let audio_packets = audio.as_ref().map_or(0, |_| {
-            ((plan.end() - plan.first()) * smart_cut::AUDIO_PACKETS_KEPT_FOR).ceil() as usize
-        });
+        let audio_packets =
+            ((plan.end() - plan.first()) * smart_cut::AUDIO_PACKETS_KEPT_FOR).ceil() as usize * sounds.len();
         // The subtitle track, shifted with the pieces; each cue is a packet in the index.
         let track = subtitles
             .map(|prepared| prepared.track.as_path())
@@ -1621,7 +1635,7 @@ impl DownloadManager {
         ] {
             let args = smart_cut::join_args(
                 &names,
-                audio.as_ref().map(|_| "audio.mka"),
+                (!sounds.is_empty()).then_some(("audio.mka", sounds.len())),
                 track,
                 plan.first(),
                 codec,
@@ -1641,11 +1655,14 @@ impl DownloadManager {
         // the joins decoding cleanly, the first copied frames exactly as in the source.
         let clip_video = step!(self.packets(job, output, "v:0", pieces, None, 0.0).await?);
         step!(smart_cut::check_video(&plan, &clip_video));
-        if let Some(piece) = &audio {
+        if let Some((main, action)) = sounds.first() {
             let clip_audio = step!(self.packets(job, output, "a:0", pieces, None, 0.0).await?);
-            let source_audio = match piece {
-                AudioPiece::Copy => Some(step!(self.packets(job, source, "a:0", pieces, from, trim.end).await?)),
-                AudioPiece::Encode(_) => None,
+            let source_audio = match action {
+                AudioAction::Copy => Some(step!(
+                    self.packets(job, source, &format!("a:{main}"), pieces, from, trim.end)
+                        .await?
+                )),
+                AudioAction::Encode { .. } => None,
             };
             step!(smart_cut::check_audio(&plan, source_audio.as_deref(), &clip_audio));
         }
@@ -1710,8 +1727,8 @@ impl DownloadManager {
             return Ok(None);
         };
         let mut times = Vec::new();
-        for stream in ["v:0", "a:0"] {
-            let args = smart_cut::first_times_args(input, stream);
+        for stream in ["v:0".to_string(), format!("a:{}", recipe.tracks.main)] {
+            let args = smart_cut::first_times_args(input, &stream);
             let lines = self
                 .tool(job, &job.bins.ffprobe(), args, None)
                 .await?
@@ -2310,6 +2327,11 @@ fn interrupt(pid: u32) -> tokio::task::JoinHandle<()> {
 /// Where a smart cut is joined as MP4 before it is put in another file type.
 const SMART_CUT_FILE: &str = "smart-cut.mp4";
 
+/// A file's own subtitle tracks for a smart cut, cut and starting at zero
+/// like the clip, in the work folder until they go in with it (see
+/// `smart_cut::subtitles_args`).
+const SUBTITLES_PIECE: &str = "subtitles.mks";
+
 /// How long to wait before asking for a subtitle track a second time.
 const SUBTITLE_RETRY: Duration = Duration::from_secs(5);
 
@@ -2560,6 +2582,7 @@ mod tests {
             chat: None,
             measured: Default::default(),
             read_from: None,
+            tracks: Default::default(),
         }
     }
 

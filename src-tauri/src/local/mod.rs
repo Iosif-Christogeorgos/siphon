@@ -26,6 +26,7 @@ use tokio::sync::Semaphore;
 
 use crate::binaries::BinaryManager;
 use crate::error::{AppError, ErrorKind, Result};
+use crate::plan::tracks::FileTracks;
 use crate::process;
 use crate::ytdlp::metadata::VideoInfo;
 pub use output::{nothing_to_do, output_name, partial_name, writable};
@@ -130,6 +131,7 @@ impl Original {
             version: stamp.version(),
             start: 0.0,
             cover: false,
+            tracks: FileTracks::default(),
         }
     }
 }
@@ -165,6 +167,9 @@ pub struct LocalFile {
     /// It holds a cover picture (an audio file's art), kept where what is made can hold one.
     #[serde(skip)]
     pub cover: bool,
+    /// Its sound and subtitle tracks, and which sound is its main one (see `plan::tracks`).
+    #[serde(skip)]
+    pub tracks: FileTracks,
 }
 
 /// What came of files dropped on the window or picked with Browse.

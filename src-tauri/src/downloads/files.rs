@@ -370,6 +370,7 @@ mod tests {
             chat: None,
             measured: Default::default(),
             read_from: None,
+            tracks: Default::default(),
         }
     }
 

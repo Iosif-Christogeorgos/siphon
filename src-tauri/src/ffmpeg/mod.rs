@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use crate::plan::codecs::{AudioCodec, Container, VideoCodec};
 use crate::plan::subtitles::{Delivery, SubtitleStep};
+use crate::plan::tracks::{subtitle_encoder, KeptSubtitle};
 use crate::plan::{AudioAction, Recipe, Trim, VideoAction, VideoEncode, VideoStep};
 use crate::process;
 use crate::ytdlp::subtitles::iso639_2;
@@ -199,10 +200,11 @@ pub fn convert_args_shifted(
     let mut push = |values: &[&str]| args.extend(values.iter().map(OsString::from));
 
     // ── Streams ──
-    // First video track (`V`: never a cover picture beside it), and the first
-    // audio track if we keep one. Drops the source's own subtitles,
-    // thumbnails and data tracks, which some containers reject; Siphon's
-    // subtitle file is added on its own.
+    // First video track (`V`: never a cover picture beside it), and the main
+    // audio track if we keep one, with a file's other sound tracks after it.
+    // Drops thumbnails and data tracks, which some containers reject, and
+    // the source's subtitles but those of a file kept (see `plan::tracks`);
+    // Siphon's subtitle file is added on its own.
     match (chat, &recipe.video, recipe.video_encode()) {
         (Some((layer, index)), Some(video), Some(encode)) => {
             let filters = video_filters(video, encode, cut, burn.as_deref());
@@ -210,9 +212,15 @@ pub fn convert_args_shifted(
         }
         _ => push(&["-map", "0:V:0"]),
     }
+    // The audio moved onto the video's clock is read from the second input.
+    let sound_input = usize::from(audio_shift.is_some());
     match recipe.audio_codec() {
-        Some(_) if !first_pass && audio_shift.is_some() => push(&["-map", "1:a:0?"]),
-        Some(_) if !first_pass => push(&["-map", "0:a:0?"]),
+        Some(_) if !first_pass => {
+            push(&["-map", &format!("{sound_input}:a:{}?", recipe.tracks.main)]);
+            for sound in &recipe.tracks.sounds {
+                push(&["-map", &format!("{sound_input}:a:{}", sound.track)]);
+            }
+        }
         _ => push(&["-an"]),
     }
 
@@ -240,39 +248,24 @@ pub fn convert_args_shifted(
     }
 
     if let (Some(audio), Some(_), false) = (&recipe.audio, recipe.audio_codec(), first_pass) {
-        match audio.action {
-            AudioAction::Copy => {
-                push(&["-c:a", "copy"]);
-                if let Some(cut) = cut {
-                    // The downloaded part runs from a key frame before the cut
-                    // to a little after it: keep the packets whose middle falls
-                    // inside it, picked by their own timestamps.
-                    push(&[
-                        "-bsf:a",
-                        &format!(
-                            "noise=drop=lt(pts*tb+duration*tb/2\\,{})+gte(pts*tb+duration*tb/2\\,{})",
-                            cut.start, cut.end
-                        ),
-                    ]);
-                }
-            }
-            AudioAction::Encode {
-                codec,
-                bitrate_kbps,
-                stereo,
-            } => {
-                if let Some(cut) = cut {
-                    push(&["-af", &format!("atrim=start={}:end={}", cut.start, cut.end)]);
-                }
-                for arg in audio_encode_args(codec, bitrate_kbps, stereo) {
-                    push(&[&arg]);
-                }
-            }
+        let actions: Vec<&AudioAction> = std::iter::once(&audio.action)
+            .chain(recipe.tracks.sounds.iter().map(|sound| &sound.action))
+            .collect();
+        for arg in sound_tracks_args(&actions, cut.map(|cut| (cut.start, cut.end))) {
+            push(&[&arg]);
         }
     }
 
     if let Some((step, input)) = subtitle_track {
         for arg in subtitle_track_args(step, recipe.container, input) {
+            push(&[&arg]);
+        }
+    }
+    // A file's own subtitle tracks, after Siphon's (a file never has both).
+    if !first_pass {
+        let first = usize::from(subtitle_track.is_some());
+        let span = cut.map(|cut| (cut.start, cut.end));
+        for arg in file_subtitles_args(&recipe.tracks.subtitles, 0, first, span, false) {
             push(&[&arg]);
         }
     }
@@ -291,6 +284,120 @@ pub fn convert_args_shifted(
         push(&["-movflags", "+faststart"]);
     }
     args.push(output.into());
+    args
+}
+
+/// The codec arguments for the sound tracks of the output, in order: the
+/// main one, then a file's others (see `plan::tracks`). `cut` is the part
+/// kept, on the input's own timestamps. One track is spoken of as `a`, as it
+/// always was; several each by its place (`a:1`), the main one marked to
+/// play first and the others not.
+pub(crate) fn sound_tracks_args(actions: &[&AudioAction], cut: Option<(f64, f64)>) -> Vec<String> {
+    let several = actions.len() > 1;
+    let mut args = Vec::new();
+    for (index, action) in actions.iter().enumerate() {
+        let spec = if several { format!("a:{index}") } else { "a".to_string() };
+        match **action {
+            AudioAction::Copy => {
+                args.extend([format!("-c:{spec}"), "copy".into()]);
+                if let Some((start, end)) = cut {
+                    // The part read runs from a key frame before the cut to a
+                    // little after it: keep the packets whose middle falls
+                    // inside it, picked by their own timestamps.
+                    args.extend([
+                        format!("-bsf:{spec}"),
+                        format!("noise=drop=lt(pts*tb+duration*tb/2\\,{start})+gte(pts*tb+duration*tb/2\\,{end})"),
+                    ]);
+                }
+            }
+            AudioAction::Encode {
+                codec,
+                bitrate_kbps,
+                stereo,
+            } => {
+                if let Some((start, end)) = cut {
+                    let option = if several {
+                        format!("-filter:{spec}")
+                    } else {
+                        "-af".into()
+                    };
+                    args.extend([option, format!("atrim=start={start}:end={end}")]);
+                }
+                args.extend(on_track(audio_encode_args(codec, bitrate_kbps, stereo), &spec));
+            }
+        }
+    }
+    if several {
+        args.extend(sound_dispositions(actions.len()));
+    }
+    args
+}
+
+/// An encoder's arguments for all sound (`-c:a aac -b:a 192k`) made for one
+/// track of several (`-c:a:1 aac -b:a:1 192k`).
+fn on_track(args: Vec<String>, spec: &str) -> Vec<String> {
+    if spec == "a" {
+        return args;
+    }
+    args.into_iter()
+        .map(|arg| match arg.as_str() {
+            "-c:a" | "-b:a" | "-q:a" => format!("{}:{}", &arg[..arg.len() - 2], spec),
+            "-ac" => format!("-ac:{spec}"),
+            _ => arg,
+        })
+        .collect()
+}
+
+/// The first of `count` sound tracks is the one players start with; the
+/// others keep their other marks (commentary, for the hard of hearing).
+fn sound_dispositions(count: usize) -> Vec<String> {
+    let mut args = vec!["-disposition:a:0".to_string(), "default".into()];
+    for index in 1..count {
+        args.extend([format!("-disposition:a:{index}"), "-default".into()]);
+    }
+    args
+}
+
+/// The arguments that put a file's own subtitle tracks (`kept`) from input
+/// `input` into the output, as its subtitle tracks from `first` on, in the
+/// kind of track the file type holds (copied where they already are it).
+/// `span` is the part kept, on the input's timestamps: a cue that starts
+/// outside it is dropped (one already showing as the part starts would come
+/// before the clip). `pieced`: the input is a smart cut's piece of them,
+/// holding the tracks in order, in the kind it keeps them in (see
+/// `smart_cut::subtitles_args`).
+pub(crate) fn file_subtitles_args(
+    kept: &[KeptSubtitle],
+    input: usize,
+    first: usize,
+    span: Option<(f64, f64)>,
+    pieced: bool,
+) -> Vec<String> {
+    let mut args = Vec::new();
+    for (index, subtitle) in kept.iter().enumerate() {
+        let output = first + index;
+        let (track, from) = if pieced {
+            (index, subtitle.in_piece())
+        } else {
+            (subtitle.track, subtitle.source.as_str())
+        };
+        args.extend([
+            "-map".into(),
+            format!("{input}:s:{track}"),
+            format!("-c:s:{output}"),
+            subtitle_encoder(from, &subtitle.codec).to_string(),
+        ]);
+        if subtitle.codec == "mov_text" {
+            // As for Siphon's own track (see `subtitle_codec_args`).
+            args.extend([format!("-tag:s:{output}"), "tx3g".into()]);
+        }
+        if let Some((start, end)) = span {
+            args.extend([
+                format!("-bsf:s:{output}"),
+                format!("noise=drop=lt(pts*tb\\,{start})+gte(pts*tb\\,{end})"),
+            ]);
+        }
+    }
     args
 }
 
@@ -337,21 +444,49 @@ fn subtitle_codec_args(step: &SubtitleStep, container: Container) -> Vec<String>
 /// The arguments that copy a finished MP4's streams into `container`: a
 /// smart cut is joined and checked as MP4 (its checks read decode times,
 /// which Matroska doesn't keep), then put in the file type the plan asked
-/// for. Its subtitle track, if any, comes along in that file type's kind.
+/// for. Its subtitle track, if any, comes along in that file type's kind,
+/// and so do its sound tracks, all of them. A file's own subtitle tracks
+/// (`file_subtitles`: their piece, cut and starting at zero like the clip,
+/// see `smart_cut::subtitles_args`) go in here, as an MP4 can't hold every
+/// kind; for them, an MP4 is copied into an MP4.
 pub fn rewrap_args(
     input: &Path,
     output: &Path,
     subtitles: Option<&SubtitleStep>,
     container: Container,
+    file_subtitles: Option<(&Path, &[KeptSubtitle])>,
 ) -> Vec<OsString> {
-    let mut args: Vec<OsString> = ["-hide_banner", "-nostdin", "-y", "-loglevel", "error", "-i"]
+    let mut args: Vec<OsString> = ["-hide_banner", "-nostdin", "-y", "-loglevel", "error"]
         .map(OsString::from)
         .to_vec();
+    if file_subtitles.is_some() {
+        // The piece's cues as they are, on the clip's clock. Read as usual,
+        // each input is moved to start at zero, and the piece starts where its
+        // first cue does: every cue came out that much early (found
+        // 2026-11-25, a part from 0.5 s with its first cue at 1 s).
+        args.push("-copyts".into());
+    }
+    args.push("-i".into());
     args.push(input.into());
-    args.extend(["-map", "0:v:0", "-map", "0:a:0?", "-c", "copy"].map(OsString::from));
+    if let Some((piece, _)) = file_subtitles {
+        args.push("-i".into());
+        args.push(piece.into());
+    }
+    args.extend(["-map", "0:v:0", "-map", "0:a?", "-c", "copy"].map(OsString::from));
     if let Some(step) = subtitles {
         args.extend(["-map".into(), "0:s:0?".into()]);
         args.extend(subtitle_codec_args(step, container).into_iter().map(OsString::from));
+    }
+    if let Some((_, kept)) = file_subtitles {
+        let first = usize::from(subtitles.is_some());
+        args.extend(
+            file_subtitles_args(kept, 1, first, None, true)
+                .into_iter()
+                .map(OsString::from),
+        );
+    }
+    if matches!(container, Container::Mp4 | Container::Mov) {
+        args.extend(["-movflags", "+faststart"].map(OsString::from));
     }
     args.push(output.into());
     args
@@ -523,7 +658,7 @@ pub fn sound_args(recipe: &Recipe, input: &Path, output: &Path, cut: Option<(f64
     if let Some((_, length)) = cut {
         push(&["-t", &format!("{length:.3}")]);
     }
-    push(&["-map", "0:a:0"]);
+    push(&["-map", &format!("0:a:{}", recipe.tracks.main)]);
     let holds_cover = matches!(recipe.container, Container::Mp3 | Container::M4a | Container::Flac);
     if cover && holds_cover {
         push(&["-map", "0:v:0", "-c:v", "copy", "-disposition:v:0", "attached_pic"]);
@@ -1206,6 +1341,7 @@ mod recording_tests {
             chat: None,
             measured: Default::default(),
             read_from: None,
+            tracks: Default::default(),
         };
         let text = |args: Vec<OsString>| {
             args.iter()

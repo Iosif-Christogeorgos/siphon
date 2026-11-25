@@ -5,6 +5,7 @@ use serde::Serialize;
 use super::codecs::{AudioCodec, VideoCodec};
 use super::registry::{Group, QualityKind};
 use super::subtitles::{self, Delivery};
+use super::tracks;
 use super::{
     plan, quality_options, AudioAction, Badge, Capabilities, Choice, Hint, PresetChoice, Recipe, Trim, VideoAction,
 };
@@ -193,6 +194,11 @@ fn detail(recipe: &Recipe) -> String {
     if recipe.chat.is_some() && !chat_said {
         streams.push_str(" The chat is drawn into the picture.");
     }
+    // A file's other sound and subtitle tracks.
+    if let Some(kept) = tracks::described(&recipe.tracks) {
+        streams.push(' ');
+        streams.push_str(&kept);
+    }
     match &recipe.subtitles {
         Some(step) => match step.delivery {
             Delivery::Embed => format!(
@@ -230,14 +236,18 @@ fn streams_detail(recipe: &Recipe) -> String {
         ""
     };
     match &video.action {
-        VideoAction::Copy if recipe.encodes_audio() => {
-            let audio = recipe.audio.as_ref().expect("encodes_audio implies audio");
+        VideoAction::Copy if recipe.encodes_main_audio() => {
+            let audio = recipe.audio.as_ref().expect("encodes_main_audio implies audio");
             let target = recipe.audio_codec().map(AudioCodec::label).unwrap_or("AAC");
             let from = match audio.source {
                 AudioCodec::Other => String::new(),
                 source => format!(" from {}", source.label()),
             };
             format!("{promise}. The video is untouched; only the audio is converted{from} to {target}{reason}.{cut}")
+        }
+        // Only a file's other sound tracks are converted (said with them).
+        VideoAction::Copy if recipe.encodes_audio() => {
+            format!("{promise}. The video and its main sound are untouched.{cut}")
         }
         VideoAction::Copy if recipe.smart_cut() => format!("{promise}. Original streams.{cut}"),
         VideoAction::Copy => format!("{promise}. Original streams, no re-encoding."),

@@ -105,6 +105,24 @@ fn encode_target(target: TargetId, lines: u32, caps: &Capabilities) -> VideoCode
     }
 }
 
+/// The sound a device plays beside `video` in `container`, as a file's main
+/// sound track is planned: what can be copied, and what anything else becomes.
+/// For a file's other sound tracks (see `super::tracks`).
+pub(super) fn sound_rule(
+    target: TargetId,
+    caps: &Capabilities,
+    video: VideoCodec,
+    container: Container,
+) -> (&'static [AudioCodec], AudioCodec) {
+    let natives = natives(target, caps);
+    let native = natives
+        .iter()
+        .find(|native| native.video == video && native.container == container)
+        .or_else(|| natives.iter().find(|native| native.video == video));
+    let accepted: &'static [AudioCodec] = native.map_or(&[AudioCodec::Aac], |native| native.audio);
+    (accepted, accepted.first().copied().unwrap_or(AudioCodec::Aac))
+}
+
 impl Planner<'_> {
     pub(super) fn watch(&self, target: &Target, quality: Option<u32>) -> Recipe {
         let natives = natives(target.id, self.caps);

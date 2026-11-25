@@ -203,15 +203,14 @@ async fn copy_of_file(app: &AppHandle, bins: &BinaryManager, video: &VideoInfo, 
         return Ok(target);
     }
     let partial = dir.join(format!("{}-{version}.making.mp4", video.id));
+    // Its main sound, as a conversion of it takes (see `plan::tracks`).
+    let main = video.file.as_ref().map_or(0, |file| file.tracks.main);
     let mut cmd = process::command(bins.ffmpeg());
     process::below_others(&mut cmd);
     cmd.args(["-hide_banner", "-nostdin", "-y", "-loglevel", "error", "-i"])
         .arg(file)
+        .args(["-map", "0:V:0?", "-map", &format!("0:a:{main}?")])
         .args([
-            "-map",
-            "0:V:0?",
-            "-map",
-            "0:a:0?",
             // The short side at 360, either way up.
             "-vf",
             "scale=w='if(gt(iw,ih),-2,360)':h='if(gt(iw,ih),360,-2)'",
