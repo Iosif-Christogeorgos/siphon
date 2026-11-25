@@ -29,8 +29,8 @@ const GREETINGS = [
   "Make it yours.",
   "What’s worth keeping?",
   "Ready to cook?",
-  "Sup",
-  "Lock in",
+  "Sup?",
+  "Lock in.",
 ] as const;
 
 /** Picked once, as the app starts: the same all session, another next time. */
