@@ -117,6 +117,14 @@ pub async fn read_file(app: AppHandle, bins: Binaries<'_>, key: String) -> Resul
     Ok((*local::read(&app, &bins, &key).await?).clone())
 }
 
+/// Every track of an MKV the user gave, with how certain its language is,
+/// for choosing which it keeps (docs/mkv-editor.md).
+#[tauri::command]
+pub async fn read_tracks(app: AppHandle, bins: Binaries<'_>, key: String) -> Result<local::mkv::Contents> {
+    ensure_ready(&bins)?;
+    local::mkv::read(&app, &bins, &key).await
+}
+
 /// Every preset group, target and tier: the frontend defines none itself.
 #[tauri::command]
 pub fn get_presets() -> Registry {

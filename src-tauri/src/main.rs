@@ -136,6 +136,7 @@ fn main() {
             commands::fetch_media,
             commands::pick_files,
             commands::read_file,
+            commands::read_tracks,
             commands::get_presets,
             commands::get_choices,
             commands::set_choices,

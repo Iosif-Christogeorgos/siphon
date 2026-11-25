@@ -10,6 +10,7 @@
 //! A file is only ever read ([`Original`]): what Siphon makes from it goes
 //! beside it under a name of its own.
 
+pub mod mkv;
 mod output;
 mod probe;
 

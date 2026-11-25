@@ -89,6 +89,10 @@ Each a commit that leaves Siphon working.
 
 1. ~~**Engine test**~~ Done 2026-11-25: FFmpeg (see above).
 2. **One file, read**: its tracks, each with its language and how certain that is.
+   - 2a, done 2026-11-25 (`local/mkv/`, command `read_tracks`): every track from ffprobe (tags read whatever their capitals or language suffix: `LANGUAGE`, `NUMBER_OF_FRAMES-eng`), flags from the file or the name (forced, SDH, commentary, description, original), attachments, the chapters' shape from the file's own Chapters element (`chapters.rs`, a small EBML reader), and the doubts on sound tags (`doubts.rs`). Read over all 52 Korra episodes: four layouts, no doubt raised; a test file made to fail every check was caught on each. The Airbender episodes, named `.mp4`, are Matroska inside, and are read as MKVs: Siphon goes by what a file is, not its name.
+   - 2b: text subtitles read for their language, SDH and forced lines.
+   - 2c: picture subtitles read with Windows' OCR.
+   - 2d: the list in the window.
 3. **One file, edited**: remove, change details and order; make it in `Edited`, check it.
 4. **My languages**: the list in Settings and the rules above, with unit tests for the hard cases.
 5. **Seasons**: the files list, one choice for every file, marks where something is uncertain.

@@ -182,6 +182,15 @@ pub fn language_name(tag: &str) -> Option<&'static str> {
         .map(|(.., name)| *name)
 }
 
+/// The tag of the language called `name` in English, whatever its capitals:
+/// "greek" → "el". None for a name not in the table.
+pub fn language_named(name: &str) -> Option<&'static str> {
+    LANGUAGES
+        .iter()
+        .find(|(.., english)| english.eq_ignore_ascii_case(name))
+        .map(|(two, ..)| *two)
+}
+
 /// ISO 639-1, ISO 639-2 bibliographic and terminology codes, and the name in
 /// English: the languages YouTube translates into, and others common on video sites.
 const LANGUAGES: &[(&str, &str, &str, &str)] = &[
