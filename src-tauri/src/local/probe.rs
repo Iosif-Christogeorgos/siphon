@@ -26,8 +26,10 @@ pub fn probe_args(file: &Path) -> Vec<OsString> {
             "format=format_name,start_time,duration,size,bit_rate",
             ":stream=index,codec_type,codec_name,width,height,avg_frame_rate,r_frame_rate,bit_rate,",
             "channels,sample_rate,color_transfer,duration",
-            // Matroska states a track's bitrate (if at all) and length as tags.
-            ":stream_tags=language,title,BPS,DURATION",
+            // Matroska states a track's bitrate (if at all) and length as tags,
+            // which MKVToolNix names with their language ("BPS-eng"): all of
+            // them are asked for, as a list would only match whole names.
+            ":stream_tags",
             // An MP3's or M4A's cover art is a picture marked as one, not video.
             ":stream_disposition=default,attached_pic",
             // A phone's video is stored on its side, with how to turn it.
@@ -134,7 +136,7 @@ impl Probe {
         let audio = sounds.get(main).copied();
         let mut longest = None::<f64>;
         for stream in streams {
-            let length = number(&stream["duration"]).or_else(|| clock(&stream["tags"]["DURATION"]));
+            let length = number(&stream["duration"]).or_else(|| tag(&stream["tags"], "DURATION").and_then(clock));
             longest = match (longest, length) {
                 (Some(a), Some(b)) => Some(a.max(b)),
                 (a, b) => a.or(b),
@@ -271,17 +273,33 @@ fn sound(stream: &Value) -> Sound {
             .and_then(|channels| u32::try_from(channels).ok()),
         bit_rate: bit_rate(stream),
         // "und" is ffmpeg's word for none.
-        language: stream["tags"]["language"]
-            .as_str()
+        language: tag(&stream["tags"], "language")
             .filter(|language| !language.is_empty() && *language != "und")
             .map(str::to_string),
     }
 }
 
+/// A stream's tag by its name, whatever its capitals, or with the language
+/// Matroska marks it with: MKVToolNix writes its counts as "BPS-eng" and
+/// "DURATION-eng", and ffprobe gives "LANGUAGE" for a track with no language
+/// element of its own.
+pub(super) fn tag<'a>(tags: &'a Value, name: &str) -> Option<&'a str> {
+    let matches = |key: &str| {
+        key.eq_ignore_ascii_case(name)
+            || key
+                .get(..name.len())
+                .is_some_and(|start| start.eq_ignore_ascii_case(name) && key[name.len()..].starts_with('-'))
+    };
+    tags.as_object()?
+        .iter()
+        .find(|(key, _)| matches(key))
+        .and_then(|(_, value)| value.as_str())
+}
+
 /// The track's bitrate, or the one Matroska's muxers write as a tag.
 fn bit_rate(stream: &Value) -> Option<f64> {
     number(&stream["bit_rate"])
-        .or_else(|| number(&stream["tags"]["BPS"]))
+        .or_else(|| tag(&stream["tags"], "BPS").and_then(|bits| bits.trim().parse().ok()))
         .filter(|bits| *bits > 0.0)
 }
 
@@ -307,9 +325,9 @@ fn rate(value: &Value) -> Option<f64> {
 }
 
 /// Matroska's length tag: "00:12:44.967000000".
-fn clock(value: &Value) -> Option<f64> {
+fn clock(value: &str) -> Option<f64> {
     let mut seconds = 0.0;
-    for part in value.as_str()?.split(':') {
+    for part in value.split(':') {
         seconds = seconds * 60.0 + part.parse::<f64>().ok()?;
     }
     Some(seconds)
@@ -444,6 +462,42 @@ mod tests {
     }
 
     #[test]
+    fn reads_the_tags_mkvtoolnix_writes_with_their_language() {
+        // The Legend of Korra S01E01, from MKVToolNix 22: counts as "BPS-eng",
+        // and "LANGUAGE" for the tracks with no language element of their own.
+        let json = r#"{
+            "format": {"format_name": "matroska,webm", "start_time": "0.000000", "size": "289422396"},
+            "streams": [
+                {"index": 0, "codec_type": "video", "codec_name": "hevc", "width": 1920, "height": 1080,
+                 "avg_frame_rate": "24000/1001", "disposition": {"default": 1, "attached_pic": 0},
+                 "tags": {"BPS-eng": "1039153", "DURATION-eng": "00:24:04.026000000"}},
+                {"index": 1, "codec_type": "audio", "codec_name": "aac", "channels": 2, "sample_rate": "48000",
+                 "disposition": {"default": 1, "attached_pic": 0},
+                 "tags": {"language": "gre", "BPS-eng": "164789", "DURATION-eng": "00:24:04.778000000"}},
+                {"index": 2, "codec_type": "audio", "codec_name": "aac", "channels": 6, "sample_rate": "48000",
+                 "disposition": {"default": 0, "attached_pic": 0},
+                 "tags": {"title": "Surround", "LANGUAGE": "eng", "BPS-eng": "256000"}}
+            ]
+        }"#;
+        let probe = Probe::parse(json).unwrap();
+        assert_eq!(probe.video.as_ref().and_then(|video| video.bit_rate), Some(1_039_153.0));
+        let sound = probe.audio.as_ref().unwrap();
+        assert_eq!(
+            (sound.language.as_deref(), sound.bit_rate),
+            (Some("gre"), Some(164_789.0))
+        );
+        let kbps: Vec<_> = probe
+            .tracks
+            .sounds
+            .iter()
+            .map(|sound| sound.kbps.map(f64::round))
+            .collect();
+        assert_eq!(kbps, [Some(165.0), Some(256.0)]);
+        // Its length from the longest track's, as the format doesn't say.
+        assert_eq!(probe.duration.map(f64::round), Some(1445.0));
+    }
+
+    #[test]
     fn a_songs_cover_is_a_picture_not_video() {
         let probe = Probe::parse(SONG_WITH_COVER).unwrap();
         assert!(probe.cover);
@@ -541,3 +595,5 @@ mod tests {
         assert_eq!(info.formats[0].dynamic_range.as_deref(), Some("HDR10"));
     }
 }
+
+

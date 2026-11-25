@@ -3,9 +3,10 @@
 use std::ffi::OsString;
 use std::path::Path;
 
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 use super::{Attachment, Chapters, Contents, Kind, Track};
+use crate::local::probe::tag;
 use crate::ytdlp::subtitles::language_tag;
 
 /// The arguments that make ffprobe print what [`parse`] reads.
@@ -39,7 +40,7 @@ pub fn parse(json: &str) -> Option<Contents> {
     let mut tracks = Vec::new();
     let mut attachments = Vec::new();
     for stream in value["streams"].as_array().map(Vec::as_slice).unwrap_or_default() {
-        let tags = stream["tags"].as_object();
+        let tags = &stream["tags"];
         let flag = |name: &str| stream["disposition"][name].as_i64() == Some(1);
         let kind = match stream["codec_type"].as_str() {
             // A cover picture carried in the file is an attachment, not video.
@@ -95,22 +96,6 @@ pub fn parse(json: &str) -> Option<Contents> {
         duration: number(&value["format"]["duration"]).filter(|seconds| *seconds > 0.0),
         size: number(&value["format"]["size"]).map(|bytes| bytes as u64),
     })
-}
-
-/// A tag by its name, whatever its capitals, or with the language Matroska
-/// marks it with: ffprobe gives "LANGUAGE" for a track with no language of
-/// its own, and MKVToolNix's counts as "NUMBER_OF_FRAMES-eng".
-fn tag<'a>(tags: Option<&'a Map<String, Value>>, name: &str) -> Option<&'a str> {
-    let tags = tags?;
-    let matches = |key: &str| {
-        key.eq_ignore_ascii_case(name)
-            || key
-                .get(..name.len())
-                .is_some_and(|start| start.eq_ignore_ascii_case(name) && key[name.len()..].starts_with('-'))
-    };
-    tags.iter()
-        .find(|(key, _)| matches(key))
-        .and_then(|(_, value)| value.as_str())
 }
 
 /// A track's language tag as Siphon names languages ("gre" → "el"); None for
