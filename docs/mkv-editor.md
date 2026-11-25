@@ -46,7 +46,7 @@ A folder of subtitle or sound files dropped on a season is matched to the episod
 
 ## Engine
 
-Copying tracks is bound by the disk, not the processor: about a minute for 40 GB on an NVMe drive, the same with FFmpeg or MKVToolNix. Siphon's own FFmpeg costs no more space and, tried 2026-11-25 on a test file, removed a track and added an SRT, chapters and a font correctly. It is used unless real films show it can't: Dolby Vision, Blu-ray PGS, ASS with its fonts, chapters with editions. If one fails, `mkvmerge` (28 MB, from MKVToolNix's own downloads, checked against their `sha256sums.txt`) is fetched the first time the editor needs it, never at first launch. Measured 2026-11-25: the whole MKVToolNix 104.0 is 272 MB unpacked, `mkvmerge.exe` 28.3 MB and `mkvpropedit.exe` 22.5 MB, and both work alone, without its other files.
+Copying tracks is bound by the disk, not the processor: about a minute for 40 GB on an NVMe drive, the same with FFmpeg or MKVToolNix. Siphon's own FFmpeg costs no more space, and the tests below found it enough, so it is the engine (decided below). MKVToolNix was weighed and left out: the whole of 104.0 is 272 MB unpacked, and the parts Siphon would need, `mkvmerge.exe` (28.3 MB) and `mkvpropedit.exe` (22.5 MB), work alone; what it does better (editing a file in place, chapters beyond a plain list) is either ruled out by never touching the original or rare enough to be said rather than handled.
 
 ### Tried on a real episode
 
@@ -75,11 +75,13 @@ Copying tracks is bound by the disk, not the processor: about a minute for 40 GB
 
 So FFmpeg holds for everything but chapters beyond a plain list, which it can neither read (ffprobe flattens them too) nor write.
 
+**Decided (2026-11-25, the owner's call): FFmpeg alone, no MKVToolNix.** A file whose chapters are more than a plain list (more than one edition, nested or hidden chapters, names in several languages, ordered chapters) is found by Siphon's own reading of the file's Chapters element, a small EBML reader with no new dependency, and said before anything is made: "This file has 2 chapter versions; the copy keeps the first." Nothing is lost unsaid.
+
 ## Steps
 
 Each a commit that leaves Siphon working.
 
-1. **Engine test** on real films: Dolby Vision, PGS, ASS with fonts, chapters with editions. Decide FFmpeg or `mkvmerge`.
+1. ~~**Engine test**~~ Done 2026-11-25: FFmpeg (see above).
 2. **One file, read**: its tracks, each with its language and how certain that is.
 3. **One file, edited**: remove, change details and order; make it in `Edited`, check it.
 4. **My languages**: the list in Settings and the rules above, with unit tests for the hard cases.
