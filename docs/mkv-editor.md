@@ -110,6 +110,10 @@ Each a commit that leaves Siphon working.
 
 Decided 2026-11-26 (the owner's call). Tracks was first a fifth choice in the presets' row (Watch, Audio, Share, Customize, Tracks), where it read as one more thing to make, beside Trim. It is a chip among the card's description chips instead, *6 tracks ›* (its video, sound and subtitle tracks, covers aside, `LocalFile::counts` from the file's reading), shown only for a file with more to choose than one picture and one sound. Pressed, it replaces converting: the presets, their facets and Trim go away (Trim adds to a conversion, Tracks replaces it, so they must not look alike), a header *← Convert instead · Tracks* leads back, and the chip shows ✕. The chips' row keeps its height without Trim, so nothing moves. Tried 2026-11-26 in the dev build: Korra S01E01 showed *6 tracks*, went to its tracks and back, in both themes, and saved a copy without the English surround; a one-picture, one-sound MKV showed no chip, and one with a subtitle track *3 tracks*.
 
+**Open again** (2026-11-26, after 0.21.0 shipped the chip): the owner finds the chip too small and too hard to see for a feature this big; it should be more exposed and take more room. The owner is thinking about how they want it; nothing is to be built until they say. Shown to them: a strip of its own under the card (how many tracks, the sound and subtitle languages, an *Edit tracks* button), a *Convert | Edit tracks* switch above the presets, a *Tracks* button beside Trim, and the preset row again.
+
 ## Open questions
 
+- **Where Tracks sits in the window**: see above.
+- **Order of the next steps** (2026-11-26, the owner's call): seasons (step 5) before adding tracks (step 6), as planned. Adding tracks, a subtitle file into an MKV say, is not built yet.
 - **Tracks for more than MKV.** Proposed: MP4 and MOV stay MP4 (picture subtitles can't go in MP4: say so and offer MKV, as Customize does); TS and M2TS become MKV. Decided 2026-11-26: after the 0.21.0 release, not before.
