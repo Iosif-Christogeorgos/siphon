@@ -7,14 +7,14 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Hint } from "@/components/ui/tooltip";
 import { Note } from "@/features/options/PlanCard";
 import { formatBytes } from "@/lib/format";
-import { ipc, toAppError } from "@/lib/ipc";
-import { myLanguages, useSettings } from "@/stores/settings";
+import { toAppError } from "@/lib/ipc";
 import { useUi } from "@/stores/ui";
 import { COMMON_LANGUAGES, languageName, primary, systemLanguage } from "@/lib/languages";
 import { spring } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import type { MkvContents, MkvKind, MkvTrack, Suggestion } from "@/types";
 import { asItIs, changesOf, type Draft, type DraftTrack, draftOf, mineOf, moved, sizeOf, withTrack } from "./draft";
+import { tracksQuery, useLanguagesKey } from "./reading";
 
 const KINDS: { kind: MkvKind; label: string; icon: typeof Film }[] = [
   { kind: "video", label: "Video", icon: Film },
@@ -71,6 +71,7 @@ export function TracksPanel({
   draft,
   onDraft,
   disabled,
+  embedded = false,
 }: {
   fileKey: string;
   version: string;
@@ -79,16 +80,11 @@ export function TracksPanel({
   onDraft: (draft: Draft) => void;
   /** A copy is being made: nothing can change meanwhile. */
   disabled: boolean;
+  /** One file of a season, opened in its list: the season says what the languages did, and what saving makes. */
+  embedded?: boolean;
 }) {
-  // Read again when the user's languages change: what they keep changes with them.
-  const settings = useSettings();
-  const languages = settings.data ? myLanguages(settings.data).join(",") : null;
-  const contents = useQuery({
-    queryKey: ["tracks", fileKey, version, languages],
-    queryFn: () => ipc.readTracks(fileKey),
-    enabled: languages !== null,
-    staleTime: Number.POSITIVE_INFINITY,
-  });
+  const languages = useLanguagesKey();
+  const contents = useQuery(tracksQuery(fileKey, version, languages));
   const data = contents.data;
   const current =
     draft !== null && draft.key === fileKey && draft.version === version && draft.languages === languages;
@@ -116,7 +112,7 @@ export function TracksPanel({
 
   return (
     <fieldset disabled={disabled} className="min-w-0 space-y-3 border-0 p-0 py-1.5">
-      {data.suggestion && <Languages suggestion={data.suggestion} draft={draft} onDraft={onDraft} />}
+      {data.suggestion && !embedded && <Languages suggestion={data.suggestion} draft={draft} onDraft={onDraft} />}
       {KINDS.map(({ kind, label, icon }) => {
         const ofKind = draft.tracks.filter((track) => track.kind === kind);
         if (ofKind.length === 0) return null;
@@ -159,7 +155,7 @@ export function TracksPanel({
         )}
       </AnimatePresence>
 
-      <Summary draft={draft} contents={data} />
+      {!embedded && <Summary draft={draft} contents={data} />}
     </fieldset>
   );
 }

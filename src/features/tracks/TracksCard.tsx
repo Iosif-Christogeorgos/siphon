@@ -1,6 +1,6 @@
 import { ArrowLeft, ChevronDown, Layers } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 import { languageName } from "@/lib/languages";
 import { spring } from "@/lib/motion";
 import { cn } from "@/lib/utils";
@@ -8,64 +8,56 @@ import type { TrackOverview } from "@/types";
 import { changesOf, type Draft } from "./draft";
 import { TracksPanel } from "./TracksPanel";
 
-/** "Sound in Greek and English", or in "5 languages" past three; null for none known. */
-function inLanguages(what: string, tags: string[]): string | null {
+/** "Greek and English", "Greek, English and French", or "5 languages" past three; null for none. */
+function namesOf(tags: string[]): string | null {
   const names = [...new Set(tags.map((tag) => languageName(tag)))];
   if (names.length === 0) return null;
-  if (names.length > 3) return `${what} in ${names.length} languages`;
-  return `${what} in ${names.slice(0, -1).join(", ")}${names.length > 1 ? " and " : ""}${names.at(-1)}`;
+  if (names.length > 3) return `${names.length} languages`;
+  return `${names.slice(0, -1).join(", ")}${names.length > 1 ? " and " : ""}${names.at(-1)}`;
 }
 
 /**
- * An MKV's tracks, as a card tucked behind the file's card with its edge
- * showing (docs/mkv-editor.md). Opened, it slides out from under, the file's
- * card above it shrinks to a slim header, and the tracks fill it; converting
- * is put away meanwhile, by the pane.
+ * "Sound and subtitles in Greek and English", or "Sound in Greek · subtitles
+ * in English": what languages tracks are in, in a line. Null for none known.
  */
-export function TracksCard({
-  fileKey,
-  version,
-  overview,
+export function languagesLine(sound: string[], subtitles: string[]): string | null {
+  const soundNames = namesOf(sound);
+  const subtitleNames = namesOf(subtitles);
+  if (soundNames && soundNames === subtitleNames) return `Sound and subtitles in ${soundNames}`;
+  const parts = [soundNames && `Sound in ${soundNames}`, subtitleNames && `subtitles in ${subtitleNames}`];
+  return parts.filter((part) => part).join(" · ") || null;
+}
+
+/** A file whose tracks are worth choosing: more than one picture and one sound to choose from. */
+export function hasTracksToChoose(overview: TrackOverview | undefined, matroska: boolean): boolean {
+  return matroska && overview !== undefined && (overview.video > 1 || overview.sound > 1 || overview.subtitles > 0);
+}
+
+/**
+ * Tracks as a card tucked behind the card above it, its edge showing
+ * (docs/mkv-editor.md). Opened, it slides out from under and holds
+ * `children`; whoever shows it puts converting away meanwhile.
+ */
+export function TracksDeck({
   open,
   onOpenChange,
-  draft,
-  onDraft,
   disabled,
+  title,
+  said,
+  children,
 }: {
-  fileKey: string;
-  version: string;
-  /** What the file's tags say it holds: what the edge says until its tracks are read. */
-  overview: TrackOverview;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  draft: Draft | null;
-  onDraft: (draft: Draft) => void;
-  /** A copy is being made: nothing can change meanwhile. */
+  /** Copies are being made: nothing can change meanwhile. */
   disabled: boolean;
+  /** "6 tracks", on its edge. */
+  title: string;
+  /** What they are, in a line, under it. */
+  said: string;
+  children: ReactNode;
 }) {
-  // It peeks out once, when the file opens, to show it can be pulled; not again after.
+  // It peeks out once, when it first shows, to show it can be pulled; not again after.
   const [fresh, setFresh] = useState(true);
-  const total = overview.video + overview.sound + overview.subtitles;
-  // Once read and chosen from, the edge says what the copy keeps.
-  const current = draft !== null && draft.key === fileKey && draft.version === version ? draft : null;
-  const changes = current ? changesOf(current) : null;
-  const kept = current?.tracks.filter((track) => track.keep) ?? null;
-  const tagsOf = (kind: "sound" | "subtitles") =>
-    kept
-      ? kept.filter((track) => track.kind === kind && track.language).map((track) => track.language as string)
-      : kind === "sound"
-        ? overview.sound_languages
-        : overview.subtitle_languages;
-  const title =
-    changes && changes.removed > 0 ? `${changes.kept} of ${total} tracks kept` : `${total} tracks`;
-  const sound = [...new Set(tagsOf("sound"))];
-  const subtitles = [...new Set(tagsOf("subtitles"))];
-  const same = sound.length > 0 && sound.join() === subtitles.join();
-  const said =
-    (same
-      ? inLanguages("Sound and subtitles", sound)
-      : [inLanguages("Sound", sound), inLanguages("subtitles", subtitles)].filter((part) => part !== null).join(" · ")) ||
-    "Choose which it keeps, without converting";
   const toggle = (to: boolean) => {
     setFresh(false);
     onOpenChange(to);
@@ -78,7 +70,7 @@ export function TracksCard({
         open
           ? "mx-0 mt-3.5 rounded-[1.25rem] border-primary/25 bg-card shadow-card"
           : cn(
-              // Its top edge is behind the file's card; only its lower part shows.
+              // Its top edge is behind the card above; only its lower part shows.
               "group/tracks mx-3.5 -mt-7 rounded-b-[1.125rem] bg-card-behind shadow-card",
               !disabled && "hover:-mt-[1.375rem]",
               fresh && "motion-safe:animate-peek",
@@ -102,7 +94,7 @@ export function TracksCard({
             open ? "pointer-events-none -translate-y-2.5 opacity-0" : "opacity-100",
           )}
         >
-          <LayersTile spread={false} />
+          <LayersTile />
           <span className="flex min-w-0 flex-col gap-0.5">
             <span className="text-[15px] font-semibold">{title}</span>
             <span className="truncate text-[13px] text-muted-foreground">{said}</span>
@@ -120,7 +112,7 @@ export function TracksCard({
             open ? "opacity-100 delay-150" : "pointer-events-none translate-y-2.5 opacity-0",
           )}
         >
-          <LayersTile spread />
+          <LayersTile />
           <span className="flex min-w-0 flex-col gap-0.5">
             <span className="text-[15px] font-semibold">Tracks</span>
             <span className="truncate text-[13px] text-muted-foreground">
@@ -149,9 +141,7 @@ export function TracksCard({
             transition={spring}
             className="overflow-hidden"
           >
-            <div className="px-3 pb-3">
-              <TracksPanel fileKey={fileKey} version={version} draft={draft} onDraft={onDraft} disabled={disabled} />
-            </div>
+            <div className="px-3 pb-3">{children}</div>
           </motion.div>
         )}
       </AnimatePresence>
@@ -159,11 +149,55 @@ export function TracksCard({
   );
 }
 
-/** The layers icon in its tile; its layers spread apart while the tracks are open. */
-function LayersTile({ spread }: { spread: boolean }) {
+function LayersTile() {
   return (
     <span className="grid size-[2.375rem] shrink-0 place-items-center rounded-[0.7rem] bg-primary-soft text-primary">
-      <Layers className={cn("size-[1.15rem] transition-transform duration-500", spread && "scale-y-110")} />
+      <Layers className="size-[1.15rem]" />
     </span>
+  );
+}
+
+/** One MKV's tracks, tucked behind its card (see `TracksDeck`). */
+export function TracksCard({
+  fileKey,
+  version,
+  overview,
+  open,
+  onOpenChange,
+  draft,
+  onDraft,
+  disabled,
+}: {
+  fileKey: string;
+  version: string;
+  /** What the file's tags say it holds: what the edge says until its tracks are read. */
+  overview: TrackOverview;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  draft: Draft | null;
+  onDraft: (draft: Draft) => void;
+  disabled: boolean;
+}) {
+  const total = overview.video + overview.sound + overview.subtitles;
+  // Once read and chosen from, the edge says what the copy keeps.
+  const current = draft !== null && draft.key === fileKey && draft.version === version ? draft : null;
+  const changes = current ? changesOf(current) : null;
+  const kept = current?.tracks.filter((track) => track.keep) ?? null;
+  const tagsOf = (kind: "sound" | "subtitles") =>
+    kept
+      ? kept.flatMap((track) => (track.kind === kind && track.language ? [track.language] : []))
+      : kind === "sound"
+        ? overview.sound_languages
+        : overview.subtitle_languages;
+  return (
+    <TracksDeck
+      open={open}
+      onOpenChange={onOpenChange}
+      disabled={disabled}
+      title={changes && changes.removed > 0 ? `${changes.kept} of ${total} tracks kept` : `${total} tracks`}
+      said={languagesLine(tagsOf("sound"), tagsOf("subtitles")) ?? "Choose which it keeps, without converting"}
+    >
+      <TracksPanel fileKey={fileKey} version={version} draft={draft} onDraft={onDraft} disabled={disabled} />
+    </TracksDeck>
   );
 }

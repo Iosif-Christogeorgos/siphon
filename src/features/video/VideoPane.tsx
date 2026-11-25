@@ -11,7 +11,7 @@ import { ManualPanel } from "@/features/options/ManualPanel";
 import { LiveWaitCard, Note, PlanCard } from "@/features/options/PlanCard";
 import { CHAT_GROUPS, PresetArea } from "@/features/presets/PresetArea";
 import { changesOf, type Draft, editOf } from "@/features/tracks/draft";
-import { TracksCard } from "@/features/tracks/TracksCard";
+import { hasTracksToChoose, TracksCard } from "@/features/tracks/TracksCard";
 import { TrimPanel } from "@/features/trim/TrimPanel";
 import { ipc, toAppError } from "@/lib/ipc";
 import { languageName, subtitleLanguages } from "@/lib/languages";
@@ -78,10 +78,7 @@ export function VideoPane({ video }: { video: VideoInfo }) {
   // An MKV's tracks can be chosen instead (docs/mkv-editor.md), when there is
   // more to choose than one picture and one sound.
   const overview = video.file?.overview;
-  const tracksOffered =
-    video.file?.matroska === true &&
-    overview !== undefined &&
-    (overview.video > 1 || overview.sound > 1 || overview.subtitles > 0);
+  const tracksOffered = hasTracksToChoose(overview, video.file?.matroska === true);
   const [tracksOn, setTracksOn] = useState(false);
   // What has been chosen of its tracks so far.
   const [draft, setDraft] = useState<Draft | null>(null);
