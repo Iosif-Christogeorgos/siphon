@@ -4310,6 +4310,7 @@ dependencies = [
  "tokio",
  "tokio-native-tls",
  "whatlang",
+ "windows",
  "windows-sys 0.61.2",
  "winreg",
  "zip",

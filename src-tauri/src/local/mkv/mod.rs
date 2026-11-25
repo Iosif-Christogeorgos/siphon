@@ -8,11 +8,13 @@
 
 mod chapters;
 mod doubts;
+mod pictures;
 mod probe;
 mod words;
 
 use std::path::Path;
 
+use futures_util::StreamExt;
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
@@ -159,7 +161,10 @@ pub async fn read(app: &AppHandle, bins: &BinaryManager, key: &str) -> Result<Co
         .filter(|_| output.status.success())
         .ok_or_else(|| not_mkv(&original).with_details(String::from_utf8_lossy(&output.stderr).trim().to_string()))?;
     contents.chapters.shape = chapter_shape(original.path()).await;
-    read_words(bins, original.path(), &mut contents).await;
+    let windows = words::windows(contents.duration, contents.size);
+    let mut lines = read_words(bins, original.path(), &mut contents.tracks, windows.as_deref()).await;
+    lines.extend(read_pictures(bins, original.path(), &mut contents.tracks, windows.as_deref()).await);
+    mark_forced(&mut contents.tracks, &lines);
     doubts::cast(&mut contents, &original.name());
     settle(&mut contents);
     Ok(contents)
@@ -174,33 +179,102 @@ fn settle(contents: &mut Contents) {
     contents.chapters.note = contents.chapters.note();
 }
 
-/// Reads each text subtitle track's words, for its language, SDH and forced
-/// lines (see `words`). A track that can't be read is left as tagged.
-async fn read_words(bins: &BinaryManager, path: &Path, contents: &mut Contents) {
-    let windows = words::windows(contents.duration, contents.size);
+/// Reads each text subtitle track's words, for its language and SDH (see
+/// `words`), in `windows` of the file or all of it. Says how many lines each
+/// had, for telling forced subtitles. A track that can't be read is left as
+/// tagged.
+async fn read_words(
+    bins: &BinaryManager,
+    path: &Path,
+    tracks: &mut [Track],
+    windows: Option<&[(f64, f64)]>,
+) -> Vec<(usize, usize)> {
     let mut lines = Vec::new();
-    for track in &mut contents.tracks {
+    for track in tracks {
         if track.kind != Kind::Subtitles || !words::TEXT.contains(&track.codec.as_str()) {
             continue;
         }
-        let mut cmd = process::command(bins.ffprobe());
-        cmd.args(words::args(path, track.index, windows.as_deref()));
-        let output = {
-            let _in_use = bins.in_use().await;
-            process::output_within(cmd, READ_TIMEOUT).await
+        let Some(output) = probe_output(bins, words::args(path, track.index, windows)).await else {
+            continue;
         };
-        let Ok(Some(output)) = output else { continue };
-        let reading = words::Reading::of(&words::lines(&String::from_utf8_lossy(&output.stdout), &track.codec));
+        let reading = words::Reading::of(&words::lines(&output, &track.codec));
         words::apply(track, &reading);
         lines.push((track.index, reading.lines));
     }
-    mark_forced(&mut contents.tracks, &lines);
+    lines
 }
 
-/// Marks as forced a text subtitle track with a quarter of the lines, or
-/// fewer, of the fullest in its language: forced subtitles carry only signs
-/// and foreign lines. `lines` is what each track read had, over the same
-/// stretches of the file.
+/// Reads each picture subtitle track with Windows' OCR (see `pictures`), in
+/// the same stretches as [`read_words`]. Says how many pictures showing a
+/// line each had. Without OCR, or for a track that can't be drawn, tags stand.
+async fn read_pictures(
+    bins: &BinaryManager,
+    path: &Path,
+    tracks: &mut [Track],
+    windows: Option<&[(f64, f64)]>,
+) -> Vec<(usize, usize)> {
+    let mut shown = Vec::new();
+    for track in tracks {
+        if track.kind != Kind::Subtitles || !pictures::PICTURES.contains(&track.codec.as_str()) {
+            continue;
+        }
+        let Some(output) = probe_output(bins, pictures::packet_args(path, track.index, windows)).await else {
+            continue;
+        };
+        let (moments, count) = pictures::moments(&output);
+        shown.push((track.index, count));
+        let (width, height) = (track.width.unwrap_or(1920), track.height.unwrap_or(1080));
+        let index = track.index;
+        let drawn: Vec<Vec<u8>> = futures_util::stream::iter(moments)
+            .map(|at| async move {
+                let mut cmd = process::command(bins.ffmpeg());
+                cmd.args(pictures::draw_args(path, index, at, width, height));
+                let _in_use = bins.in_use().await;
+                let output = process::output_within(cmd, READ_TIMEOUT).await.ok().flatten()?;
+                (output.status.success() && output.stdout.len() == (width * height) as usize).then_some(output.stdout)
+            })
+            .buffered(4)
+            .filter_map(|picture| async move { picture })
+            .collect()
+            .await;
+        if drawn.is_empty() {
+            continue;
+        }
+        let read = tokio::task::spawn_blocking(move || {
+            let readers = pictures::Readers::new()?;
+            let mut lines = vec![Vec::new(); readers.len()];
+            for picture in &drawn {
+                for (reader, found) in readers.read(picture, width, height).into_iter().enumerate() {
+                    lines[reader].extend(found);
+                }
+            }
+            Some(lines)
+        })
+        .await;
+        if let Ok(Some(lines)) = read {
+            let readings: Vec<words::Reading> = lines.iter().map(|lines| words::Reading::of(lines)).collect();
+            pictures::apply(track, &readings);
+        }
+    }
+    shown
+}
+
+/// What ffprobe prints when run with `args`; None if it fails or takes too long.
+async fn probe_output(bins: &BinaryManager, args: Vec<std::ffi::OsString>) -> Option<String> {
+    let mut cmd = process::command(bins.ffprobe());
+    cmd.args(args);
+    let _in_use = bins.in_use().await;
+    let output = process::output_within(cmd, READ_TIMEOUT).await.ok().flatten()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Marks as forced a subtitle track with a quarter of the lines, or fewer,
+/// of the fullest in its language: forced subtitles carry only signs and
+/// foreign lines. `lines` is what each track read had (lines, or pictures
+/// that show one), over the same stretches of the file.
 fn mark_forced(tracks: &mut [Track], lines: &[(usize, usize)]) {
     const FULL: usize = 40;
     let language = |tracks: &[Track], index: usize| {

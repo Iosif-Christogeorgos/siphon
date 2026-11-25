@@ -50,6 +50,8 @@ psl = "2"
 # JobObjects: what Siphon starts ends with it, even if it crashes.
 windows-sys = { version = "0.61", features = ["Win32_Security_Cryptography", "Win32_Foundation", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_Security"] }
 whatlang = "0.18.0"
+# Windows' own OCR, for telling a picture subtitle track's language (docs/mkv-editor.md). Already in the build through Tauri.
+windows = { version = "0.62", features = ["Foundation", "Foundation_Collections", "Globalization", "Graphics_Imaging", "Media_Ocr", "Security_Cryptography", "Storage_Streams"] }
 
 [dev-dependencies]
 # Paused time, for testing the speed limit without waiting for it.
