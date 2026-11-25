@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime};
 
 use futures_util::StreamExt;
 use image::{AnimationDecoder, ImageDecoder, RgbaImage};
@@ -16,6 +17,11 @@ const PARALLEL: usize = 12;
 const MAX_BYTES: usize = 8 * 1024 * 1024;
 /// Numbers each image's file while it is written (see [`fetch`]).
 static PARTIAL: AtomicU64 = AtomicU64::new(0);
+/// An image no chat has needed in this long is let go (see [`sweep`]).
+const UNUSED: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+/// A kept image is marked as used at most this often, so a chat drawn again
+/// and again doesn't write to every image each time.
+const MARK_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// Where an image is kept in `dir`: named after its address, so the same
 /// emote is fetched once for every download.
@@ -42,7 +48,7 @@ pub async fn fetch_with(
     if tokio::fs::create_dir_all(dir).await.is_err() {
         return urls.len();
     }
-    let missing: Vec<String> = urls.into_iter().filter(|url| !cached_path(dir, url).exists()).collect();
+    let missing: Vec<String> = urls.into_iter().filter(|url| !kept(&cached_path(dir, url))).collect();
     let total = missing.len();
     if total > 0 {
         progress(0, total);
@@ -82,6 +88,41 @@ pub async fn fetch_with(
         progress(done, total);
     }
     failed
+}
+
+/// Whether `file` is in the cache, marking it as used today so [`sweep`]
+/// keeps it.
+fn kept(file: &Path) -> bool {
+    let Ok(changed) = std::fs::metadata(file).and_then(|meta| meta.modified()) else {
+        return false;
+    };
+    if changed.elapsed().is_ok_and(|age| age > MARK_EVERY) {
+        let _ = std::fs::File::options()
+            .write(true)
+            .open(file)
+            .and_then(|file| file.set_modified(SystemTime::now()));
+    }
+    true
+}
+
+/// Lets go of what in `dir` has sat a month unmarked: images no chat has
+/// needed since, and any left half-written. One is fetched again should a
+/// chat need it after all. Run at launch, before anything draws.
+pub fn sweep(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let unused = entry
+            .metadata()
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|changed| changed.elapsed().ok())
+            .is_some_and(|age| age > UNUSED);
+        if unused {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// A decoded image: one frame, or an animation's frames, all the same size,
@@ -322,6 +363,35 @@ mod tests {
         })
         .await;
         assert_eq!((failed, heard.as_slice()), (1, [(0, 1), (1, 1)].as_slice()));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn lets_go_only_of_images_no_chat_has_needed_in_a_month() {
+        let dir = std::env::temp_dir().join(format!("siphon-images-sweep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let aged = |name: &str, days: u64| {
+            let file = dir.join(name);
+            std::fs::write(&file, b"image").unwrap();
+            let then = SystemTime::now() - Duration::from_secs(days * 24 * 60 * 60);
+            std::fs::File::options()
+                .write(true)
+                .open(&file)
+                .unwrap()
+                .set_modified(then)
+                .unwrap();
+            file
+        };
+        let fresh = aged("fresh.img", 2);
+        let stale = aged("stale.img", 31);
+        let used = aged("used.img", 31);
+
+        // Needed again, the old one counts as used today; the other is let go.
+        assert!(kept(&used));
+        assert!(!kept(&dir.join("never fetched.img")));
+        sweep(&dir);
+        assert!(fresh.exists() && used.exists() && !stale.exists());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

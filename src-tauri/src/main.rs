@@ -80,6 +80,9 @@ fn main() {
         .setup(|app| {
             preview::clear_cache(app.handle());
             local::sweep_frames(app.handle());
+            if let Ok(dir) = downloads::chat_image_folder(app.handle()) {
+                chat::images::sweep(&dir);
+            }
             app.manage(local::Grants::default());
             // Paused and failed downloads from the last session carry on from their files.
             let downloads = downloads::DownloadManager::load(app.handle());
