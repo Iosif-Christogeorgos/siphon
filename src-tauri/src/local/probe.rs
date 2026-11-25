@@ -595,5 +595,3 @@ mod tests {
         assert_eq!(info.formats[0].dynamic_range.as_deref(), Some("HDR10"));
     }
 }
-
-
