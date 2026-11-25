@@ -86,6 +86,10 @@ Paste a playlist or channel link to pick the videos you want, with an estimated 
 
 Drop videos or sounds on the window, or press **Browse**, and Siphon makes them into what they're for, just as it does a download: a file that plays on your TV, a clip that fits Discord, an OBS recording as an MP4, the sound alone as an MP3, or a part cut out on the exact frames. A folder or a handful of files open as a list, converted in one go, a few at a time so the PC stays usable. What Siphon makes goes beside each file, under a name of its own; the file itself is never changed, and one that already is what you chose is left as it is.
 
+### Choose an MKV's tracks
+
+Open a film or an episode and press its **tracks** chip to see every sound and subtitle track, with its language and how Siphon knows it: subtitles are read for what they say, picture subtitles with Windows' own text recognition, so a wrong label is caught. Your languages, set once in Settings, are applied as the file opens, and you can still keep or leave out any track, rename it, choose which plays first and change the order. Nothing is converted: the tracks are copied as they are into a file of the same name in an `Edited` folder beside the original, which is never touched. A track whose language Siphon isn't sure of is kept and marked, never left out unseen.
+
 ### Record live streams
 
 Paste a live stream from Twitch, YouTube, Kick and more, and press **Record**, or **Record when it starts** for a scheduled stream or an offline channel. Siphon records from now or, where the site allows, from the start, keeps going through short dropouts, and makes it into a file that plays everywhere when you press Stop or the stream ends. On Twitch it leaves the ads out, with no account or subscription. A crash or power cut never loses what was recorded: Siphon finishes it the next time it starts.
