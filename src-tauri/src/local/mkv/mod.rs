@@ -9,6 +9,7 @@
 mod chapters;
 mod doubts;
 mod probe;
+mod words;
 
 use std::path::Path;
 
@@ -30,6 +31,12 @@ pub struct Contents {
     pub attachments: Vec<Attachment>,
     /// What casts doubt on the file as a whole: "Its name says Greek (EN-GR), but no track is Greek."
     pub doubts: Vec<String>,
+    /// Seconds.
+    #[serde(skip)]
+    pub duration: Option<f64>,
+    /// Bytes.
+    #[serde(skip)]
+    pub size: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -74,6 +81,10 @@ pub struct Track {
     pub entries: Option<u64>,
     /// What casts doubt on its language: "Its name says Greek, but it is tagged English."
     pub doubts: Vec<String>,
+    /// What reading it found, besides: "Tagged English, but its words are Greek: the copy says Greek."
+    pub notes: Vec<String>,
+    /// Its language was found, or its tag borne out, by reading its words.
+    pub read: bool,
     /// Sound or subtitles whose language is known, with nothing casting
     /// doubt on it: only then may it be left out for its language. Video
     /// always is: no language decides it (see [`settle`]).
@@ -148,6 +159,7 @@ pub async fn read(app: &AppHandle, bins: &BinaryManager, key: &str) -> Result<Co
         .filter(|_| output.status.success())
         .ok_or_else(|| not_mkv(&original).with_details(String::from_utf8_lossy(&output.stderr).trim().to_string()))?;
     contents.chapters.shape = chapter_shape(original.path()).await;
+    read_words(bins, original.path(), &mut contents).await;
     doubts::cast(&mut contents, &original.name());
     settle(&mut contents);
     Ok(contents)
@@ -160,6 +172,65 @@ fn settle(contents: &mut Contents) {
         track.certain = track.kind == Kind::Video || (track.language.is_some() && track.doubts.is_empty());
     }
     contents.chapters.note = contents.chapters.note();
+}
+
+/// Reads each text subtitle track's words, for its language, SDH and forced
+/// lines (see `words`). A track that can't be read is left as tagged.
+async fn read_words(bins: &BinaryManager, path: &Path, contents: &mut Contents) {
+    let windows = words::windows(contents.duration, contents.size);
+    let mut lines = Vec::new();
+    for track in &mut contents.tracks {
+        if track.kind != Kind::Subtitles || !words::TEXT.contains(&track.codec.as_str()) {
+            continue;
+        }
+        let mut cmd = process::command(bins.ffprobe());
+        cmd.args(words::args(path, track.index, windows.as_deref()));
+        let output = {
+            let _in_use = bins.in_use().await;
+            process::output_within(cmd, READ_TIMEOUT).await
+        };
+        let Ok(Some(output)) = output else { continue };
+        let reading = words::Reading::of(&words::lines(&String::from_utf8_lossy(&output.stdout), &track.codec));
+        words::apply(track, &reading);
+        lines.push((track.index, reading.lines));
+    }
+    mark_forced(&mut contents.tracks, &lines);
+}
+
+/// Marks as forced a text subtitle track with a quarter of the lines, or
+/// fewer, of the fullest in its language: forced subtitles carry only signs
+/// and foreign lines. `lines` is what each track read had, over the same
+/// stretches of the file.
+fn mark_forced(tracks: &mut [Track], lines: &[(usize, usize)]) {
+    const FULL: usize = 40;
+    let language = |tracks: &[Track], index: usize| {
+        tracks
+            .iter()
+            .find(|t| t.index == index)
+            .and_then(|t| t.language.clone())
+    };
+    for &(index, count) in lines {
+        let Some(own) = language(tracks, index) else { continue };
+        let fullest = lines
+            .iter()
+            .filter(|(other, _)| *other != index && language(tracks, *other).as_deref() == Some(own.as_str()))
+            .map(|(_, count)| *count)
+            .max()
+            .unwrap_or(0);
+        if fullest < FULL || count * 4 > fullest {
+            continue;
+        }
+        let Some(track) = tracks.iter_mut().find(|t| t.index == index) else {
+            continue;
+        };
+        if !track.forced {
+            track.forced = true;
+            track.notes.push(format!(
+                "It has {count} lines where the other {} subtitles have {fullest}: forced subtitles, for signs and foreign lines.",
+                crate::ytdlp::subtitles::language_name(&own).unwrap_or(&own)
+            ));
+        }
+    }
 }
 
 async fn chapter_shape(path: &Path) -> Option<Shape> {

@@ -204,6 +204,8 @@ mod tests {
             height: None,
             entries: None,
             doubts: Vec::new(),
+            notes: Vec::new(),
+            read: false,
             certain: false,
         }
     }
@@ -219,6 +221,8 @@ mod tests {
             chapters: Chapters::default(),
             attachments: Vec::new(),
             doubts: Vec::new(),
+            duration: None,
+            size: None,
         }
     }
 

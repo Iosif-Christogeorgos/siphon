@@ -17,7 +17,7 @@ pub fn args(file: &Path) -> Vec<OsString> {
         "json",
         "-show_entries",
         concat!(
-            "format=format_name",
+            "format=format_name,duration,size",
             ":stream=index,codec_type,codec_name,width,height,channels",
             ":stream_tags:stream_disposition",
             ":chapter=start_time",
@@ -79,6 +79,8 @@ pub fn parse(json: &str) -> Option<Contents> {
             entries: tag(tags, "NUMBER_OF_FRAMES").and_then(|n| n.trim().parse().ok()),
             name,
             doubts: Vec::new(),
+            notes: Vec::new(),
+            read: false,
             certain: false,
         });
     }
@@ -90,6 +92,8 @@ pub fn parse(json: &str) -> Option<Contents> {
         },
         attachments,
         doubts: Vec::new(),
+        duration: number(&value["format"]["duration"]).filter(|seconds| *seconds > 0.0),
+        size: number(&value["format"]["size"]).map(|bytes| bytes as u64),
     })
 }
 
@@ -126,6 +130,16 @@ fn says(name: &str, words: &[&str]) -> bool {
         .collect();
     let spaced = format!(" {} ", spaced.split_whitespace().collect::<Vec<_>>().join(" "));
     words.iter().any(|word| spaced.contains(&format!(" {word} ")))
+}
+
+/// ffprobe writes numbers as strings: "1444.778000".
+fn number(value: &Value) -> Option<f64> {
+    match value {
+        Value::String(text) => text.trim().parse().ok(),
+        Value::Number(number) => number.as_f64(),
+        _ => None,
+    }
+    .filter(|number: &f64| number.is_finite())
 }
 
 fn whole(value: &Value) -> Option<u64> {
