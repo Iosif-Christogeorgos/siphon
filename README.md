@@ -82,6 +82,10 @@ Pick a language once, and every video with subtitles in it gets them in the form
 
 Paste a playlist or channel link to pick the videos you want, with an estimated total size. Videos you already have are marked and skipped, so pasting the same playlist again fetches only what's new. Save them in a folder named after the playlist, numbered in order.
 
+### Convert files on your PC
+
+Drop videos or sounds on the window, or press **Browse**, and Siphon makes them into what they're for, just as it does a download: a file that plays on your TV, a clip that fits Discord, an OBS recording as an MP4, the sound alone as an MP3, or a part cut out on the exact frames. A folder or a handful of files open as a list, converted in one go, a few at a time so the PC stays usable. What Siphon makes goes beside each file, under a name of its own; the file itself is never changed, and one that already is what you chose is left as it is.
+
 ### Record live streams
 
 Paste a live stream from Twitch, YouTube, Kick and more, and press **Record**, or **Record when it starts** for a scheduled stream or an offline channel. Siphon records from now or, where the site allows, from the start, keeps going through short dropouts, and makes it into a file that plays everywhere when you press Stop or the stream ends. On Twitch it leaves the ads out, with no account or subscription. A crash or power cut never loses what was recorded: Siphon finishes it the next time it starts.
@@ -116,7 +120,9 @@ Siphon runs on Windows 11 (64-bit). You don't need to install anything else.
 2. **Pick what it's for**, and optionally a quality. Siphon remembers your choice for next time.
 3. **Press Download.** Files go to your Downloads folder unless you choose another in Settings.
 
-Press **Trim** on the video card to download only part of it. In the trim panel, <kbd>Space</kbd> plays, <kbd>,</kbd> and <kbd>.</kbd> step one frame, and <kbd>I</kbd> and <kbd>O</kbd> set the start and end. The **Downloads** button in the title bar opens the queue.
+Press **Trim** on the video card to download only part of it. In the trim panel, <kbd>Space</kbd> plays, <kbd>,</kbd> and <kbd>.</kbd> step one frame, and <kbd>I</kbd> and <kbd>O</kbd> set the start and end. The **Activity** button in the title bar opens the list of downloads and conversions.
+
+To convert a file on your PC instead, drop it on the window or press **Browse**, then pick what it's for in the same way.
 
 ## Documentation
 
@@ -128,6 +134,7 @@ Press **Trim** on the video card to download only part of it. In the trim panel,
 | [Live recording](docs/live.md) | How recording works, what was tested, and its limits |
 | [Subtitles](docs/subtitles.md) | Which subtitles a download gets, where each preset puts them, and what was tested |
 | [Chat](docs/chat.md) | Twitch chat drawn into the picture: how it is read, timed and drawn, what was measured, and its limits |
+| [Files on your PC](docs/local-files.md) | Converting files on your PC: where what is made goes, how the files themselves are kept safe, what was tested |
 | [Decisions](docs/decisions.md) | Why things work the way they do, what was measured, and known issues |
 | [Development](docs/development.md) | Running from source, checks, building an installer and releasing |
 

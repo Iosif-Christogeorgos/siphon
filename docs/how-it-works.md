@@ -1,6 +1,6 @@
 # How Siphon works
 
-What each part of Siphon does and why, in more depth than the [README](../README.md). The reasons behind the harder choices, with what was measured, are in [decisions.md](decisions.md); what each preset assumes, with sources, is in [presets.md](presets.md); signing in to sites is in [sign-in.md](sign-in.md); subtitles are in [subtitles.md](subtitles.md); Twitch chat is in [chat.md](chat.md). Building and releasing are in [development.md](development.md).
+What each part of Siphon does and why, in more depth than the [README](../README.md). The reasons behind the harder choices, with what was measured, are in [decisions.md](decisions.md); what each preset assumes, with sources, is in [presets.md](presets.md); signing in to sites is in [sign-in.md](sign-in.md); subtitles are in [subtitles.md](subtitles.md); Twitch chat is in [chat.md](chat.md); converting files on this PC is in [local-files.md](local-files.md). Building and releasing are in [development.md](development.md).
 
 ## Managed binaries
 
@@ -59,7 +59,7 @@ What each target plays or needs, the upload limits, and the sources for them are
 | , / . | Step one frame back or forward |
 | I / O | Set the start or end of the part at the playhead |
 
-The preview comes from YouTube's embedded player for YouTube links, from a low-resolution stream for other sites (a plain file if the site has one, otherwise HLS, which is all Twitch offers), and from a small low-resolution copy if neither plays.
+The preview comes from YouTube's embedded player for YouTube links, from a low-resolution stream for other sites (a plain file if the site has one, otherwise HLS, which is all Twitch offers), and from a small low-resolution copy if neither plays. A file on this PC plays as it is where WebView2 can, and from a small copy made of it otherwise.
 
 Only the selected part is downloaded (`--download-sections`), and every clip starts and ends on the exact frames chosen. There is no choice to make:
 
@@ -78,9 +78,13 @@ Where they go depends on the preset: a track inside the file for Watch and Max q
 
 For a Twitch video, a Twitch channel's videos or a Twitch stream, with Max quality or Watch, **Chat** (*With* or *Without*) draws the chat into the picture, the way it looked on Twitch. **Chat** on the video's card opens the preview with the chat box over it, showing the real chat at that moment (for a stream on air, a still of the stream with the chat as it comes): drag it, resize it, set how dark it is; the place is kept for the channel. A video's chat comes from Twitch's replay, fetched beside the video; a recording's is read as the stream airs, placed in the file where Twitch's own replay shows it, and drawn in as it records, so the file is ready moments after Stop. How it is read, timed and drawn, what was measured, and its limits are in [chat.md](chat.md).
 
+## Files on this PC
+
+Video and sound files dropped on the window, or picked with **Browse** beside Paste, are converted the way a download is: planned by the same presets, made by Siphon's own ffmpeg pass straight from the file, and saved beside it (`Clip (Windows).mp4`, `Clip (Discord, 1m00s-1m15s).mp4`, `Clip.mp3`), never under a name in use; a folder that can't be written to sends it to the download folder. The file itself is only ever read. Max quality is shown as **File type** for a file: its own streams in the file type that suits them. A file that already is what was asked for says so, and nothing is made. A folder gives the video and sound files directly inside it; several files open a list to choose from, with one preset for all. Conversions take turns by what they need (one encode on the processor, two on the graphics card) and run below other programs' priority. The webview never names a file: the backend takes the paths from the window's drop event or its own file dialog, and gives the webview a key for each. How, what was measured and the limits are in [local-files.md](local-files.md).
+
 ## Queue, playlists and settings
 
-Every download joins a queue. A set number run at once (three by default) and the rest wait their turn, in order. The **Downloads** button in the title bar opens the list, where each download can be paused, resumed, cancelled, retried, opened or shown in its folder.
+Every download joins a queue. A set number run at once (three by default) and the rest wait their turn, in order. The **Activity** button in the title bar opens the list, which holds conversions of files too, and where each can be paused, resumed, cancelled, retried, opened or shown in its folder.
 
 - **Pause** stops the download but keeps what it has fetched; **Resume** carries on from there.
 - While Siphon converts a video, its row and the bar under Download say the size the file is heading for ("≈ 103 MB"), worked out from what it has written so far.
@@ -90,7 +94,7 @@ Every download joins a queue. A set number run at once (three by default) and th
 - A trimmed part whose connection stops sending gives up after 20 seconds and is tried again, instead of waiting forever.
 - Downloading something again never replaces or touches a file already in the folder: the new one is named `Title [id] (2).mp4`, then `(3)`, and so on. While a download runs, its files carry a `.siphon-…` marker in their name, which comes off when it is finished.
 - Opening a video you have downloaded before says so under its card ("You already have this · today · 860 MB", or "a clip of this"), with **Open** and **Show in folder**, as long as the file is still where Siphon put it. A video that is downloading or waiting from elsewhere (a playlist, say) shows "Already in your downloads".
-- When downloads finish or fail while Siphon isn't the active window, Windows shows a notification. Downloads that end within two seconds of each other share one ("3 downloads finished").
+- When downloads or conversions finish or fail while Siphon isn't the active window, Windows shows a notification. Those that end within two seconds of each other share one ("3 downloads finished", "Conversion failed").
 - Closing the app pauses every download, so no yt-dlp or ffmpeg process is left behind; while any are running or waiting, Siphon asks first. The list is kept between sessions: paused downloads come back paused and carry on from where they stopped (**Resume all** resumes them together), and finished ones can still be opened.
 
 **Speed limit.** Settings → Downloads → **Speed limit** caps the total download speed of all downloads together: Unlimited (the default), 20, 30, 40 or 50 MB/s, or a custom value. Running downloads share it evenly, a download that needs less leaves the rest to the others, and a change applies to running downloads within a second. The limit is kept in `settings.json`, so it stays on until it is changed. While it is on, the title bar says so ("Limited to 20 MB/s"; click it to change it), and while anything downloads it shows the total speed. MB here is 1,048,576 bytes, the unit download speeds are shown in; a figure moves to the next unit at 1,000 of one, so it never reads "1023 KB/s". How it works is under [Talking to yt-dlp](#talking-to-yt-dlp).
@@ -156,7 +160,7 @@ Progress comes from `--progress-template` lines that the backend parses and fold
 src/                     React + TypeScript frontend
   components/            Shared UI (title bar, error card, shadcn/ui primitives)
   features/              One folder per feature: setup, link, video, playlist, presets, options,
-                         trim, download, queue, settings, speed, sign-in, home, chat
+                         trim, download, queue, settings, speed, sign-in, home, chat, files
   lib/                   IPC wrappers, formatting, motion presets
   stores/                Zustand stores (binaries, choices, downloads, trim, toasts, appUpdate, ui, speed, signIn),
                          and the shared settings query
@@ -170,7 +174,8 @@ src-tauri/               Rust backend (Tauri 2)
   src/srt.rs             Reading, cleaning, cutting and writing SubRip subtitles
   src/choices.rs         The remembered choice and saved presets (choices.json), and migrating old ones
   src/ffmpeg/            Hardware encoder detection and conversion arguments
-  src/downloads/         The download queue, jobs (pause, resume, cancel), progress tracking, and live recording (live.rs; Twitch without its ads: twitch_feed.rs), and drawing chat in (chat.rs, live_chat.rs, live_draw.rs)
+  src/downloads/         The download queue, jobs (pause, resume, cancel), progress tracking, and live recording (live.rs; Twitch without its ads: twitch_feed.rs), drawing chat in (chat.rs, live_chat.rs, live_draw.rs), and converting files on this PC (files.rs)
+  src/local/             Files on this PC: taking them in (drops, Browse, folders), the keys the webview knows them by, reading them with ffprobe, and what is made of them and called
   src/chat/              Twitch chat: reading it (replay, IRC), emotes and badges, and drawing it as a layer
   src/throttle/          The speed limit: the local proxy, the shared fair limiter, the system proxy
   src/sessions/          Signed-in sites: cookie jars (DPAPI), which site a link is, the sign-in window,
@@ -188,6 +193,7 @@ docs/sign-in.md          How signing in to sites works, what is kept where, and 
 docs/live.md             Recording live streams: how, what was tested, and its limits
 docs/subtitles.md        Subtitles: which a download gets, where each preset puts them, what was tested
 docs/chat.md             Twitch chat drawn in: how it is read, timed and drawn, what was measured
+docs/local-files.md      Converting files on this PC: how, what was tested, and its limits
 docs/decisions.md        Why things work the way they do, and known issues
 docs/media/              The README's screenshots and demo
 app-icon.svg             Icon source; regenerate with `npx tauri icon app-icon.svg`
