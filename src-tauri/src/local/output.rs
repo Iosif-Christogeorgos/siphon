@@ -205,6 +205,7 @@ mod tests {
                 name: original.name(),
                 folder: r"C:\Videos".into(),
                 size: 1,
+                version: "1-0".into(),
                 start: 0.0,
                 cover: false,
             }),

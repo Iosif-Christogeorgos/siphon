@@ -13,7 +13,7 @@ use std::path::Path;
 use tauri::Manager;
 
 use super::tracker::Tracker;
-use super::{work_dir, ChildEvent, Done, DownloadManager, Failure, JobContext, Note};
+use super::{free_space, work_dir, ChildEvent, Done, DownloadManager, Failure, JobContext, Note};
 use crate::error::{AppError, ErrorKind, Result};
 use crate::ffmpeg::{self, encoders::Hardware};
 use crate::local::{self, LocalFile, Original};
@@ -173,6 +173,19 @@ impl DownloadManager {
                 }),
             ),
         };
+        // A disk filled to the brim fails a conversion halfway, after minutes of it.
+        if let (Some(free), Some(needs)) = (free_space(&folder), room_needed(recipe)) {
+            if free < needs {
+                return Err(AppError::new(
+                    ErrorKind::DiskFull,
+                    format!(
+                        "There isn't room for it on the disk: it needs about {}, and {} is free.",
+                        size_text(needs),
+                        size_text(free)
+                    ),
+                ));
+            }
+        }
         let name = local::output_name(&original.stem(), choice, recipe, trim);
         let output = self.unique_output(folder.join(name), job.id);
         let partial = local::partial_name(&output, job.id);
@@ -264,6 +277,25 @@ impl DownloadManager {
         }
         tokio::fs::rename(partial, output).await?;
         Ok(())
+    }
+}
+
+/// The room a conversion needs on its disk: what it is likely to make, a
+/// fifth more for a picture busier than expected, and a quarter of a
+/// gigabyte to spare. None when the size can't be told.
+fn room_needed(recipe: &Recipe) -> Option<u64> {
+    let likely = recipe.estimated_size()?;
+    Some(likely + likely / 5 + 256 * 1024 * 1024)
+}
+
+/// "1.2 GB", "350 MB", in the units the window shows sizes in.
+fn size_text(bytes: u64) -> String {
+    const MB: f64 = 1024.0 * 1024.0;
+    let mb = bytes as f64 / MB;
+    if mb >= 1000.0 {
+        format!("{:.1} GB", mb / 1024.0)
+    } else {
+        format!("{} MB", mb.round().max(1.0))
     }
 }
 
@@ -383,6 +415,18 @@ mod tests {
         manager.end_turn(Load::Processor);
         assert!(waiting.await.unwrap());
         assert!(manager.files_gate.lock().unwrap().waiting.is_empty());
+    }
+
+    #[test]
+    fn a_conversion_needs_room_for_what_it_makes_and_some_to_spare() {
+        let mut copy = recipe(Some(VideoAction::Copy), Some(AudioAction::Copy));
+        copy.video.as_mut().unwrap().size = Some(1024 * 1024 * 1024);
+        // A file's sound is in its one format, counted with the picture.
+        copy.audio.as_mut().unwrap().format_id = None;
+        assert_eq!(room_needed(&copy), Some(1024 * 1024 * 1024 * 6 / 5 + 256 * 1024 * 1024));
+        assert_eq!(size_text(1024 * 1024 * 1024 * 6 / 5), "1.2 GB");
+        assert_eq!(size_text(350 * 1024 * 1024), "350 MB");
+        assert_eq!(size_text(10), "1 MB");
     }
 
     #[test]

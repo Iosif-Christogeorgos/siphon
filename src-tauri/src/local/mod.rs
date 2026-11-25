@@ -117,8 +117,8 @@ impl Original {
         self.path.parent()
     }
 
-    /// What the webview is told of it.
-    fn describe(&self, size: u64) -> LocalFile {
+    /// What the webview is told of it, as it is now (`stamp`).
+    fn describe(&self, stamp: Stamp) -> LocalFile {
         LocalFile {
             key: self.key(),
             name: self.name(),
@@ -126,7 +126,8 @@ impl Original {
                 .folder()
                 .map(|folder| folder.to_string_lossy().into_owned())
                 .unwrap_or_default(),
-            size,
+            size: stamp.size,
+            version: stamp.version(),
             start: 0.0,
             cover: false,
         }
@@ -152,6 +153,10 @@ pub struct LocalFile {
     pub folder: String,
     /// Bytes.
     pub size: u64,
+    /// Its size and when it last changed, in a word: a file that changed
+    /// since it was read is read and planned again, by the window too, which
+    /// keeps what it was told by key and version.
+    pub version: String,
     /// Where its timestamps start, in seconds: an MPEG-TS from OBS starts a
     /// second or so in. A part to cut out is chosen from its start, and cut
     /// by its timestamps.
@@ -190,6 +195,15 @@ struct Stamp {
 }
 
 impl Stamp {
+    /// "6a3f2e-19cb5d8a2c1": its size and when it last changed (milliseconds), in hex.
+    fn version(&self) -> String {
+        let changed = self
+            .modified
+            .and_then(|time| time.duration_since(SystemTime::UNIX_EPOCH).ok())
+            .map_or(0, |since| since.as_millis());
+        format!("{:x}-{changed:x}", self.size)
+    }
+
     fn of(path: &Path) -> Option<Stamp> {
         let meta = std::fs::metadata(path).ok().filter(std::fs::Metadata::is_file)?;
         Some(Stamp {
@@ -239,13 +253,6 @@ impl Grants {
             granted.read = Some((info, stamp));
         }
     }
-
-    /// What reading the file at `key` found, if it was read.
-    pub fn info(&self, key: &str) -> Option<Arc<VideoInfo>> {
-        let id = key.strip_prefix(SCHEME)?;
-        let grants = self.0.lock().unwrap();
-        grants.get(id)?.read.as_ref().map(|(info, _)| Arc::clone(info))
-    }
 }
 
 /// Whether a link the webview sent is a file's key instead.
@@ -268,8 +275,10 @@ pub fn take_in(grants: &Grants, paths: Vec<PathBuf>) -> Intake {
             intake.over += 1;
             return;
         }
-        let size = std::fs::metadata(original.path()).map_or(0, |meta| meta.len());
-        intake.files.push(original.describe(size));
+        let Some(stamp) = Stamp::of(original.path()) else {
+            return;
+        };
+        intake.files.push(original.describe(stamp));
     };
     for path in paths {
         if path.is_dir() {
@@ -368,7 +377,7 @@ pub async fn read(app: &AppHandle, bins: &BinaryManager, key: &str) -> Result<Ar
         .await
         .map_err(|err| AppError::internal("Couldn't read the file.").with_details(err.to_string()))?;
     let probe = run_probe(bins, original.path()).await?;
-    let mut info = probe.video_info(&original, stamp.size)?;
+    let mut info = probe.video_info(&original, stamp)?;
     info.thumbnail = frame(app, bins, &original, &probe).await;
     let info = Arc::new(info);
     grants.keep(&original, Arc::clone(&info), stamp);

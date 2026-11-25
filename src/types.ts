@@ -187,6 +187,8 @@ export interface LocalFile {
   folder: string;
   /** Bytes. */
   size: number;
+  /** Its size and when it last changed: a file changed since is read and planned again. */
+  version: string;
 }
 
 /** What came of files dropped on the window or picked with Browse. */

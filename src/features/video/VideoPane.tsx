@@ -164,7 +164,8 @@ export function VideoPane({ video }: { video: VideoInfo }) {
   }, [choices]);
 
   const plan = useQuery({
-    queryKey: ["plan", video.url, choice, shownTrim, recordFromStart],
+    // A file's version too: one changed since is planned again.
+    queryKey: ["plan", video.url, choice, shownTrim, recordFromStart, video.file?.version ?? null],
     queryFn: () =>
       choice ? ipc.planDownload(video.url, choice, shownTrim, recordFromStart) : Promise.reject(new Error("no choice")),
     // A stream that hasn't started has nothing to plan yet: that happens when it starts.

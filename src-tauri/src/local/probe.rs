@@ -7,7 +7,7 @@ use std::path::Path;
 
 use serde_json::Value;
 
-use super::{LocalFile, Original};
+use super::{LocalFile, Original, Stamp};
 use crate::error::{AppError, ErrorKind, Result};
 use crate::plan::codecs::{AudioCodec, VideoCodec};
 use crate::plan::sizes::SizeFacts;
@@ -121,7 +121,8 @@ impl Probe {
     /// What the file holds as a video's lookup: one format, with the
     /// file's own picture and sound, which the planner plans like any other.
     /// An error if it holds neither, or is a still picture.
-    pub fn video_info(&self, original: &Original, size: u64) -> Result<VideoInfo> {
+    pub(super) fn video_info(&self, original: &Original, stamp: Stamp) -> Result<VideoInfo> {
+        let size = stamp.size;
         // A picture without a length is a still (a photo, a PNG): nothing to convert.
         let still = self.format.ends_with("_pipe") || self.format == "image2";
         let kind = match (&self.video, &self.audio) {
@@ -188,7 +189,7 @@ impl Probe {
             file: Some(LocalFile {
                 start: self.start,
                 cover: self.cover,
-                ..original.describe(size)
+                ..original.describe(stamp)
             }),
         })
     }
@@ -356,6 +357,11 @@ mod tests {
          "r_frame_rate": "25/1", "avg_frame_rate": "25/1", "disposition": {"default": 0, "attached_pic": 0}}],
         "format": {"format_name": "png_pipe", "size": "26458"}}"#;
 
+    /// The file as it is: of `size` bytes, its time of change unknown.
+    fn stamp(size: u64) -> Stamp {
+        Stamp { size, modified: None }
+    }
+
     fn original(name: &str) -> Original {
         Original::new(Path::new(r"C:\Videos").join(name))
     }
@@ -363,7 +369,7 @@ mod tests {
     #[test]
     fn a_phone_video_reads_as_one_upright_format_with_its_sound() {
         let probe = Probe::parse(PHONE_HEVC).unwrap();
-        let info = probe.video_info(&original("Phone.MP4"), 3_665_955).unwrap();
+        let info = probe.video_info(&original("Phone.MP4"), stamp(3_665_955)).unwrap();
         assert_eq!(info.title, "Phone");
         assert!(crate::local::is_key(&info.url));
         assert_eq!(info.duration, Some(6.0));
@@ -391,7 +397,7 @@ mod tests {
         let probe = Probe::parse(SONG_WITH_COVER).unwrap();
         assert!(probe.cover);
         assert!(probe.video.is_none());
-        let info = probe.video_info(&original("Song.mp3"), 195_034).unwrap();
+        let info = probe.video_info(&original("Song.mp3"), stamp(195_034)).unwrap();
         let format = &info.formats[0];
         assert_eq!(format.kind, FormatKind::Audio);
         assert_eq!(format.audio_codec, Some(AudioCodec::Mp3));
@@ -409,7 +415,7 @@ mod tests {
         assert_eq!(probe.duration, Some(8.023));
         let json = OBS_MKV.replace(r#""duration": "8.023000","#, "");
         assert_eq!(Probe::parse(&json).unwrap().duration, Some(8.023));
-        let info = probe.video_info(&original("Recording.mkv"), 8_929_801).unwrap();
+        let info = probe.video_info(&original("Recording.mkv"), stamp(8_929_801)).unwrap();
         let format = &info.formats[0];
         assert_eq!(format.video_codec, Some(VideoCodec::H264));
         assert_eq!(
@@ -429,12 +435,15 @@ mod tests {
     fn a_still_picture_or_something_else_isnt_media() {
         let still = Probe::parse(STILL).unwrap();
         assert_eq!(
-            still.video_info(&original("Cover.png"), 26_458).unwrap_err().kind,
+            still
+                .video_info(&original("Cover.png"), stamp(26_458))
+                .unwrap_err()
+                .kind,
             ErrorKind::Unsupported
         );
         assert!(Probe::parse("{\n\n}")
             .unwrap()
-            .video_info(&original("Notes.mp4"), 28)
+            .video_info(&original("Notes.mp4"), stamp(28))
             .is_err());
         assert!(Probe::parse("moov atom not found").is_none());
     }
@@ -447,7 +456,7 @@ mod tests {
         );
         let info = Probe::parse(&json)
             .unwrap()
-            .video_info(&original("HDR.mp4"), 1)
+            .video_info(&original("HDR.mp4"), stamp(1))
             .unwrap();
         assert_eq!(info.formats[0].dynamic_range.as_deref(), Some("HDR10"));
     }

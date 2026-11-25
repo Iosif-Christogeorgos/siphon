@@ -1,5 +1,5 @@
 import { readText } from "@tauri-apps/plugin-clipboard-manager";
-import { ClipboardPaste, FileMusic, FileVideoCamera, FolderOpen, Link2, LoaderCircle, X } from "lucide-react";
+import { ClipboardPaste, FileMusic, Files, FileVideoCamera, FolderOpen, Link2, LoaderCircle, X } from "lucide-react";
 import { AnimatePresence, motion, useAnimationControls } from "motion/react";
 import { type ClipboardEvent, type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { Hint } from "@/components/ui/tooltip";
@@ -11,8 +11,8 @@ import { cn } from "@/lib/utils";
 interface LinkInputProps {
   /** The link currently loaded, if any. */
   url: string | null;
-  /** A file on this PC loaded in place of a link: the field shows it. */
-  file?: { name: string; audio: boolean } | null;
+  /** A file on this PC loaded in place of a link (or several: `many`): the field shows it. */
+  file?: { name: string; audio: boolean; many?: boolean } | null;
   loading: boolean;
   onSubmit: (url: string) => void;
   onClear: () => void;
@@ -94,7 +94,13 @@ export function LinkInput({ url, file, loading, onSubmit, onClear, onBrowse }: L
         <AnimatePresence mode="popLayout" initial={false}>
           {file ? (
             <motion.span key="file" {...swap} className="flex shrink-0 text-primary">
-              {file.audio ? <FileMusic className="size-4.5" /> : <FileVideoCamera className="size-4.5" />}
+              {file.many ? (
+                <Files className="size-4.5" />
+              ) : file.audio ? (
+                <FileMusic className="size-4.5" />
+              ) : (
+                <FileVideoCamera className="size-4.5" />
+              )}
             </motion.span>
           ) : (
             <motion.span key="link" {...swap} className="flex shrink-0">

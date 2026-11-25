@@ -4,6 +4,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useState } from "react";
 import { ErrorCard } from "@/components/ErrorCard";
 import { Button } from "@/components/ui/button";
+import { FilesPane } from "@/features/files/FilesPane";
 import { ClipboardOffer } from "@/features/link/ClipboardOffer";
 import { LinkInput } from "@/features/link/LinkInput";
 import { useClipboardLink } from "@/features/link/useClipboardLink";
@@ -58,12 +59,15 @@ export function Home() {
   const [url, setUrl] = useState<string | null>(null);
   // The file the key stands for, as the backend described it.
   const [file, setFile] = useState<LocalFile | null>(null);
+  // Several files dropped or picked at once, chosen from in a list.
+  const [batch, setBatch] = useState<Intake | null>(null);
   const clipboard = useClipboardLink(url);
   // The user asked to look this link up with the site's sign-in ("Try with your sign-in").
   const [withAccount, setWithAccount] = useState<string | null>(null);
 
   const media = useQuery({
-    queryKey: ["media", url, withAccount === url],
+    // A file dropped again after it changed is read again (its version is new).
+    queryKey: ["media", url, withAccount === url, file?.version ?? null],
     queryFn: (): Promise<Media> =>
       isFileKey(url as string)
         ? ipc.readFile(url as string).then((video) => ({ type: "video", ...video }))
@@ -73,10 +77,11 @@ export function Home() {
 
   const openLink = (link: string | null) => {
     setFile(null);
+    setBatch(null);
     setUrl(link);
   };
 
-  // Files dropped on the window or picked with Browse: the first opens.
+  // Files dropped on the window or picked with Browse: one opens like a video, several in a list.
   const takeIn = (intake: Intake) => {
     useUi.getState().closePanel();
     const first = intake.files[0];
@@ -88,6 +93,13 @@ export function Home() {
       });
       return;
     }
+    if (intake.files.length > 1) {
+      setFile(null);
+      setUrl(null);
+      setBatch(intake);
+      return;
+    }
+    setBatch(null);
     setFile(first);
     setUrl(first.key);
   };
@@ -110,7 +122,7 @@ export function Home() {
     return () => void unlisten.then((stop) => stop());
   }, []);
 
-  const empty = url === null;
+  const empty = url === null && batch === null;
   const playlistUrl = url ? playlistUrlOf(url) : null;
 
   return (
@@ -149,7 +161,11 @@ export function Home() {
         <motion.div layout="position" transition={gentleSpring}>
           <LinkInput
             url={url}
-            file={file && { name: file.name, audio: SOUND.test(file.name) }}
+            file={
+              batch
+                ? { name: `${batch.files.length} files`, audio: false, many: true }
+                : file && { name: file.name, audio: SOUND.test(file.name) }
+            }
             loading={media.isFetching}
             onSubmit={openLink}
             onClear={() => openLink(null)}
@@ -193,7 +209,19 @@ export function Home() {
         </AnimatePresence>
 
         <AnimatePresence mode="wait">
-          {!empty && (
+          {batch && (
+            <motion.section
+              key={`files:${batch.files.map((each) => each.key).join(",")}`}
+              variants={riseIn}
+              initial="hidden"
+              animate="visible"
+              exit="exit"
+              className="mt-4 space-y-3"
+            >
+              <FilesPane intake={batch} />
+            </motion.section>
+          )}
+          {!empty && !batch && (
             <motion.section
               key={`${url}:${media.status}`}
               variants={riseIn}

@@ -1,5 +1,5 @@
 import { useQueries, useQuery } from "@tanstack/react-query";
-import { Check, ChevronRight, ImageOff, ListPlus, ListVideo, Search, X } from "lucide-react";
+import { Check, ChevronRight, ListPlus, ListVideo, Search, X } from "lucide-react";
 import { Fragment, type MouseEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { Button } from "@/components/ui/button";
@@ -12,6 +12,7 @@ import { type Download, isActive, useDownloads } from "@/stores/downloads";
 import { useTrim } from "@/stores/trim";
 import { useUi } from "@/stores/ui";
 import type { PlaylistEntry, PlaylistInfo } from "@/types";
+import { Box, fold, Thumb } from "./rows";
 
 /**
  * How many selected videos are looked up for the total size. The rest are
@@ -348,13 +349,6 @@ export function PlaylistPane({ playlist, onOpen }: { playlist: PlaylistInfo; onO
   );
 }
 
-/** Lower case, without accents, for matching titles: "Café" is found by "cafe". */
-const fold = (text: string) =>
-  text
-    .normalize("NFD")
-    .replace(/\p{Diacritic}/gu, "")
-    .toLowerCase();
-
 /** What the download list says about these videos right now: queued wins over downloaded. */
 function haveNow(videos: PlaylistEntry[]): Map<string, Have> {
   return summarize(videos, Object.values(useDownloads.getState().byId));
@@ -441,21 +435,6 @@ function totalSize(chosen: PlaylistEntry[], sample: PlaylistEntry[], sizes: (num
     .filter((entry) => !sampled.has(entry.url))
     .reduce((total, entry) => total + (perSecond && entry.duration ? perSecond * entry.duration : perVideo), 0);
   return `≈ ${formatBytes(sum + rest)}, estimated from ${known.length} videos`;
-}
-
-/** The square tick box the list and its options share. */
-function Box({ checked, disabled = false }: { checked: boolean; disabled?: boolean }) {
-  return (
-    <span
-      className={cn(
-        "grid size-4.5 shrink-0 place-items-center rounded-md border transition-colors duration-150",
-        checked ? "border-primary bg-primary text-primary-foreground" : "border-border-strong",
-        disabled && "opacity-40",
-      )}
-    >
-      {checked && <Check className="size-3" strokeWidth={3} />}
-    </span>
-  );
 }
 
 function Option({ checked, onChange, children }: { checked: boolean; onChange: (checked: boolean) => void; children: ReactNode }) {
@@ -564,19 +543,5 @@ function LinkRow({ entry, onOpen }: { entry: PlaylistEntry; onOpen: () => void }
         {entry.live ? "Record" : "Open"} <ChevronRight className="size-3.5" />
       </span>
     </button>
-  );
-}
-
-function Thumb({ src }: { src: string | null }) {
-  return (
-    <span className="relative aspect-video w-14 shrink-0 overflow-hidden rounded-md bg-muted">
-      {src ? (
-        <img src={src} alt="" loading="lazy" draggable={false} referrerPolicy="no-referrer" className="size-full object-cover" />
-      ) : (
-        <span className="grid size-full place-items-center text-subtle-foreground">
-          <ImageOff className="size-3" />
-        </span>
-      )}
-    </span>
   );
 }

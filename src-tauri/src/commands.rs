@@ -110,19 +110,11 @@ pub async fn pick_files(app: AppHandle, grants: State<'_, Grants>) -> Result<Opt
 }
 
 /// Reads what a file the user gave holds (by its key, from a drop or
-/// Browse), and remembers it for planning and converting, as `fetch_media`
-/// does for a link.
+/// Browse); it is remembered until the file changes (see `local::read`).
 #[tauri::command]
-pub async fn read_file(
-    app: AppHandle,
-    bins: Binaries<'_>,
-    cache: State<'_, MediaCache>,
-    key: String,
-) -> Result<VideoInfo> {
+pub async fn read_file(app: AppHandle, bins: Binaries<'_>, key: String) -> Result<VideoInfo> {
     ensure_ready(&bins)?;
-    let info = local::read(&app, &bins, &key).await?;
-    cache.insert(&key, Arc::clone(&info));
-    Ok((*info).clone())
+    Ok((*local::read(&app, &bins, &key).await?).clone())
 }
 
 /// Every preset group, target and tier: the frontend defines none itself.
@@ -162,7 +154,6 @@ pub async fn plan_download(
     app: AppHandle,
     bins: Binaries<'_>,
     cache: State<'_, MediaCache>,
-    grants: State<'_, Grants>,
     caps: State<'_, CapabilityCache>,
     settings: State<'_, SettingsStore>,
     url: String,
@@ -170,7 +161,7 @@ pub async fn plan_download(
     trim: Option<Trim>,
     from_start: Option<bool>,
 ) -> Result<PlanSummary> {
-    let video = remembered(&cache, &grants, &url)?;
+    let video = remembered(&app, &bins, &cache, &url).await?;
     let caps = caps.get(&bins).await;
     if video.live.is_none() {
         return explain::summarize(&video, &choice, trim, &caps);
@@ -270,11 +261,10 @@ pub async fn preview_source(
     app: AppHandle,
     bins: Binaries<'_>,
     cache: State<'_, MediaCache>,
-    grants: State<'_, Grants>,
     url: String,
     level: u8,
 ) -> Result<Preview> {
-    let video = remembered(&cache, &grants, &url)?;
+    let video = remembered(&app, &bins, &cache, &url).await?;
     preview::source(&app, &bins, &video, level).await
 }
 
@@ -301,7 +291,6 @@ pub async fn measure_size(
     app: AppHandle,
     bins: Binaries<'_>,
     cache: State<'_, MediaCache>,
-    grants: State<'_, Grants>,
     caps: State<'_, CapabilityCache>,
     throttle: State<'_, Arc<Throttle>>,
     sizing: State<'_, Sizing>,
@@ -310,7 +299,7 @@ pub async fn measure_size(
     trim: Option<Trim>,
 ) -> Result<Measure> {
     ensure_ready(&bins)?;
-    let video = remembered(&cache, &grants, &url)?;
+    let video = remembered(&app, &bins, &cache, &url).await?;
     let caps = caps.get(&bins).await;
     sizing
         .measure(
@@ -555,20 +544,16 @@ pub fn sign_out(app: AppHandle, sessions: State<'_, Arc<Sessions>>, site: String
     sessions.sign_out(&site);
 }
 
-/// The video a link or a file's key stands for, as this session looked it up
-/// or read it. A file the shared cache has let go of is still known by its grant.
-fn remembered(cache: &MediaCache, grants: &Grants, url: &str) -> Result<Arc<VideoInfo>> {
-    if let Some(video) = cache.get(url) {
-        return Ok(video);
-    }
+/// The video a link or a file's key stands for: a link as this session
+/// looked it up; a file as it is now, read again if it changed since it was
+/// read (see `local::read`), so it is never planned from what it used to hold.
+async fn remembered(app: &AppHandle, bins: &BinaryManager, cache: &MediaCache, url: &str) -> Result<Arc<VideoInfo>> {
     if local::is_key(url) {
-        return grants
-            .info(url)
-            .ok_or_else(|| AppError::internal("Siphon lost track of this file. Drop it on the window again."));
+        return local::read(app, bins, url).await;
     }
-    Err(AppError::internal(
-        "Siphon lost track of this video. Paste the link again.",
-    ))
+    cache
+        .get(url)
+        .ok_or_else(|| AppError::internal("Siphon lost track of this video. Paste the link again."))
 }
 
 fn ensure_ready(bins: &BinaryManager) -> Result<()> {
