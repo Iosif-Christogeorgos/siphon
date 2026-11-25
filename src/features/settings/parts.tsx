@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 /** The sections of the Settings panel, in order; its tabs follow them. */
 export const SECTIONS = [
   { id: "downloads", tab: "Downloads" },
+  { id: "languages", tab: "Languages" },
   { id: "sites", tab: "Sites" },
   { id: "appearance", tab: "Appearance" },
   { id: "updates", tab: "Updates" },

@@ -17,6 +17,12 @@ export function languageName(tag: string): string {
   }
 }
 
+/** Languages offered to choose from: for a track, or as one of the user's. */
+export const COMMON_LANGUAGES = [
+  "ar", "bg", "cs", "da", "de", "el", "en", "es", "fa", "fi", "fr", "he", "hi", "hr", "hu", "id", "it", "ja",
+  "ko", "ms", "nl", "no", "pl", "pt", "ro", "ru", "sk", "sl", "sr", "sv", "th", "tr", "uk", "vi", "zh",
+];
+
 /** The part of a tag that names the language alone: "pt-br" → "pt". */
 export const primary = (tag: string) => tag.split("-")[0] ?? tag;
 

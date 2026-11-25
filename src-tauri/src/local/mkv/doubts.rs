@@ -221,6 +221,7 @@ mod tests {
             chapters: Chapters::default(),
             attachments: Vec::new(),
             doubts: Vec::new(),
+            suggestion: None,
             duration: None,
             size: None,
         }

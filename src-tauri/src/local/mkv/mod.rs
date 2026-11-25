@@ -9,6 +9,7 @@
 mod chapters;
 mod doubts;
 pub mod edit;
+pub mod pick;
 mod pictures;
 mod probe;
 mod words;
@@ -21,8 +22,10 @@ use tauri::{AppHandle, Manager};
 
 use super::{gone, lost_track, Grants, Original, READS, READ_TIMEOUT};
 use crate::binaries::BinaryManager;
+use crate::choices::ChoiceStore;
 use crate::error::{AppError, ErrorKind, Result};
 use crate::process;
+use crate::settings::SettingsStore;
 pub use chapters::Shape;
 
 /// What an MKV holds.
@@ -34,6 +37,9 @@ pub struct Contents {
     pub attachments: Vec<Attachment>,
     /// What casts doubt on the file as a whole: "Its name says Greek (EN-GR), but no track is Greek."
     pub doubts: Vec<String>,
+    /// What it keeps when the user's languages choose (see `pick`): applied
+    /// as soon as it opens.
+    pub suggestion: Option<pick::Suggestion>,
     /// Seconds.
     #[serde(skip)]
     pub duration: Option<f64>,
@@ -161,6 +167,9 @@ pub async fn read(app: &AppHandle, bins: &BinaryManager, key: &str) -> Result<Co
     mark_forced(&mut contents.tracks, &lines);
     doubts::cast(&mut contents, &original.name());
     settle(&mut contents);
+    let subtitles = app.state::<ChoiceStore>().get().subtitles;
+    let languages = app.state::<SettingsStore>().get().my_languages(subtitles.as_deref());
+    contents.suggestion = Some(pick::suggest(&contents, &languages));
     Ok(contents)
 }
 

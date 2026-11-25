@@ -75,6 +75,10 @@ pub struct Settings {
     /// All downloads together get at most this many bytes per second;
     /// `None` is unlimited. (MB here is 1,048,576 bytes, as speeds are shown.)
     pub speed_limit: Option<u64>,
+    /// The languages the user listens and reads in, the one they'd rather
+    /// first ("el", "en"): an MKV's tracks in them are kept (see
+    /// `local::mkv::pick`). Empty until chosen: see [`my_languages`].
+    pub languages: Vec<String>,
 }
 
 impl Default for Settings {
@@ -86,6 +90,7 @@ impl Default for Settings {
             update_channel: Channel::Stable,
             update_mode: UpdateMode::Auto,
             speed_limit: None,
+            languages: Vec::new(),
         }
     }
 }
@@ -94,10 +99,21 @@ impl Settings {
     /// Brings values from disk or the UI into their allowed ranges.
     fn sanitized(mut self) -> Self {
         self.max_concurrent = self.max_concurrent.clamp(1, MAX_CONCURRENT_LIMIT);
+        self.languages = tags(self.languages.iter().map(String::as_str));
         self.speed_limit = self
             .speed_limit
             .map(|limit| limit.clamp(MIN_SPEED_LIMIT, MAX_SPEED_LIMIT));
         self
+    }
+
+    /// The user's languages, best first: those chosen, or, until some are,
+    /// [`default_languages`].
+    pub fn my_languages(&self, subtitles: Option<&str>) -> Vec<String> {
+        if self.languages.is_empty() {
+            default_languages(subtitles)
+        } else {
+            self.languages.clone()
+        }
     }
 
     pub fn update_policy(&self) -> UpdatePolicy {
@@ -257,5 +273,51 @@ mod tests {
         store.set(Settings::default()).unwrap();
         assert_eq!(SettingsStore::open(file).get().speed_limit, None);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+/// The languages taken as the user's until they choose some: the one they
+/// want subtitles in, if they chose one, then Windows' languages, in the
+/// order Windows lists them.
+pub fn default_languages(subtitles: Option<&str>) -> Vec<String> {
+    let windows: Vec<String> = windows::Globalization::ApplicationLanguages::Languages()
+        .map(|languages| languages.into_iter().map(|tag| tag.to_string()).collect())
+        .unwrap_or_default();
+    tags(subtitles.into_iter().chain(windows.iter().map(String::as_str)))
+}
+
+/// Language tags as Siphon keeps them: the language alone ("en-US" → "en",
+/// "gre" → "el"), each once, in order.
+fn tags<'a>(languages: impl Iterator<Item = &'a str>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for language in languages {
+        let tag = crate::ytdlp::subtitles::language_tag(language);
+        let tag = crate::ytdlp::subtitles::primary(&tag).to_string();
+        if !tag.is_empty() && tag != "und" && !out.contains(&tag) {
+            out.push(tag);
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod language_tests {
+    use super::*;
+
+    #[test]
+    fn languages_are_kept_as_the_language_alone_each_once() {
+        let settings = Settings {
+            languages: vec!["el-GR".into(), "gre".into(), "en-US".into(), "".into(), "und".into()],
+            ..Settings::default()
+        }
+        .sanitized();
+        assert_eq!(settings.languages, ["el", "en"]);
+        assert_eq!(settings.my_languages(Some("fr")), ["el", "en"]);
+    }
+
+    #[test]
+    fn until_chosen_they_start_with_the_subtitle_language() {
+        let languages = Settings::default().my_languages(Some("pt-br"));
+        assert_eq!(languages.first().map(String::as_str), Some("pt"));
     }
 }

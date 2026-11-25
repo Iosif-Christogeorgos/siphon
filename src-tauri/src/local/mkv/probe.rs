@@ -95,6 +95,7 @@ pub fn parse(json: &str) -> Option<Contents> {
         },
         attachments,
         doubts: Vec::new(),
+        suggestion: None,
         duration: number(&value["format"]["duration"]).filter(|seconds| *seconds > 0.0),
         size: number(&value["format"]["size"]).map(|bytes| bytes as u64),
     })

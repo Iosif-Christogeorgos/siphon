@@ -8,18 +8,44 @@ export interface DraftTrack extends KeptTrack {
 
 /** What the user has chosen of an MKV's tracks, beside the file as it is. */
 export interface Draft {
-  /** The file and version it was made from: another file starts afresh. */
+  /** The file, version and languages it was made for: other ones start afresh. */
   key: string;
   version: string;
+  languages: string;
   tracks: DraftTrack[];
   /** The tracks as the file has them: what "changed" is measured against. */
   before: DraftTrack[];
   chapters: boolean;
   attachments: boolean;
+  /** The user's languages chose what it keeps (and nothing has undone that). */
+  mine: boolean;
 }
 
-/** Everything kept, as the file has it; a language read from a track's words is the one written. */
-export function draftOf(contents: MkvContents, key: string, version: string): Draft {
+/**
+ * What a file opens with: what the user's languages keep, if they choose
+ * anything, or else everything, as the file has it. A language read from a
+ * track's words is the one written.
+ */
+export function draftOf(contents: MkvContents, key: string, version: string, languages: string): Draft {
+  const asItIs = asTheFileIs(contents, key, version, languages);
+  return contents.suggestion ? mineOf(asItIs, contents.suggestion.edit) : asItIs;
+}
+
+/** What `edit` keeps of the file, as the user's languages chose it. */
+export function mineOf(draft: Draft, edit: TrackEdit): Draft {
+  const tracks = draft.before.map((track) => {
+    const kept = edit.tracks.find((candidate) => candidate.index === track.index);
+    return kept ? { ...track, ...kept, keep: true } : { ...track, keep: false };
+  });
+  return { ...draft, tracks, mine: true };
+}
+
+/** Everything, as the file has it. */
+export function asItIs(draft: Draft): Draft {
+  return { ...draft, tracks: draft.before, chapters: true, attachments: true, mine: false };
+}
+
+function asTheFileIs(contents: MkvContents, key: string, version: string, languages: string): Draft {
   const tracks = contents.tracks.map(
     (track): DraftTrack => ({
       index: track.index,
@@ -35,7 +61,7 @@ export function draftOf(contents: MkvContents, key: string, version: string): Dr
       original: track.original,
     }),
   );
-  return { key, version, tracks, before: tracks, chapters: true, attachments: true };
+  return { key, version, languages, tracks, before: tracks, chapters: true, attachments: true, mine: false };
 }
 
 /** What the backend is asked to make. */

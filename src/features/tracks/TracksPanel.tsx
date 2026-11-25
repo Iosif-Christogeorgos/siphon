@@ -8,11 +8,13 @@ import { Hint } from "@/components/ui/tooltip";
 import { Note } from "@/features/options/PlanCard";
 import { formatBytes } from "@/lib/format";
 import { ipc, toAppError } from "@/lib/ipc";
-import { languageName, primary, systemLanguage } from "@/lib/languages";
+import { myLanguages, useSettings } from "@/stores/settings";
+import { useUi } from "@/stores/ui";
+import { COMMON_LANGUAGES, languageName, primary, systemLanguage } from "@/lib/languages";
 import { spring } from "@/lib/motion";
 import { cn } from "@/lib/utils";
-import type { MkvContents, MkvKind, MkvTrack } from "@/types";
-import { changesOf, type Draft, type DraftTrack, draftOf, moved, sizeOf, withTrack } from "./draft";
+import type { MkvContents, MkvKind, MkvTrack, Suggestion } from "@/types";
+import { asItIs, changesOf, type Draft, type DraftTrack, draftOf, mineOf, moved, sizeOf, withTrack } from "./draft";
 
 const KINDS: { kind: MkvKind; label: string; icon: typeof Film }[] = [
   { kind: "video", label: "Video", icon: Film },
@@ -49,12 +51,6 @@ const CODECS: Record<string, string> = {
 /** Subtitles made of pictures, read with Windows' OCR rather than as text. */
 const PICTURES = new Set(["hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle"]);
 
-/** The languages a track can be said to be in, beside the one it is in. */
-const LANGUAGES = [
-  "ar", "bg", "cs", "da", "de", "el", "en", "es", "fa", "fi", "fr", "he", "hi", "hr", "hu", "id", "it", "ja",
-  "ko", "ms", "nl", "no", "pl", "pt", "ro", "ru", "sk", "sl", "sr", "sv", "th", "tr", "uk", "vi", "zh",
-];
-
 /** The language Select's value for "not known". */
 const UNKNOWN = "und";
 
@@ -84,16 +80,21 @@ export function TracksPanel({
   /** A copy is being made: nothing can change meanwhile. */
   disabled: boolean;
 }) {
+  // Read again when the user's languages change: what they keep changes with them.
+  const settings = useSettings();
+  const languages = settings.data ? myLanguages(settings.data).join(",") : null;
   const contents = useQuery({
-    queryKey: ["tracks", fileKey, version],
+    queryKey: ["tracks", fileKey, version, languages],
     queryFn: () => ipc.readTracks(fileKey),
+    enabled: languages !== null,
     staleTime: Number.POSITIVE_INFINITY,
   });
   const data = contents.data;
-  const current = draft !== null && draft.key === fileKey && draft.version === version;
+  const current =
+    draft !== null && draft.key === fileKey && draft.version === version && draft.languages === languages;
   useEffect(() => {
-    if (data && !current) onDraft(draftOf(data, fileKey, version));
-  }, [data, current, fileKey, version, onDraft]);
+    if (data && !current && languages !== null) onDraft(draftOf(data, fileKey, version, languages));
+  }, [data, current, fileKey, version, languages, onDraft]);
 
   if (contents.isError) return <ErrorCard error={toAppError(contents.error)} />;
   if (!data || !current) {
@@ -115,6 +116,7 @@ export function TracksPanel({
 
   return (
     <fieldset disabled={disabled} className="min-w-0 space-y-3 border-0 p-0 py-1.5">
+      {data.suggestion && <Languages suggestion={data.suggestion} draft={draft} onDraft={onDraft} />}
       {KINDS.map(({ kind, label, icon }) => {
         const ofKind = draft.tracks.filter((track) => track.kind === kind);
         if (ofKind.length === 0) return null;
@@ -159,6 +161,74 @@ export function TracksPanel({
 
       <Summary draft={draft} contents={data} />
     </fieldset>
+  );
+}
+
+/**
+ * What the user's languages did to the file, said plainly, with the way back:
+ * what they left out and why, what plays first now, and what was kept for
+ * not being certain.
+ */
+function Languages({
+  suggestion,
+  draft,
+  onDraft,
+}: {
+  suggestion: Suggestion;
+  draft: Draft;
+  onDraft: (draft: Draft) => void;
+}) {
+  const openPanel = useUi((state) => state.openPanel);
+  const names = suggestion.languages.map((language) => languageName(language));
+  const yours = names.length > 0 ? names.join(", ") : "none chosen";
+  const said = [...suggestion.left_out.map((left) => left.why), ...suggestion.notes];
+  const settingsLink = (
+    <button
+      type="button"
+      onClick={() => openPanel("settings")}
+      className="rounded-sm text-primary underline-offset-2 hover:underline focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-none"
+    >
+      Settings
+    </button>
+  );
+  const action = (label: string, onClick: () => void) => (
+    <button
+      type="button"
+      onClick={onClick}
+      className="-my-1 h-7 shrink-0 rounded-lg bg-background/70 px-2.5 text-xs font-medium text-foreground transition-colors hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-none"
+    >
+      {label}
+    </button>
+  );
+
+  if (said.length === 0) {
+    return (
+      <p className="px-1 text-xs text-muted-foreground">
+        Everything in it is in your languages ({yours}). Your languages are in {settingsLink}.
+      </p>
+    );
+  }
+  return (
+    <div className="flex items-start gap-3 rounded-xl bg-secondary px-3 py-2.5 text-[13px] text-muted-foreground">
+      <div className="min-w-0 flex-1 space-y-1">
+        <p className="text-foreground">
+          {draft.mine ? `Kept for your languages: ${yours}.` : "Kept as the file has it."}{" "}
+          <span className="text-muted-foreground">Your languages are in {settingsLink}.</span>
+        </p>
+        {draft.mine && (
+          <ul className="space-y-0.5">
+            {said.map((line) => (
+              <li key={line} className="text-pretty">
+                {line}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+      {draft.mine
+        ? action("Keep everything", () => onDraft(asItIs(draft)))
+        : action("Keep my languages", () => onDraft(mineOf(draft, suggestion.edit)))}
+    </div>
   );
 }
 
@@ -319,7 +389,7 @@ function TrackDetails({
 }) {
   const video = track.kind === "video";
   const mine = systemLanguage();
-  const languages = [...new Set([...(track.language ? [track.language] : []), ...LANGUAGES])].sort(
+  const languages = [...new Set([...(track.language ? [track.language] : []), ...COMMON_LANGUAGES])].sort(
     (a, b) =>
       Number(primary(b) === mine) - Number(primary(a) === mine) || languageName(a).localeCompare(languageName(b)),
   );

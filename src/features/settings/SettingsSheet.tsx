@@ -1,4 +1,4 @@
-import { ArrowDownToLine, CircleAlert, KeyRound, Palette, RefreshCw } from "lucide-react";
+import { ArrowDownToLine, CircleAlert, KeyRound, Languages, Palette, RefreshCw } from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
 import { Segmented } from "@/components/ui/segmented";
@@ -12,6 +12,7 @@ import { useUi } from "@/stores/ui";
 import type { Settings, SettingsView } from "@/types";
 import { FileNames, FolderTile, Lanes, SpeedLimit, ThemePicker } from "./controls";
 import { Card, Reveal, Row, Section, type SectionId, SECTIONS } from "./parts";
+import { MyLanguages } from "./MyLanguages";
 import { SignedInSites } from "./SignedInSites";
 import { Versions } from "./Versions";
 
@@ -104,8 +105,26 @@ function SettingsForm({
       </Section>
 
       <Section
-        id="sites"
+        id="languages"
         index={1}
+        icon={Languages}
+        title="Languages"
+        hint="An MKV’s sound and subtitles in your languages are kept when you choose its tracks, and the first language’s sound plays first."
+      >
+        <Card>
+          <Row title="My languages" hint="Best first.">
+            <MyLanguages
+              chosen={settings.languages}
+              standIn={settings.default_languages}
+              onChange={(languages) => onChange({ languages })}
+            />
+          </Row>
+        </Card>
+      </Section>
+
+      <Section
+        id="sites"
+        index={2}
         icon={KeyRound}
         title="Signed-in sites"
         hint="Videos download without your account unless they need it."
@@ -113,7 +132,7 @@ function SettingsForm({
         <SignedInSites />
       </Section>
 
-      <Section id="appearance" index={2} icon={Palette} title="Appearance">
+      <Section id="appearance" index={3} icon={Palette} title="Appearance">
         <Card>
           <Row title="Theme" hint="System follows Windows’ light or dark mode.">
             <ThemePicker value={theme} onChange={setTheme} />
@@ -121,7 +140,7 @@ function SettingsForm({
         </Card>
       </Section>
 
-      <Section id="updates" index={3} icon={RefreshCw} title="Updates">
+      <Section id="updates" index={4} icon={RefreshCw} title="Updates">
         <Card>
           <Row
             title="yt-dlp releases"
@@ -184,7 +203,7 @@ function SectionTabs({ active, onPick }: { active: SectionId; onPick: (id: Secti
             onClick={() => onPick(id)}
             onPointerEnter={() => setPointed(id)}
             className={cn(
-              "relative h-9 flex-1 text-[12.5px] font-medium outline-none transition-colors duration-200 focus-visible:text-primary",
+              "relative h-9 flex-auto px-1 text-[12.5px] font-medium whitespace-nowrap outline-none transition-colors duration-200 focus-visible:text-primary",
               current ? "text-foreground" : "text-muted-foreground hover:text-foreground",
             )}
           >

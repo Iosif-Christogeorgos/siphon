@@ -203,6 +203,19 @@ export interface MkvContents {
   attachments: { index: number; name: string; mime: string | null }[];
   /** What casts doubt on the file as a whole. */
   doubts: string[];
+  /** What it keeps when the user's languages choose: applied as soon as it opens. */
+  suggestion: Suggestion | null;
+}
+
+/** What keeping the user's languages makes of an MKV (`local/mkv/pick.rs`). */
+export interface Suggestion {
+  /** The languages it went by, best first. */
+  languages: string[];
+  edit: TrackEdit;
+  /** The tracks it leaves out, and why: "Italian sound: not one of your languages." */
+  left_out: { index: number; why: string }[];
+  /** What else it changed or kept, a line each. */
+  notes: string[];
 }
 
 export type MkvKind = "video" | "sound" | "subtitles";
@@ -544,11 +557,15 @@ export interface Settings {
    * unlimited. MB is 1,048,576 bytes here, as speeds are shown.
    */
   speed_limit: number | null;
+  /** The languages the user listens and reads in, best first ("el", "en"); empty until chosen. */
+  languages: string[];
 }
 
 /** What `get_settings` returns: the settings plus facts for displaying them. */
 export interface SettingsView extends Settings {
   default_output_dir: string | null;
+  /** The languages taken as the user's until they choose some: their subtitle language, then Windows'. */
+  default_languages: string[];
 }
 
 // ── preview.rs ─────────────────────────────────────────────────────────

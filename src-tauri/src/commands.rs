@@ -417,15 +417,19 @@ pub struct SettingsView {
     settings: Settings,
     /// Where downloads go when no folder is chosen.
     default_output_dir: Option<String>,
+    /// The languages taken as the user's until they choose some.
+    default_languages: Vec<String>,
 }
 
 fn settings_view(app: &AppHandle, settings: Settings) -> SettingsView {
     let default_output_dir = downloads::default_output_dir(app)
         .ok()
         .map(|dir| dir.to_string_lossy().into_owned());
+    let subtitles = app.state::<ChoiceStore>().get().subtitles;
     SettingsView {
         settings,
         default_output_dir,
+        default_languages: crate::settings::default_languages(subtitles.as_deref()),
     }
 }
 

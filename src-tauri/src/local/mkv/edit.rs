@@ -198,6 +198,7 @@ mod tests {
                 mime: Some("font/ttf".into()),
             }],
             doubts: Vec::new(),
+            suggestion: None,
             duration: Some(1444.8),
             size: Some(289_422_396),
         }

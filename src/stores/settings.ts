@@ -41,6 +41,15 @@ export function useSaveSettings() {
 let saves = 0;
 
 /** The backend wants plain settings back, without the display-only extras. */
-export function stripView({ default_output_dir: _default, ...settings }: SettingsView): Settings {
+export function stripView({
+  default_output_dir: _folder,
+  default_languages: _languages,
+  ...settings
+}: SettingsView): Settings {
   return settings;
+}
+
+/** The user's languages, best first: those chosen, or those taken as theirs until they choose. */
+export function myLanguages(settings: SettingsView): string[] {
+  return settings.languages.length > 0 ? settings.languages : settings.default_languages;
 }
