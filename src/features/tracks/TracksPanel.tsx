@@ -1,19 +1,33 @@
 import { useQuery } from "@tanstack/react-query";
-import { ArrowDown, ArrowUp, Captions, Check, ChevronDown, Film, Tag, TriangleAlert, Volume2, Zap } from "lucide-react";
+import { ArrowDown, ArrowUp, Captions, Check, ChevronDown, Film, Plus, Tag, TriangleAlert, Volume2, Zap } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { ErrorCard } from "@/components/ErrorCard";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Hint } from "@/components/ui/tooltip";
 import { Note } from "@/features/options/PlanCard";
 import { formatBytes } from "@/lib/format";
-import { toAppError } from "@/lib/ipc";
+import { ipc, toAppError } from "@/lib/ipc";
 import { useUi } from "@/stores/ui";
 import { COMMON_LANGUAGES, languageName, primary, systemLanguage } from "@/lib/languages";
 import { spring } from "@/lib/motion";
 import { cn } from "@/lib/utils";
-import type { MkvContents, MkvKind, MkvTrack, Suggestion } from "@/types";
-import { asItIs, changesOf, type Draft, type DraftTrack, draftOf, mineOf, moved, sizeOf, withTrack } from "./draft";
+import type { AddedFile, MkvContents, MkvKind, MkvTrack, Suggestion } from "@/types";
+import {
+  addedOf,
+  addTracks,
+  asItIs,
+  changesOf,
+  type Draft,
+  type DraftAdded,
+  type DraftTrack,
+  draftOf,
+  mineOf,
+  moved,
+  readOf,
+  sizeOf,
+  withTrack,
+} from "./draft";
 import { tracksQuery, useLanguagesKey } from "./reading";
 
 const KINDS: { kind: MkvKind; label: string; icon: typeof Film }[] = [
@@ -50,6 +64,25 @@ const CODECS: Record<string, string> = {
 
 /** Subtitles made of pictures, read with Windows' OCR rather than as text. */
 const PICTURES = new Set(["hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle"]);
+
+/** The encodings a text subtitle file not in UTF-8 may be read in (`local/mkv/added.rs`), as people know them. */
+const CHARSETS: { id: string; label: string }[] = [
+  { id: "CP1253", label: "Greek (Windows-1253)" },
+  { id: "ISO-8859-7", label: "Greek (ISO-8859-7)" },
+  { id: "CP1252", label: "Western (Windows-1252)" },
+  { id: "CP1250", label: "Central European (Windows-1250)" },
+  { id: "CP1251", label: "Cyrillic (Windows-1251)" },
+  { id: "CP1254", label: "Turkish (Windows-1254)" },
+  { id: "CP1257", label: "Baltic (Windows-1257)" },
+  { id: "CP1255", label: "Hebrew (Windows-1255)" },
+  { id: "CP1256", label: "Arabic (Windows-1256)" },
+  { id: "CP1258", label: "Vietnamese (Windows-1258)" },
+  { id: "CP874", label: "Thai (Windows-874)" },
+  { id: "SHIFT_JIS", label: "Japanese (Shift JIS)" },
+  { id: "GBK", label: "Chinese, simplified (GBK)" },
+  { id: "BIG5", label: "Chinese, traditional (Big5)" },
+  { id: "CP949", label: "Korean (Windows-949)" },
+];
 
 /** The language Select's value for "not known". */
 const UNKNOWN = "und";
@@ -88,6 +121,9 @@ export function TracksPanel({
   const data = contents.data;
   const current =
     draft !== null && draft.key === fileKey && draft.version === version && draft.languages === languages;
+  // Files added are read a moment after they are picked: their tracks go in the draft as it is then.
+  const latest = useRef(draft);
+  latest.current = draft;
   useEffect(() => {
     if (data && !current && languages !== null) onDraft(draftOf(data, fileKey, version, languages));
   }, [data, current, fileKey, version, languages, onDraft]);
@@ -121,12 +157,22 @@ export function TracksPanel({
             <p className="px-1 pb-1 text-xs font-medium text-subtle-foreground">{label}</p>
             <ul className="divide-y divide-border/60 overflow-hidden rounded-xl bg-secondary/50">
               {ofKind.map((track, place) => {
-                const read = data.tracks.find((candidate) => candidate.index === track.index);
+                const read = readOf(draft, data, track);
+                const added = addedOf(draft, track);
                 return read ? (
                   <TrackRow
                     key={track.index}
                     track={track}
                     read={read}
+                    added={added}
+                    onCharset={
+                      added
+                        ? (charset) =>
+                            void ipc
+                              .readAdded(added.key, charset)
+                              .then((file) => latest.current && onDraft(addTracks(latest.current, file)))
+                        : undefined
+                    }
                     icon={icon}
                     first={place === 0}
                     last={place === ofKind.length - 1}
@@ -139,6 +185,8 @@ export function TracksPanel({
           </section>
         );
       })}
+
+      <AddTracks onAdded={(files) => latest.current && onDraft(files.reduce(addTracks, latest.current))} />
 
       {extras.length > 0 && <p className="px-1 text-xs text-muted-foreground">{extras.join(" · ")}</p>}
 
@@ -230,13 +278,16 @@ function Languages({
 
 /** What saving makes, in a line: how many tracks it keeps, and about how large it is. */
 function Summary({ draft, contents }: { draft: Draft; contents: MkvContents }) {
-  const { kept, removed, changed } = changesOf(draft);
+  const { kept, removed, added, changed } = changesOf(draft);
   const size = sizeOf(draft, contents);
+  const adds = added > 0 ? `, adds ${added}` : "";
   const headline = !changed
     ? "Keeps it as it is"
     : removed > 0
-      ? `Keeps ${kept} of ${draft.tracks.length} tracks`
-      : "Keeps every track, changed";
+      ? `Keeps ${kept} of ${draft.before.length} tracks${adds}`
+      : added > 0
+        ? `Keeps every track${adds}`
+        : "Keeps every track, changed";
   return (
     <div className="flex items-center gap-3 px-1 pt-1">
       <div className="grid size-9 shrink-0 place-items-center rounded-xl bg-primary-soft text-primary">
@@ -258,9 +309,60 @@ function Summary({ draft, contents }: { draft: Draft; contents: MkvContents }) {
   );
 }
 
+/**
+ * Adding tracks from other files (docs/mkv-editor.md, step 6): subtitles,
+ * sound, or another video's, picked in Windows' file dialog and read before
+ * they go in, each after the last of its kind.
+ */
+export function AddTracks({
+  onAdded,
+  label = "Add subtitles or sound from a file",
+}: {
+  onAdded: (files: AddedFile[]) => void;
+  label?: string;
+}) {
+  const [reading, setReading] = useState<string[]>([]);
+  const [failed, setFailed] = useState<string[]>([]);
+  const add = async () => {
+    const picked = await ipc.pickTrackFiles().catch(() => null);
+    if (!picked || picked.length === 0) return;
+    setFailed([]);
+    setReading(picked.map((file) => file.name));
+    const reads = await Promise.allSettled(picked.map((file) => ipc.readAdded(file.key)));
+    setReading([]);
+    setFailed(reads.flatMap((read) => (read.status === "rejected" ? [toAppError(read.reason).message] : [])));
+    const files = reads.flatMap((read) => (read.status === "fulfilled" ? [read.value] : []));
+    if (files.length > 0) onAdded(files);
+  };
+  return (
+    <div className="space-y-2">
+      <button
+        type="button"
+        onClick={() => void add()}
+        disabled={reading.length > 0}
+        className="flex h-12 w-full items-center gap-2.5 rounded-xl border-[1.5px] border-dashed border-border-strong px-3.5 text-left text-[13.5px] text-muted-foreground transition-colors outline-none hover:border-primary/50 hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/40 disabled:cursor-progress"
+      >
+        <Plus className="size-4 shrink-0" />
+        <span className="min-w-0 truncate">
+          {reading.length > 0 ? `Reading ${reading.length === 1 ? reading[0] : `${reading.length} files`}…` : label}
+        </span>
+      </button>
+      <AnimatePresence initial={false}>
+        {failed.map((why) => (
+          <Note key={why} warning>
+            {why}
+          </Note>
+        ))}
+      </AnimatePresence>
+    </div>
+  );
+}
+
 function TrackRow({
   track,
   read,
+  added,
+  onCharset,
   icon: Icon,
   first,
   last,
@@ -270,6 +372,10 @@ function TrackRow({
   track: DraftTrack;
   /** What reading the file found of it. */
   read: MkvTrack;
+  /** The file it was added from, if it was. */
+  added?: DraftAdded;
+  /** Reads the file it was added from again, in another encoding. */
+  onCharset?: (charset: string) => void;
   icon: typeof Film;
   first: boolean;
   last: boolean;
@@ -289,6 +395,7 @@ function TrackRow({
     codec(read.codec),
     track.kind === "sound" ? channels(read.channels) : null,
     track.name ? `“${track.name}”` : null,
+    added ? `from ${added.name}` : null,
   ].filter((detail) => detail !== null);
   const flags = [
     // Which video plays first decides nothing: a file has one picture.
@@ -298,7 +405,8 @@ function TrackRow({
     track.commentary && "Commentary",
     track.described && "Described",
     track.original && "Original",
-  ].filter((flag) => flag !== false);
+    added ? "Added" : false,
+  ].filter((flag): flag is string => typeof flag === "string");
 
   return (
     <motion.li layout transition={spring}>
@@ -361,7 +469,15 @@ function TrackRow({
             transition={spring}
             className="overflow-hidden"
           >
-            <TrackDetails track={track} first={first} last={last} onChange={onChange} onMove={onMove} />
+            <TrackDetails
+              track={track}
+              added={added}
+              onCharset={onCharset}
+              first={first}
+              last={last}
+              onChange={onChange}
+              onMove={onMove}
+            />
           </motion.div>
         )}
       </AnimatePresence>
@@ -372,12 +488,16 @@ function TrackRow({
 /** A track's language, name, flags and place, as the copy will have them. */
 function TrackDetails({
   track,
+  added,
+  onCharset,
   first,
   last,
   onChange,
   onMove,
 }: {
   track: DraftTrack;
+  added?: DraftAdded;
+  onCharset?: (charset: string) => void;
   first: boolean;
   last: boolean;
   onChange: (change: Partial<DraftTrack>) => void;
@@ -406,6 +526,25 @@ function TrackDetails({
 
   return (
     <div className="flex flex-wrap items-center gap-2 px-3 pb-3 pl-[4.25rem]">
+      {added && added.sample.length > 0 && (
+        <p className="w-full truncate text-xs text-muted-foreground italic" title={added.sample.join("\n")}>
+          “{added.sample[0]?.replace(/\n/g, " ")}”
+        </p>
+      )}
+      {added?.charset && onCharset && (
+        <Select value={added.charset} onValueChange={onCharset}>
+          <SelectTrigger aria-label="Read as" className="h-8 w-72">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent className="max-h-72">
+            {CHARSETS.map((charset) => (
+              <SelectItem key={charset.id} value={charset.id}>
+                Read as {charset.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      )}
       {!video && (
         <Select
           value={track.language ?? UNKNOWN}

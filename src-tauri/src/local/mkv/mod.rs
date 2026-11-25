@@ -6,6 +6,7 @@
 //! A track's language is only taken as known when nothing casts doubt on it
 //! (see `doubts`): what is uncertain is kept, never guessed at.
 
+pub mod added;
 mod chapters;
 mod doubts;
 pub mod edit;

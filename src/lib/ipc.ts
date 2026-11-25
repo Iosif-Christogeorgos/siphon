@@ -11,6 +11,8 @@ import type {
   Measure,
   Media,
   MkvContents,
+  AddedFile,
+  PickedFile,
   Placement,
   PlanSummary,
   Preview,
@@ -43,6 +45,13 @@ export const ipc = {
   readFile: (key: string) => invoke<VideoInfo>("read_file", { key }),
   /** Every track of an MKV the user gave, with how certain its language is. */
   readTracks: (key: string) => invoke<MkvContents>("read_tracks", { key }),
+  /** The file dialog for subtitles and sound to add to MKVs; null if it was closed. */
+  pickTrackFiles: () => invoke<PickedFile[] | null>("pick_track_files"),
+  /** A file to add tracks from, read; a text subtitle file in `charset`, if chosen. */
+  readAdded: (key: string, charset: string | null = null) => invoke<AddedFile>("read_added", { key, charset }),
+  /** Which episode each file to add goes with, by name: its place in `episodes`, or null. */
+  matchEpisodes: (episodes: string[], files: string[]) =>
+    invoke<(number | null)[]>("match_episodes", { episodes, files }),
   getPresets: () => invoke<Registry>("get_presets"),
   getChoices: () => invoke<Choices>("get_choices"),
   setChoices: (choices: Choices) => invoke<Choices>("set_choices", { choices }),

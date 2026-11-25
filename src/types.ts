@@ -276,8 +276,12 @@ export interface TrackEdit {
 }
 
 export interface KeptTrack {
-  /** Its place among the original's streams. */
+  /** Its place among its file's streams. */
   index: number;
+  /** The file it is added from, by key; none for the MKV's own (`local/mkv/added.rs`). */
+  from?: string | null;
+  /** For a text subtitle file not in UTF-8: the encoding it is read in ("CP1253"). */
+  charset?: string | null;
   /** The language the copy tags it with; null leaves the tag as it is. */
   language: string | null;
   /** Its name in the copy; empty for none. */
@@ -288,6 +292,26 @@ export interface KeptTrack {
   commentary: boolean;
   described: boolean;
   original: boolean;
+}
+
+/** A file whose tracks may be added to an MKV's copy, as read (`local/mkv/added.rs`). */
+export interface AddedFile {
+  key: string;
+  /** "Show S01E03.el.srt" */
+  name: string;
+  contents: MkvContents;
+  /** For a text subtitle file not in UTF-8: the encoding it was read in. */
+  charset: string | null;
+  /** A few of its subtitles' lines, to see that they read right. */
+  sample: string[];
+  /** Bytes. */
+  size: number;
+}
+
+/** A file picked to add tracks from. */
+export interface PickedFile {
+  key: string;
+  name: string;
 }
 
 export interface MkvChapters {

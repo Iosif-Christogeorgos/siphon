@@ -139,7 +139,9 @@ export function FilesPane({ intake }: { intake: Intake }) {
   });
   const seasonFiles: SeasonFile[] = files.flatMap((file, index) => {
     const status = trackStatuses[index];
-    return status?.kind === "ready" ? [{ key: file.key, contents: status.contents, draft: status.draft }] : [];
+    return status?.kind === "ready"
+      ? [{ key: file.key, name: file.name, contents: status.contents, draft: status.draft }]
+      : [];
   });
   const tracksReading = trackStatuses.filter((status) => status.kind === "reading").length;
   const [openFile, setOpenFile] = useState<string | null>(null);
@@ -614,8 +616,8 @@ function TracksBadge({ status, queued }: { status: TrackStatus; queued: boolean 
         </Hint>
       );
     case "ready": {
-      const unsure = toCheck(status.contents);
-      const { changed, kept } = changesOf(status.draft);
+      const unsure = toCheck(status.contents, status.draft);
+      const { changed, kept, added } = changesOf(status.draft);
       return (
         <>
           {unsure.length > 0 && (
@@ -639,7 +641,8 @@ function TracksBadge({ status, queued }: { status: TrackStatus; queued: boolean 
           )}
           {changed ? (
             <span className="shrink-0 rounded-md bg-secondary px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground tabular-nums">
-              Keeps {kept} of {status.draft.tracks.length}
+              Keeps {kept} of {status.draft.before.length}
+              {added > 0 && `, adds ${added}`}
             </span>
           ) : (
             <span className="flex shrink-0 items-center gap-1 rounded-md bg-success/12 px-1.5 py-0.5 text-[11px] font-medium text-success">

@@ -32,9 +32,19 @@ pub fn args(file: &Path) -> Vec<OsString> {
 
 /// Reads what [`args`] printed; None if it isn't ffprobe's JSON for an MKV.
 pub fn parse(json: &str) -> Option<Contents> {
+    parse_with(json, true)
+}
+
+/// As [`parse`], for any file ffprobe reads: one whose tracks are added to an
+/// MKV's copy (a subtitle file, a sound file, another video).
+pub fn parse_any(json: &str) -> Option<Contents> {
+    parse_with(json, false)
+}
+
+fn parse_with(json: &str, matroska: bool) -> Option<Contents> {
     let value: Value = serde_json::from_str(json).ok()?;
     let format = value["format"]["format_name"].as_str()?;
-    if !format.split(',').any(|name| name == "matroska") {
+    if matroska && !format.split(',').any(|name| name == "matroska") {
         return None;
     }
     let mut tracks = Vec::new();

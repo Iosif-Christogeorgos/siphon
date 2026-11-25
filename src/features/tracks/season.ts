@@ -1,6 +1,6 @@
 import { primary } from "@/lib/languages";
 import type { MkvContents, MkvTrack } from "@/types";
-import { asItIs, changesOf, type Draft, mineOf, sizeOf } from "./draft";
+import { asItIs, changesOf, type Draft, type DraftTrack, mineOf, readOf, sizeOf } from "./draft";
 
 /**
  * A season: several MKVs whose tracks are chosen together (docs/mkv-editor.md).
@@ -12,6 +12,8 @@ import { asItIs, changesOf, type Draft, mineOf, sizeOf } from "./draft";
  */
 export interface SeasonFile {
   key: string;
+  /** "Show S01E03.mkv": what files to add are matched by. */
+  name: string;
   contents: MkvContents;
   draft: Draft;
 }
@@ -25,6 +27,8 @@ export interface SeasonRow {
   kind: "sound" | "subtitles";
   language: string;
   role: Role;
+  /** Added from other files, rather than the episodes' own. */
+  added: boolean;
   /** How many files have one. */
   files: number;
   /** Whether the copies keep them: in every file that has one, in none, or in some. */
@@ -41,23 +45,28 @@ function roleOf(track: MkvTrack): Role {
   return "main";
 }
 
-/** The row a track belongs to; none for video, or a track whose language isn't certain. */
-function rowKey(track: MkvTrack): string | null {
-  if (track.kind === "video" || !track.certain || !track.language) return null;
-  return `${track.kind}:${primary(track.language)}:${roleOf(track)}`;
+/**
+ * The row a draft's track belongs to; none for video, or a track whose
+ * language isn't certain. Tracks added from other files have rows of their own.
+ */
+function rowKey(file: SeasonFile, track: DraftTrack): string | null {
+  const read = readOf(file.draft, file.contents, track);
+  if (!read || read.kind === "video" || !read.certain || !read.language) return null;
+  return `${read.kind}:${primary(read.language)}:${roleOf(read)}${track.from ? ":added" : ""}`;
 }
 
 const ROLES: Role[] = ["main", "forced", "sdh", "commentary", "described"];
 
 /** The season's rows: sound before subtitles, the first language met first, the main tracks before the rest. */
 export function rowsOf(files: SeasonFile[]): SeasonRow[] {
-  const rows = new Map<string, SeasonRow & { kept: number; firsts: number; members: number; seen: number }>();
+  type Counting = SeasonRow & { kept: number; firsts: number; members: number; seen: number; inFiles: Set<string> };
+  const rows = new Map<string, Counting>();
   let seen = 0;
   for (const file of files) {
-    for (const read of file.contents.tracks) {
-      const key = rowKey(read);
-      const track = file.draft.tracks.find((candidate) => candidate.index === read.index);
-      if (!key || !track || !read.language || read.kind === "video") continue;
+    for (const track of file.draft.tracks) {
+      const key = rowKey(file, track);
+      const read = readOf(file.draft, file.contents, track);
+      if (!key || !read?.language || read.kind === "video") continue;
       let row = rows.get(key);
       if (!row) {
         row = {
@@ -65,6 +74,7 @@ export function rowsOf(files: SeasonFile[]): SeasonRow[] {
           kind: read.kind,
           language: primary(read.language),
           role: roleOf(read),
+          added: Boolean(track.from),
           files: 0,
           keep: "all",
           first: "none",
@@ -72,15 +82,14 @@ export function rowsOf(files: SeasonFile[]): SeasonRow[] {
           firsts: 0,
           members: 0,
           seen: seen++,
+          inFiles: new Set(),
         };
         rows.set(key, row);
       }
       row.members += 1;
+      row.inFiles.add(file.key);
       if (track.keep) row.kept += 1;
       if (track.keep && track.default) row.firsts += 1;
-    }
-    for (const row of rows.values()) {
-      if (file.contents.tracks.some((track) => rowKey(track) === row.key)) row.files += 1;
     }
   }
   const state = (count: number, of: number) => (count === 0 ? "none" : count === of ? "all" : "some");
@@ -89,26 +98,32 @@ export function rowsOf(files: SeasonFile[]): SeasonRow[] {
     if (!firstLanguage.has(row.language)) firstLanguage.set(row.language, row.seen);
   }
   return [...rows.values()]
-    .map((row) => ({ ...row, keep: state(row.kept, row.members), first: state(row.firsts, row.files) }) as const)
+    .map(
+      ({ kept, firsts, members, seen: _seen, inFiles, ...row }): SeasonRow => ({
+        ...row,
+        files: inFiles.size,
+        keep: state(kept, members),
+        first: state(firsts, inFiles.size),
+      }),
+    )
     .sort(
       (a, b) =>
         Number(a.kind === "subtitles") - Number(b.kind === "subtitles") ||
+        Number(a.added) - Number(b.added) ||
         (firstLanguage.get(a.language) ?? 0) - (firstLanguage.get(b.language) ?? 0) ||
         ROLES.indexOf(a.role) - ROLES.indexOf(b.role),
-    )
-    .map(({ kept: _k, firsts: _f, members: _m, seen: _s, ...row }) => row);
+    );
 }
 
 /** Keeps, or leaves out, the row's tracks in every file. */
 export function keepRow(files: SeasonFile[], key: string, keep: boolean): Map<string, Draft> {
   const drafts = new Map<string, Draft>();
   for (const file of files) {
-    const members = new Set(file.contents.tracks.filter((track) => rowKey(track) === key).map((track) => track.index));
-    if (members.size === 0) continue;
+    if (!file.draft.tracks.some((track) => rowKey(file, track) === key)) continue;
     drafts.set(file.key, {
       ...file.draft,
       tracks: file.draft.tracks.map((track) =>
-        members.has(track.index) ? { ...track, keep, default: keep && track.default } : track,
+        rowKey(file, track) === key ? { ...track, keep, default: keep && track.default } : track,
       ),
     });
   }
@@ -122,17 +137,14 @@ export function keepRow(files: SeasonFile[], key: string, keep: boolean): Map<st
 export function firstRow(files: SeasonFile[], key: string, on: boolean): Map<string, Draft> {
   const drafts = new Map<string, Draft>();
   for (const file of files) {
-    const members = file.contents.tracks.filter((track) => rowKey(track) === key);
-    const first = members[0];
+    const first = file.draft.tracks.find((track) => rowKey(file, track) === key);
     if (!first) continue;
-    const kind = first.kind;
-    const memberSet = new Set(members.map((track) => track.index));
     drafts.set(file.key, {
       ...file.draft,
       tracks: file.draft.tracks.map((track) => {
         if (on && track.index === first.index) return { ...track, keep: true, default: true };
-        if (on && track.kind === kind) return { ...track, default: false };
-        if (!on && memberSet.has(track.index)) return { ...track, default: false };
+        if (on && track.kind === first.kind) return { ...track, default: false };
+        if (!on && rowKey(file, track) === key) return { ...track, default: false };
         return track;
       }),
     });
@@ -154,32 +166,43 @@ export function allMine(files: SeasonFile[]): Map<string, Draft> {
   );
 }
 
-/** What in a file isn't certain: tracks whose language isn't known or is in doubt, and doubts on the file. */
-export function toCheck(contents: MkvContents): string[] {
-  return [
-    ...contents.doubts,
-    ...contents.tracks.flatMap((track) =>
-      track.kind === "video" || track.certain
-        ? []
-        : track.doubts.length > 0
-          ? track.doubts
-          : [`A ${track.kind === "sound" ? "sound" : "subtitle"} track’s language isn’t known.`],
-    ),
-  ];
+/**
+ * What in a file isn't certain: tracks whose language isn't known or is in
+ * doubt (its own, and those added to it), and doubts on the file.
+ */
+export function toCheck(contents: MkvContents, draft?: Draft): string[] {
+  const unsure = (track: MkvTrack) =>
+    track.kind === "video" || track.certain
+      ? []
+      : track.doubts.length > 0
+        ? track.doubts
+        : [`A ${track.kind === "sound" ? "sound" : "subtitle"} track’s language isn’t known.`];
+  const added = (draft?.tracks ?? []).flatMap((track) => {
+    const read = track.from && track.keep && draft ? readOf(draft, contents, track) : undefined;
+    return read ? unsure(read) : [];
+  });
+  return [...contents.doubts, ...contents.tracks.flatMap(unsure), ...added];
 }
 
-/** What saving the season makes: how many copies, the tracks they leave out, and about how large they are. */
-export function seasonSummary(files: SeasonFile[]): { copies: number; removed: number; size: number | null } {
+/** What saving the season makes: how many copies, the tracks they leave out and add, and about how large they are. */
+export function seasonSummary(files: SeasonFile[]): {
+  copies: number;
+  removed: number;
+  added: number;
+  size: number | null;
+} {
   let copies = 0;
   let removed = 0;
+  let added = 0;
   let size: number | null = 0;
   for (const file of files) {
     const changes = changesOf(file.draft);
     if (!changes.changed) continue;
     copies += 1;
     removed += changes.removed;
+    added += changes.added;
     const bytes = sizeOf(file.draft, file.contents);
     size = size === null || bytes === null ? null : size + bytes;
   }
-  return { copies, removed, size };
+  return { copies, removed, added, size };
 }

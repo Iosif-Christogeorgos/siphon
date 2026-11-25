@@ -16,8 +16,11 @@ use super::tracker::{Stage, Tracker};
 use super::{free_space, work_dir, ChildEvent, Done, DownloadManager, Failure, JobContext, Note};
 use crate::error::{AppError, ErrorKind, Result};
 use crate::ffmpeg::{self, encoders::Hardware};
-use crate::local::mkv::{self, edit::TrackEdit};
-use crate::local::{self, LocalFile, Original};
+use crate::local::mkv::{
+    self,
+    edit::{AddedInput, TrackEdit},
+};
+use crate::local::{self, Grants, LocalFile, Original};
 use crate::plan::{self, Choice, ReadFrom, Recipe, Trim};
 use crate::process;
 use crate::state::CapabilityCache;
@@ -131,22 +134,27 @@ impl DownloadManager {
     pub(super) async fn run_tracks(&self, job: &JobContext<'_>, original: &Original, edit: &TrackEdit) -> Result<Done> {
         job.emit(Tracker::queued());
         let contents = mkv::inspect(job.bins, original).await?;
-        edit.check(&contents)?;
+        let added = added_inputs(job, edit).await?;
+        edit.check(&contents, &added)?;
         if !self.wait_for_turn(job.id, Load::Disk).await {
             return Err(AppError::cancelled());
         }
-        let made = self.keep_tracks(job, original, edit, &contents).await;
+        let made = self
+            .keep_tracks(
+                job,
+                original,
+                TrackCopy {
+                    edit,
+                    contents: &contents,
+                    added: &added,
+                },
+            )
+            .await;
         self.end_turn(Load::Disk);
         made
     }
 
-    async fn keep_tracks(
-        &self,
-        job: &JobContext<'_>,
-        original: &Original,
-        edit: &TrackEdit,
-        contents: &mkv::Contents,
-    ) -> Result<Done> {
+    async fn keep_tracks(&self, job: &JobContext<'_>, original: &Original, copy: TrackCopy<'_>) -> Result<Done> {
         let mut tracker = Tracker::converting();
         tracker.set_pass_stage(Stage::CopyingTracks);
         job.emit(tracker.on_convert(0.0));
@@ -166,9 +174,7 @@ impl DownloadManager {
                 }),
             ),
         };
-        let made = self
-            .copy_tracks(job, original, edit, contents, &folder, &mut tracker)
-            .await;
+        let made = self.copy_tracks(job, original, copy, &folder, &mut tracker).await;
         // An `Edited` folder made for a copy that didn't come about is taken away again, if empty.
         if made.is_err() && made_folder {
             if let Some(edited) = &edited {
@@ -182,12 +188,12 @@ impl DownloadManager {
         &self,
         job: &JobContext<'_>,
         original: &Original,
-        edit: &TrackEdit,
-        contents: &mkv::Contents,
+        copy: TrackCopy<'_>,
         folder: &Path,
         tracker: &mut Tracker,
     ) -> Result<std::path::PathBuf> {
-        if let (Some(free), Some(needs)) = (free_space(folder), edit.size(contents)) {
+        let TrackCopy { edit, contents, added } = copy;
+        if let (Some(free), Some(needs)) = (free_space(folder), edit.size(contents, added)) {
             let needs = needs + needs / 50 + 256 * 1024 * 1024;
             if free < needs {
                 return Err(AppError::new(
@@ -203,7 +209,7 @@ impl DownloadManager {
         let output = self.unique_output(folder.join(original.name()), job.id);
         let partial = local::partial_name(&output, job.id);
         let mut cmd = process::command(job.bins.ffmpeg());
-        cmd.args(mkv::edit::args(original.path(), &partial, edit, contents));
+        cmd.args(mkv::edit::args(original.path(), &partial, edit, contents, added));
         let length = contents.duration;
         let started = std::time::Instant::now();
         let result = self
@@ -216,7 +222,7 @@ impl DownloadManager {
             })
             .await;
         let checked = match result {
-            Ok(_) => check_copy(job, &partial, edit, contents).await,
+            Ok(_) => check_copy(job, &partial, edit, contents, added).await,
             Err(Failure::Stopped(_)) => Err(AppError::cancelled()),
             Err(Failure::Exited(log)) => Err(AppError::internal("Copying the tracks failed.").with_details(log)),
             Err(Failure::Spawn(error)) => Err(error),
@@ -229,10 +235,11 @@ impl DownloadManager {
         crate::log::line(
             job.app,
             &format!(
-                "tracks of {}: kept {} of {}, {:.1} s",
+                "tracks of {}: kept {} of {}, added {}, {:.1} s",
                 original.name(),
-                edit.tracks.len(),
+                edit.tracks.iter().filter(|kept| kept.from.is_none()).count(),
                 contents.tracks.len(),
+                edit.tracks.iter().filter(|kept| kept.from.is_some()).count(),
                 started.elapsed().as_secs_f64()
             ),
         );
@@ -423,7 +430,55 @@ const EDITED: &str = "Edited";
 
 /// A copy must hold every track kept, of the kinds and in the order chosen,
 /// and the whole length: FFmpeg can finish without an error having written less.
-async fn check_copy(job: &JobContext<'_>, copy: &Path, edit: &TrackEdit, original: &mkv::Contents) -> Result<()> {
+/// What a copy of an MKV's tracks is made of: the edit, the MKV as read, and
+/// the files it adds tracks from.
+#[derive(Clone, Copy)]
+struct TrackCopy<'a> {
+    edit: &'a TrackEdit,
+    contents: &'a mkv::Contents,
+    added: &'a [AddedInput],
+}
+
+/// The files an edit adds tracks from, found again by their keys and read
+/// (see `mkv::added`). An error if one isn't there any more.
+async fn added_inputs(job: &JobContext<'_>, edit: &TrackEdit) -> Result<Vec<AddedInput>> {
+    let mut inputs = Vec::new();
+    for key in edit.added_keys() {
+        let file =
+            job.app.state::<Grants>().get(key).ok_or_else(|| {
+                AppError::internal("Siphon lost track of a file whose tracks were added. Add it again.")
+            })?;
+        let path = file.path().to_path_buf();
+        if !path.is_file() {
+            return Err(AppError::new(
+                ErrorKind::Unavailable,
+                format!(
+                    "{} isn't there any more. It may have been moved or deleted.",
+                    file.name()
+                ),
+            ));
+        }
+        let contents = mkv::added::inspect(job.bins, &path)
+            .await
+            .map_err(|details| AppError::internal(format!("Couldn't read {}.", file.name())).with_details(details))?;
+        let size = tokio::fs::metadata(&path).await.map(|meta| meta.len()).unwrap_or(0);
+        inputs.push(AddedInput {
+            key: key.to_string(),
+            path,
+            contents,
+            size,
+        });
+    }
+    Ok(inputs)
+}
+
+async fn check_copy(
+    job: &JobContext<'_>,
+    copy: &Path,
+    edit: &TrackEdit,
+    original: &mkv::Contents,
+    added: &[AddedInput],
+) -> Result<()> {
     let problem = match mkv::inspect_path(job.bins, copy).await {
         Err(why) => Some(format!("ffprobe couldn't read it: {why}")),
         Ok(made) => {
@@ -433,8 +488,8 @@ async fn check_copy(job: &JobContext<'_>, copy: &Path, edit: &TrackEdit, origina
                 (Some(_), None) => true,
                 _ => false,
             };
-            if kinds != edit.kinds(original) {
-                Some(format!("it holds {kinds:?}, not {:?}", edit.kinds(original)))
+            if kinds != edit.kinds(original, added) {
+                Some(format!("it holds {kinds:?}, not {:?}", edit.kinds(original, added)))
             } else if short {
                 Some(format!("it lasts {:?} s of {:?}", made.duration, original.duration))
             } else {

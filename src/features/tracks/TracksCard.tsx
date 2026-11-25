@@ -194,7 +194,10 @@ export function TracksCard({
       open={open}
       onOpenChange={onOpenChange}
       disabled={disabled}
-      title={changes && changes.removed > 0 ? `${changes.kept} of ${total} tracks kept` : `${total} tracks`}
+      title={
+        (changes && changes.removed > 0 ? `${changes.kept} of ${total} tracks kept` : `${total} tracks`) +
+        (changes && changes.added > 0 ? `, ${changes.added} added` : "")
+      }
       said={languagesLine(tagsOf("sound"), tagsOf("subtitles")) ?? "Choose which it keeps, without converting"}
     >
       <TracksPanel fileKey={fileKey} version={version} draft={draft} onDraft={onDraft} disabled={disabled} />

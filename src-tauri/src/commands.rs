@@ -125,6 +125,66 @@ pub async fn read_tracks(app: AppHandle, bins: Binaries<'_>, key: String) -> Res
     local::mkv::read(&app, &bins, &key).await
 }
 
+/// A file picked to add tracks from: its key, and its name to show and match by.
+#[derive(serde::Serialize)]
+pub struct PickedFile {
+    pub key: String,
+    pub name: String,
+}
+
+/// Windows' file dialog for subtitle and sound files (and videos) to add to
+/// MKVs' copies (docs/mkv-editor.md, step 6), opened here so the webview
+/// never names a file. None if the dialog was closed.
+#[tauri::command]
+pub async fn pick_track_files(app: AppHandle, grants: State<'_, Grants>) -> Result<Option<Vec<PickedFile>>> {
+    let (chosen, picked) = oneshot::channel();
+    let mut dialog = app
+        .dialog()
+        .file()
+        .set_title("Choose subtitles or sound to add")
+        .add_filter("Subtitles and sound", local::mkv::added::EXTENSIONS)
+        .add_filter("All files", &["*"]);
+    if let Some(window) = app.get_webview_window("main") {
+        dialog = dialog.set_parent(&window);
+    }
+    dialog.pick_files(move |paths| {
+        let _ = chosen.send(paths);
+    });
+    let Some(paths) = picked.await.ok().flatten() else {
+        return Ok(None);
+    };
+    Ok(Some(
+        paths
+            .into_iter()
+            .filter_map(|path| path.into_path().ok())
+            .filter_map(|path| grants.grant(&path))
+            .map(|file| PickedFile {
+                key: file.key(),
+                name: file.name(),
+            })
+            .collect(),
+    ))
+}
+
+/// Reads a file the user gave to add tracks from (see `local::mkv::added`),
+/// a text subtitle file in `charset` if the user chose one.
+#[tauri::command]
+pub async fn read_added(
+    app: AppHandle,
+    bins: Binaries<'_>,
+    key: String,
+    charset: Option<String>,
+) -> Result<local::mkv::added::Added> {
+    ensure_ready(&bins)?;
+    local::mkv::added::read(&app, &bins, &key, charset.as_deref()).await
+}
+
+/// Which of a season's episodes each file to add goes with, by their names.
+#[tauri::command]
+pub fn match_episodes(episodes: Vec<String>, files: Vec<String>) -> Vec<Option<usize>> {
+    local::mkv::added::match_episodes(&episodes, &files)
+}
+
 /// Every preset group, target and tier: the frontend defines none itself.
 #[tauri::command]
 pub fn get_presets() -> Registry {

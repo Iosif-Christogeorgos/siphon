@@ -211,7 +211,7 @@ fn describes_sound(line: &str) -> bool {
 }
 
 /// A line without its formatting: ASS's `{\i1}` and `\N`, SRT's `<i>`.
-fn plain(text: &str) -> String {
+pub(super) fn plain(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut skipping = None;
     for c in text

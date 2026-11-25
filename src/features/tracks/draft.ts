@@ -1,9 +1,21 @@
-import type { KeptTrack, MkvContents, MkvKind, TrackEdit } from "@/types";
+import { primary } from "@/lib/languages";
+import type { AddedFile, KeptTrack, MkvContents, MkvKind, MkvTrack, TrackEdit } from "@/types";
 
-/** A track as the user has it: kept or not, and what the copy says of it. */
+/**
+ * A track as the user has it: kept or not, and what the copy says of it.
+ * A track added from another file has an `index` of its own in the draft
+ * (see `addTracks`), and its place in that file as `stream`.
+ */
 export interface DraftTrack extends KeptTrack {
   kind: MkvKind;
   keep: boolean;
+  /** Added from another file: its place among that file's streams. */
+  stream?: number;
+}
+
+/** A file tracks were added from, and where its tracks' draft indexes start. */
+export interface DraftAdded extends AddedFile {
+  base: number;
 }
 
 /** What the user has chosen of an MKV's tracks, beside the file as it is. */
@@ -19,7 +31,12 @@ export interface Draft {
   attachments: boolean;
   /** The user's languages chose what it keeps (and nothing has undone that). */
   mine: boolean;
+  /** Files tracks were added from (docs/mkv-editor.md, step 6). */
+  added: DraftAdded[];
 }
+
+/** Each file added from gets indexes of its own in a draft: far past any file's streams. */
+const ADDED_BASE = 100_000;
 
 /**
  * What a file opens with: what the user's languages keep, if they choose
@@ -31,18 +48,30 @@ export function draftOf(contents: MkvContents, key: string, version: string, lan
   return contents.suggestion ? mineOf(asItIs, contents.suggestion.edit) : asItIs;
 }
 
+/** The tracks added from other files, in their places among `tracks`. */
+function withAdded(draft: Draft, tracks: DraftTrack[]): DraftTrack[] {
+  return draft.tracks.filter((track) => track.from).reduce(placed, tracks);
+}
+
+/** `tracks` with `track` after the last of its kind (or last of all). */
+function placed(tracks: DraftTrack[], track: DraftTrack): DraftTrack[] {
+  const last = tracks.findLastIndex((candidate) => candidate.kind === track.kind);
+  const at = last >= 0 ? last + 1 : tracks.length;
+  return [...tracks.slice(0, at), track, ...tracks.slice(at)];
+}
+
 /** What `edit` keeps of the file, as the user's languages chose it. */
 export function mineOf(draft: Draft, edit: TrackEdit): Draft {
   const tracks = draft.before.map((track) => {
-    const kept = edit.tracks.find((candidate) => candidate.index === track.index);
+    const kept = edit.tracks.find((candidate) => candidate.index === track.index && !candidate.from);
     return kept ? { ...track, ...kept, keep: true } : { ...track, keep: false };
   });
-  return { ...draft, tracks, mine: true };
+  return { ...draft, tracks: withAdded(draft, tracks), mine: true };
 }
 
-/** Everything, as the file has it. */
+/** Everything, as the file has it, and whatever was added. */
 export function asItIs(draft: Draft): Draft {
-  return { ...draft, tracks: draft.before, chapters: true, attachments: true, mine: false };
+  return { ...draft, tracks: withAdded(draft, draft.before), chapters: true, attachments: true, mine: false };
 }
 
 function asTheFileIs(contents: MkvContents, key: string, version: string, languages: string): Draft {
@@ -61,13 +90,90 @@ function asTheFileIs(contents: MkvContents, key: string, version: string, langua
       original: track.original,
     }),
   );
-  return { key, version, languages, tracks, before: tracks, chapters: true, attachments: true, mine: false };
+  return {
+    key,
+    version,
+    languages,
+    tracks,
+    before: tracks,
+    chapters: true,
+    attachments: true,
+    mine: false,
+    added: [],
+  };
+}
+
+/**
+ * Adds a file's tracks to the draft, each after the last of its kind: its
+ * sound and subtitles kept, a video's picture not (a second picture is
+ * rarely what is wanted). Subtitles in the user's first language play first
+ * when no sound is in it and no subtitles play first yet.
+ */
+export function addTracks(draft: Draft, file: AddedFile): Draft {
+  const without = removeAdded(draft, file.key);
+  const base = ADDED_BASE * (Math.max(0, ...without.added.map((added) => added.base / ADDED_BASE)) + 1);
+  const first = draft.languages.split(",")[0] ?? "";
+  const soundInFirst = without.tracks.some(
+    (track) => track.keep && track.kind === "sound" && track.language && primary(track.language) === primary(first),
+  );
+  let subtitlesFirst = without.tracks.some((track) => track.keep && track.kind === "subtitles" && track.default);
+  let tracks = without.tracks;
+  for (const track of file.contents.tracks) {
+    const plays =
+      track.kind === "subtitles" &&
+      !subtitlesFirst &&
+      !soundInFirst &&
+      !track.forced &&
+      track.language !== null &&
+      first !== "" &&
+      primary(track.language) === primary(first);
+    if (plays) subtitlesFirst = true;
+    tracks = placed(tracks, {
+      index: base + track.index,
+      stream: track.index,
+      from: file.key,
+      charset: file.charset,
+      kind: track.kind,
+      keep: track.kind !== "video",
+      language: track.language,
+      name: track.name ?? "",
+      default: plays,
+      forced: track.forced,
+      sdh: track.sdh,
+      commentary: track.commentary,
+      described: track.described,
+      original: false,
+    });
+  }
+  return { ...without, tracks, added: [...without.added, { ...file, base }] };
+}
+
+/** The draft without the tracks added from `key`. */
+export function removeAdded(draft: Draft, key: string): Draft {
+  return {
+    ...draft,
+    tracks: draft.tracks.filter((track) => track.from !== key),
+    added: draft.added.filter((added) => added.key !== key),
+  };
+}
+
+/** What reading found of a draft's track: in the MKV, or in the file it was added from. */
+export function readOf(draft: Draft, contents: MkvContents, track: DraftTrack): MkvTrack | undefined {
+  if (!track.from) return contents.tracks.find((candidate) => candidate.index === track.index);
+  return addedOf(draft, track)?.contents.tracks.find((candidate) => candidate.index === track.stream);
+}
+
+/** The file a track was added from. */
+export function addedOf(draft: Draft, track: DraftTrack): DraftAdded | undefined {
+  return track.from ? draft.added.find((added) => added.key === track.from) : undefined;
 }
 
 /** What the backend is asked to make. */
 export function editOf(draft: Draft): TrackEdit {
   return {
-    tracks: draft.tracks.filter((track) => track.keep).map(({ kind: _kind, keep: _keep, ...kept }) => kept),
+    tracks: draft.tracks
+      .filter((track) => track.keep)
+      .map(({ kind: _kind, keep: _keep, stream, ...kept }) => ({ ...kept, index: stream ?? kept.index })),
     chapters: draft.chapters,
     attachments: draft.attachments,
   };
@@ -75,12 +181,22 @@ export function editOf(draft: Draft): TrackEdit {
 
 const FIELDS = ["index", "language", "name", "default", "forced", "sdh", "commentary", "described", "original"] as const;
 
-/** How the draft differs from the file: tracks left out, and whether anything at all changed. */
-export function changesOf(draft: Draft): { removed: number; kept: number; changed: boolean } {
+/**
+ * How the draft differs from the file: its own tracks kept and left out,
+ * tracks added, and whether anything at all changed.
+ */
+export function changesOf(draft: Draft): { removed: number; kept: number; added: number; changed: boolean } {
   const kept = draft.tracks.filter((track) => track.keep);
-  const removed = draft.tracks.length - kept.length;
+  const own = kept.filter((track) => !track.from);
+  const added = kept.length - own.length;
+  const removed = draft.before.length - own.length;
   const moved = kept.some((track, place) => FIELDS.some((field) => track[field] !== draft.before[place]?.[field]));
-  return { removed, kept: kept.length, changed: removed > 0 || moved || !draft.chapters || !draft.attachments };
+  return {
+    removed,
+    kept: own.length,
+    added,
+    changed: removed > 0 || added > 0 || moved || !draft.chapters || !draft.attachments,
+  };
 }
 
 /** About how large the copy is, where the file counts its tracks' bytes. */
@@ -88,6 +204,12 @@ export function sizeOf(draft: Draft, contents: MkvContents): number | null {
   let total = 0;
   for (const track of draft.tracks) {
     if (!track.keep) continue;
+    const from = addedOf(draft, track);
+    if (from) {
+      const bytes = readOf(draft, contents, track)?.bytes;
+      total += bytes ?? from.size / Math.max(1, from.contents.tracks.length);
+      continue;
+    }
     const bytes = contents.tracks.find((candidate) => candidate.index === track.index)?.bytes;
     if (bytes == null) return null;
     total += bytes;

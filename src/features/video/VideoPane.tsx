@@ -379,17 +379,19 @@ export function VideoPane({ video }: { video: VideoInfo }) {
             const source = { ...video, title: video.file.name };
             setDownloadIds([start(source, choice, null, null, null, editOf(draft))]);
           }}
-          disabled={!choice || !trackChanges?.changed || trackChanges.kept === 0}
+          disabled={!choice || !trackChanges?.changed || trackChanges.kept + trackChanges.added === 0}
           convert
           nothing={trackChanges !== null && !trackChanges.changed}
           label={
             !trackChanges || !trackChanges.changed
               ? "Nothing to change"
-              : trackChanges.kept === 0
+              : trackChanges.kept + trackChanges.added === 0
                 ? "Keep at least one track"
-                : trackChanges.removed > 0
+                : trackChanges.removed > 0 && trackChanges.added === 0
                   ? `Save without ${trackChanges.removed} track${trackChanges.removed === 1 ? "" : "s"}`
-                  : "Save the changes"
+                  : trackChanges.added > 0 && trackChanges.removed === 0
+                    ? `Save with ${trackChanges.added} more track${trackChanges.added === 1 ? "" : "s"}`
+                    : "Save the changes"
           }
         />
       ) : (

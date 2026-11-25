@@ -175,6 +175,8 @@ pub fn suggest(contents: &Contents, languages: &[String]) -> Suggestion {
         .filter(|(_, keep)| **keep)
         .map(|(track, _)| KeptTrack {
             index: track.index,
+            from: None,
+            charset: None,
             language: track.language.clone(),
             name: track.name.clone().unwrap_or_default(),
             default: default_of(track),
