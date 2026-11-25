@@ -1,5 +1,6 @@
-import { FileType, RefreshCw } from "lucide-react";
+import { RefreshCw } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
+import { useEffect } from "react";
 import { Facet } from "@/components/ui/facet";
 import { Segmented } from "@/components/ui/segmented";
 import { Hint } from "@/components/ui/tooltip";
@@ -20,15 +21,10 @@ const FINISHED_ONLY = "share";
 export const CHAT_GROUPS = new Set(["max", "watch"]);
 
 /**
- * Max quality, for a file on this PC: a file already is its own best, so the
- * group keeps its streams as they are and puts them in the file type that
- * suits them (an OBS recording's MPEG-TS becomes an MP4).
+ * The group a file on this PC isn't offered: Max quality picks the best a site
+ * has, and a file already is its own. Watch, Share and Customize cover the rest.
  */
-const FILE_TYPE = {
-  label: "File type",
-  description: "Its own picture and sound, untouched, in the file type that suits them",
-  icon: FileType,
-};
+const NOT_FOR_FILES = "max";
 
 /**
  * Where the download is going: the group (Max quality, Watch, …) on top, then
@@ -59,12 +55,17 @@ export function PresetArea({
   subtitles?: SubtitleTrack[] | "playlist";
   /** The video's chat can be drawn into the picture (Twitch). */
   chat?: boolean;
-  /** A file on this PC: Max quality is its file type (see `FILE_TYPE`). */
+  /** A file on this PC: Max quality isn't offered (see `NOT_FOR_FILES`). */
   file?: boolean;
 }) {
   const registry = useRegistry();
   const choices = useChoices((state) => state.choices);
   const chooseGroup = useChoices((state) => state.chooseGroup);
+  // A file opened with Max quality chosen (for a link) gets Watch instead.
+  const offFiles = file && choices?.active.kind === "preset" && choices.group === NOT_FOR_FILES;
+  useEffect(() => {
+    if (offFiles) chooseGroup("watch");
+  }, [offFiles, chooseGroup]);
   if (!registry || !choices) return <div aria-hidden className="skeleton h-[5.25rem] rounded-xl" />;
 
   const presetActive = choices.active.kind === "preset";
@@ -89,18 +90,19 @@ export function PresetArea({
         size="md"
         value={presetActive ? group.id : null}
         onChange={chooseGroup}
-        options={registry.groups.map((candidate) => {
-          const shown = file && candidate.id === "max" ? FILE_TYPE : { ...candidate, icon: iconFor(candidate.icon) };
-          const Icon = shown.icon;
-          const later = live && candidate.id === FINISHED_ONLY;
-          return {
-            id: candidate.id,
-            label: shown.label,
-            icon: <Icon />,
-            hint: later ? `${candidate.label} becomes available on the finished recording.` : shown.description,
-            disabled: later,
-          };
-        })}
+        options={registry.groups
+          .filter((candidate) => !(file && candidate.id === NOT_FOR_FILES))
+          .map((candidate) => {
+            const Icon = iconFor(candidate.icon);
+            const later = live && candidate.id === FINISHED_ONLY;
+            return {
+              id: candidate.id,
+              label: candidate.label,
+              icon: <Icon />,
+              hint: later ? `${candidate.label} becomes available on the finished recording.` : candidate.description,
+              disabled: later,
+            };
+          })}
       />
 
       <AnimatePresence mode="popLayout" initial={false}>
