@@ -338,7 +338,7 @@ export function PlaylistPane({ playlist, onOpen }: { playlist: PlaylistInfo; onO
                 onClick={() => openPanel("downloads")}
                 className="font-medium text-primary underline-offset-2 hover:underline"
               >
-                Downloads
+                Activity
               </button>
               .
             </p>

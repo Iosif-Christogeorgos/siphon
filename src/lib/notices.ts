@@ -1,10 +1,10 @@
 import { useDownloads } from "@/stores/downloads";
 import type { DownloadEvent } from "@/types";
 import { formatBytes } from "./format";
-import { ipc } from "./ipc";
+import { ipc, isFileKey } from "./ipc";
 import { formatShortTimecode } from "./time";
 
-/** Downloads that end within this long of each other share one notification. */
+/** Jobs that end within this long of each other share one notification. */
 const GATHER_MS = 2000;
 
 let finished: string[] = [];
@@ -52,19 +52,32 @@ function send() {
       : download.title;
   const list = (items: typeof done) =>
     items.length <= 2 ? items.map(name).join("\n") : `${items.slice(0, 2).map(name).join("\n")}\nand ${items.length - 2} more`;
-  // "Recording finished" when everything in it was a recording.
-  const noun = (items: typeof done) => (items.every((download) => download.record) ? "Recording" : "Download");
-  const nouns = (items: typeof done) => (items.every((download) => download.record) ? "recordings" : "downloads");
+  // "Recording finished" when everything in it was a recording, "Conversion" a file
+  // converted, "Download" a download; several of different kinds are just "finished".
+  const kind = (download: (typeof done)[number]) =>
+    download.record ? "recording" : isFileKey(download.url) ? "conversion" : "download";
+  const one = (items: typeof done) => {
+    const first = items[0] ? kind(items[0]) : "download";
+    return items.every((download) => kind(download) === first) ? first : null;
+  };
+  const noun = (items: typeof done) => {
+    const word = one(items) ?? "download";
+    return word.charAt(0).toUpperCase() + word.slice(1);
+  };
+  const nouns = (items: typeof done) => {
+    const word = one(items);
+    return word ? `${word}s ` : "";
+  };
 
   let title: string;
   let body: string;
   if (lost.length === 0) {
     const only = done.length === 1 ? done[0] : undefined;
-    title = only ? `${noun(done)} finished` : `${done.length} ${nouns(done)} finished`;
+    title = only ? `${noun(done)} finished` : `${done.length} ${nouns(done)}finished`;
     body = only ? [name(only), only.size != null && formatBytes(only.size)].filter(Boolean).join(" · ") : list(done);
   } else if (done.length === 0) {
     const only = lost.length === 1 ? lost[0] : undefined;
-    title = only ? (only.record ? "Recording stopped" : "Download failed") : `${lost.length} ${nouns(lost)} failed`;
+    title = only ? (only.record ? "Recording stopped" : `${noun(lost)} failed`) : `${lost.length} ${nouns(lost)}failed`;
     body = only ? `${name(only)}\n${only.error?.message ?? ""}`.trim() : list(lost);
   } else {
     title = `${done.length} finished, ${lost.length} failed`;

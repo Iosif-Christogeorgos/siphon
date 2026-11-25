@@ -1,4 +1,5 @@
 import {
+  AudioLines,
   Check,
   CircleAlert,
   FolderOpen,
@@ -21,7 +22,7 @@ import { Button } from "@/components/ui/button";
 import { Sheet } from "@/components/ui/sheet";
 import { Hint } from "@/components/ui/tooltip";
 import { formatBytes, formatDuration, formatEta, formatSpan, formatSpeed, formatStreamSpeed } from "@/lib/format";
-import { ipc } from "@/lib/ipc";
+import { ipc, isFileKey } from "@/lib/ipc";
 import { spring } from "@/lib/motion";
 import { formatPercent, isBusy, isLive, STAGE_LABELS } from "@/lib/stages";
 import { formatShortTimecode, formatTimecode } from "@/lib/time";
@@ -61,11 +62,11 @@ export function QueueSheet() {
   const paused = downloads.filter((download) => download.status === "paused").length;
 
   return (
-    <Sheet open={open} onOpenChange={(next) => !next && closePanel()} title="Downloads">
+    <Sheet open={open} onOpenChange={(next) => !next && closePanel()} title="Activity">
       {downloads.length === 0 ? (
         <div className="flex flex-col items-center gap-2 pt-24 text-center text-muted-foreground">
           <Inbox className="size-6 text-subtle-foreground" strokeWidth={1.5} />
-          <p className="max-w-64 text-[13px] text-balance">Nothing here yet. Downloads you start show up in this list.</p>
+          <p className="max-w-64 text-[13px] text-balance">Nothing here yet. Downloads, recordings and files you convert show up in this list.</p>
         </div>
       ) : (
         <>
@@ -129,7 +130,8 @@ function QueueItem({ download }: { download: Download }) {
           />
         ) : (
           <div className="grid size-full place-items-center text-subtle-foreground">
-            <ImageOff className="size-3.5" />
+            {/* A file on this PC without a picture is a sound file. */}
+            {isFileKey(download.url) ? <AudioLines className="size-3.5" /> : <ImageOff className="size-3.5" />}
           </div>
         )}
       </div>
@@ -224,7 +226,9 @@ function QueueItem({ download }: { download: Download }) {
                 : status === "paused"
                   ? download.record
                     ? "Remove from the list"
-                    : "Cancel and delete what was downloaded"
+                    : isFileKey(download.url)
+                      ? "Cancel"
+                      : "Cancel and delete what was downloaded"
                   : "Remove from the list"
             }
             onClick={() => remove(download.id)}

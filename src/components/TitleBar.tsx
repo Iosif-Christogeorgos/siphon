@@ -1,5 +1,5 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { ArrowDownToLine, Minus, Settings, Square, X } from "lucide-react";
+import { Activity, Minus, Settings, Square, X } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import type { ReactNode } from "react";
 import { LogoGlyph } from "@/components/Logo";
@@ -33,14 +33,14 @@ export function TitleBar() {
       <div className="flex h-full items-center">
         <SpeedIndicator />
         <div className="mr-1.5 flex items-center gap-0.5">
-          <Hint label="Downloads">
+          <Hint label="Activity">
             <button
               type="button"
-              aria-label="Downloads"
+              aria-label="Activity"
               onClick={() => togglePanel("downloads")}
               className={cn(toolButton, anyDownloads && "text-foreground")}
             >
-              <ArrowDownToLine className="size-4" strokeWidth={1.75} />
+              <Activity className="size-4" strokeWidth={1.75} />
               <AnimatePresence>
                 {activeDownloads > 0 && (
                   <motion.span

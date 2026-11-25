@@ -22,7 +22,7 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, { error: E
         <ErrorCard
           error={{
             kind: "internal",
-            message: "Siphon hit a problem drawing this screen. Downloads already running are not affected.",
+            message: "Siphon hit a problem drawing this screen. What’s already running carries on.",
             details: error.stack ?? error.message,
             sign_in: null,
           }}

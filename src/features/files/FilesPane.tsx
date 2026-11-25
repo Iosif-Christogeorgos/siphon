@@ -300,7 +300,7 @@ export function FilesPane({ intake }: { intake: Intake }) {
             onClick={() => openPanel("downloads")}
             className="font-medium text-primary underline-offset-2 hover:underline"
           >
-            Downloads
+            Activity
           </button>
           .
         </p>

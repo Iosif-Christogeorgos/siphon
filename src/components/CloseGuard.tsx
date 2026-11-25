@@ -4,6 +4,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { AlertDialog } from "radix-ui";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { isFileKey } from "@/lib/ipc";
 import { spring } from "@/lib/motion";
 import { isActive, saveDownloadsNow, selectActiveCount, useDownloads } from "@/stores/downloads";
 
@@ -43,14 +44,34 @@ export function CloseGuard() {
       return count + (download?.record && isActive(download) ? 1 : 0);
     }, 0),
   );
-  const downloads = active - recordings;
+  const conversions = useDownloads((state) =>
+    state.order.reduce((count, id) => {
+      const download = state.byId[id];
+      return count + (download && !download.record && isActive(download) && isFileKey(download.url) ? 1 : 0);
+    }, 0),
+  );
+  const downloads = active - recordings - conversions;
   const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
+  const kinds = [
+    recordings > 0 && plural(recordings, "recording", "recordings"),
+    downloads > 0 && plural(downloads, "download", "downloads"),
+    conversions > 0 && plural(conversions, "conversion", "conversions"),
+  ].filter(Boolean);
+  const it = active === 1 ? "it" : "they";
   const description =
-    recordings === 0
-      ? `${plural(active, "download is", "downloads are")} still ${running ? "running" : "waiting"}. ${active === 1 ? "It’ll" : "They’ll"} pause and carry on where ${active === 1 ? "it" : "they"} stopped when you open Siphon again.`
-      : downloads === 0
-        ? `${plural(recordings, "recording is", "recordings are")} running. Closing stops ${recordings === 1 ? "it" : "them"} here, and what was recorded is saved when you open Siphon again.`
-        : `${plural(recordings, "recording", "recordings")} and ${plural(downloads, "download", "downloads")} are running. Recordings stop here and are saved when you open Siphon again; downloads pause and carry on.`;
+    kinds.length > 1
+      ? `${kinds.slice(0, -1).join(", ")} and ${kinds.at(-1)} are running. ${[
+          recordings > 0 && "Recordings stop here and are saved when you open Siphon again.",
+          downloads > 0 && "Downloads pause and carry on where they stopped.",
+          conversions > 0 && "Conversions pause and start over.",
+        ]
+          .filter(Boolean)
+          .join(" ")}`
+      : recordings > 0
+        ? `${plural(recordings, "recording is", "recordings are")} running. Closing stops ${it === "it" ? "it" : "them"} here, and what was recorded is saved when you open Siphon again.`
+        : conversions > 0
+          ? `${plural(conversions, "conversion is", "conversions are")} still ${running ? "running" : "waiting"}. ${active === 1 ? "It’ll" : "They’ll"} pause, and start over when you open Siphon again.`
+          : `${plural(active, "download is", "downloads are")} still ${running ? "running" : "waiting"}. ${active === 1 ? "It’ll" : "They’ll"} pause and carry on where ${it} stopped when you open Siphon again.`;
 
   return (
     <AlertDialog.Root open={asking} onOpenChange={setAsking}>
@@ -94,7 +115,7 @@ export function CloseGuard() {
                 <div className="mt-5 flex justify-end gap-2">
                   <AlertDialog.Cancel asChild>
                     <Button variant="secondary" size="sm" autoFocus>
-                      {recordings > 0 ? "Keep recording" : "Keep downloading"}
+                      {recordings > 0 ? "Keep recording" : downloads > 0 ? "Keep downloading" : "Keep converting"}
                     </Button>
                   </AlertDialog.Cancel>
                   <AlertDialog.Action asChild>

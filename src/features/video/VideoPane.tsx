@@ -331,7 +331,12 @@ export function VideoPane({ video }: { video: VideoInfo }) {
 
       <DownloadPanel
         download={download}
-        onStart={() => choice && setDownloadIds(trims.map((trim) => start(video, choice, trim, null, record)))}
+        onStart={() => {
+          if (!choice) return;
+          // A file is listed by its name, as in a list of files.
+          const source = video.file ? { ...video, title: video.file.name } : video;
+          setDownloadIds(trims.map((trim) => start(source, choice, trim, null, record)));
+        }}
         disabled={waitsForStart ? choice === null : !plan.isSuccess || blocked !== null || nothing !== null}
         record={live !== null}
         convert={local}
