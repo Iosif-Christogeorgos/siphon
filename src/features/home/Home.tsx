@@ -20,16 +20,16 @@ import { useUi } from "@/stores/ui";
 import type { Intake, LocalFile, Media } from "@/types";
 
 const GREETINGS = [
-  "What’s worth keeping?",
-  "Got a link? Let’s get it.",
-  "What should we grab?",
-  "Drop a link, keep the video.",
-  "Save it before it’s gone.",
-  "What are we pulling down today?",
-  "Your next download starts here.",
-  "Found something worth saving?",
-  "Let’s bring it home.",
-  "One link away.",
+  "What are we making today?",
+  "Got a link or a file?",
+  "A link or a file. Let’s go.",
+  "Paste it, drop it, done.",
+  "Download it, cut it, convert it.",
+  "What are we working on?",
+  "Ready when you are.",
+  "Drop it in, get what you need.",
+  "One link or file away.",
+  "What’s next?",
 ] as const;
 
 /** Picked once, as the app starts: the same all session, another next time. */
