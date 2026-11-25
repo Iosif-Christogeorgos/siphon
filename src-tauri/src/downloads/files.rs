@@ -17,9 +17,13 @@ use super::{free_space, work_dir, ChildEvent, Done, DownloadManager, Failure, Jo
 use crate::error::{AppError, ErrorKind, Result};
 use crate::ffmpeg::{self, encoders::Hardware};
 use crate::local::{self, LocalFile, Original};
-use crate::plan::{self, Choice, Recipe, Trim};
+use crate::plan::{self, Choice, ReadFrom, Recipe, Trim};
 use crate::process;
 use crate::state::CapabilityCache;
+
+/// How far before a part of a file reading starts: well before the key frame
+/// before it, however far apart a file's key frames are (see `plan::ReadFrom`).
+const READ_LEAD: f64 = 30.0;
 
 /// What converting a file mostly takes. Each kind has its own number of
 /// turns, so a batch of files never runs more at once than the PC takes
@@ -88,7 +92,21 @@ impl DownloadManager {
             start: trim.start + file.start,
             end: trim.end + file.start,
         });
-        let recipe = plan::plan(&video, choice, on_its_clock, &caps)?;
+        let mut recipe = plan::plan(&video, choice, on_its_clock, &caps)?;
+        // A part of the file is read from a little before it, not from the file's start.
+        if let Some(cut) = recipe.cut() {
+            let seek = (cut.start - file.start - READ_LEAD).max(0.0);
+            if seek > 0.0 {
+                let from = ReadFrom {
+                    seek,
+                    at: file.start + seek,
+                };
+                recipe.read_from = Some(from);
+                if let Some(fallback) = recipe.fallback.as_deref_mut() {
+                    fallback.read_from = Some(from);
+                }
+            }
+        }
         if let Some(reason) = &recipe.blocked {
             return Err(AppError::new(ErrorKind::TooLong, reason.clone()));
         }
@@ -351,6 +369,7 @@ mod tests {
             subtitles: None,
             chat: None,
             measured: Default::default(),
+            read_from: None,
         }
     }
 

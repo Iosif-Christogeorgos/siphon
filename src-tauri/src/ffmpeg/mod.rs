@@ -1205,6 +1205,7 @@ mod recording_tests {
             subtitles: None,
             chat: None,
             measured: Default::default(),
+            read_from: None,
         };
         let text = |args: Vec<OsString>| {
             args.iter()

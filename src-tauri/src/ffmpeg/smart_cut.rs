@@ -26,7 +26,7 @@ use std::path::Path;
 use crate::ffmpeg::encoders::Hardware;
 use crate::plan::codecs::{Container, VideoCodec};
 use crate::plan::subtitles::SubtitleStep;
-use crate::plan::Trim;
+use crate::plan::{ReadFrom, Trim};
 
 /// Two timestamps closer than this are the same frame. Containers store
 /// times in milliseconds or 1/90000 s, so a frame's time can move by up to
@@ -458,6 +458,41 @@ fn decode_time(packets: &[Packet], i: usize, frame: f64) -> Option<f64> {
 }
 
 // ── Commands ────────────────────────────────────────────────────────────
+
+/// How far past what it needs a stretch of the source is read: B-frames shown
+/// before the part's end may need a frame from after it to be decoded.
+const READ_PAST: f64 = 3.0;
+
+/// For a whole file on this PC (see [`ReadFrom`]): puts `-ss` and `-t` before
+/// `source`'s `-i` in `args`, so ffmpeg seeks to a key frame before the part
+/// rather than reading (or decoding) the file up to it, and stops a little
+/// past `to`, a time on the source's timestamps. Nothing changes without `from`.
+pub fn reading_from(mut args: Vec<OsString>, source: &Path, from: Option<ReadFrom>, to: f64) -> Vec<OsString> {
+    let Some(from) = from else {
+        return args;
+    };
+    let Some(input) = args
+        .windows(2)
+        .position(|pair| pair[0] == "-i" && Path::new(&pair[1]) == source)
+    else {
+        return args;
+    };
+    let length = (to - from.at + READ_PAST).max(1.0);
+    args.splice(
+        input..input,
+        os(&["-ss", &format!("{:.3}", from.seek), "-t", &format!("{length:.3}")]),
+    );
+    args
+}
+
+/// The same for ffprobe's packets: only those from `from` to a little past `to`.
+pub fn probe_reading(mut args: Vec<OsString>, from: Option<ReadFrom>, to: f64) -> Vec<OsString> {
+    if let Some(from) = from {
+        let interval = format!("{:.3}%{:.3}", from.at, to + READ_PAST);
+        args.splice(0..0, os(&["-read_intervals", &interval]));
+    }
+    args
+}
 
 fn os(values: &[&str]) -> Vec<OsString> {
     values.iter().map(OsString::from).collect()
@@ -939,6 +974,37 @@ pub fn check_head(plan: &CutPlan, stats: &str) -> Result<(), Fallback> {
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod reading_tests {
+    use super::*;
+
+    #[test]
+    fn a_whole_file_is_read_from_a_little_before_the_part() {
+        let source = Path::new(r"C:\Videos\Recording.ts");
+        let from = Some(ReadFrom {
+            seek: 3570.0,
+            at: 3572.8,
+        });
+        let args = reading_from(
+            copy_args(source, 3600.0, Some(3615.0), VideoCodec::H264, Path::new("middle.ts")),
+            source,
+            from,
+            3615.0,
+        );
+        let at = args.iter().position(|arg| arg == "-i").unwrap();
+        assert_eq!(args[at - 4..at], os(&["-ss", "3570.000", "-t", "45.200"])[..]);
+        assert_eq!(Path::new(&args[at + 1]), source);
+        // A part yt-dlp downloaded is read as it is.
+        let plain = copy_args(source, 3600.0, Some(3615.0), VideoCodec::H264, Path::new("middle.ts"));
+        assert_eq!(reading_from(plain.clone(), source, None, 3615.0), plain);
+        // Only the source is sought in: not another input beside it.
+        let other = reading_from(plain.clone(), Path::new("other.ts"), from, 3615.0);
+        assert_eq!(other, plain);
+        let probe = probe_reading(packets_args(source, "v:0", Path::new("p.csv")), from, 3615.0);
+        assert_eq!(probe[..2], os(&["-read_intervals", "3572.800%3618.000"])[..]);
+    }
 }
 
 #[cfg(test)]

@@ -216,6 +216,24 @@ pub struct Recipe {
     /// [`sizes`]): nothing until it has been measured.
     #[serde(skip)]
     pub measured: sizes::Measured,
+    /// For a part of a file on this PC: where reading it starts (see
+    /// [`ReadFrom`]). None reads from the start: a part yt-dlp downloaded
+    /// starts near the cut anyway.
+    #[serde(default)]
+    pub read_from: Option<ReadFrom>,
+}
+
+/// Where a cut reads a whole file from: a little before the part, rather
+/// than from the file's start. ffmpeg seeks to a key frame before it, so a
+/// part an hour into a file isn't read, or decoded, all the way from its
+/// start; the part's frames are still picked by their own timestamps, so a
+/// key frame landed on early costs nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ReadFrom {
+    /// Seconds from the file's start, as ffmpeg's `-ss` counts them.
+    pub seek: f64,
+    /// The same moment on the file's own timestamps (an OBS recording's start a second or so in).
+    pub at: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1085,6 +1103,7 @@ impl<'a> Planner<'a> {
             subtitles: None,
             chat: None,
             measured: sizes::Measured::default(),
+            read_from: None,
         }
     }
 

@@ -38,7 +38,7 @@ use crate::local::{self, Grants, Original};
 use crate::log;
 use crate::plan::codecs::{Container, VideoCodec};
 use crate::plan::subtitles::SubtitleStep;
-use crate::plan::{self, AudioAction, Choice, Recipe, Trim};
+use crate::plan::{self, AudioAction, Choice, ReadFrom, Recipe, Trim};
 use crate::process;
 use crate::sessions::{Account, CookieFile, Sessions};
 use crate::settings::{Settings, SettingsStore};
@@ -1507,8 +1507,12 @@ impl DownloadManager {
         };
         job.emit(tracker.on_convert(0.0));
 
+        // A whole file on this PC is read from a little before the part, not from its start.
+        let from = recipe.read_from;
+        let read = |args: Vec<OsString>, to: f64| smart_cut::reading_from(args, source, from, to);
+
         // Read the source and decide the pieces.
-        let source_video = step!(self.packets(job, source, "v:0", pieces).await?);
+        let source_video = step!(self.packets(job, source, "v:0", pieces, from, trim.end).await?);
         let params = smart_cut::parse_params(
             &step!(self.tool(job, &ffprobe, smart_cut::params_args(source), None).await?).join("\n"),
         );
@@ -1518,7 +1522,10 @@ impl DownloadManager {
         } else {
             video.source
         };
-        let restarts = step!(self.restarts(job, source, codec, params.time_base, pieces).await?);
+        let restarts = step!(
+            self.restarts(job, source, codec, params.time_base, pieces, from, trim.end)
+                .await?
+        );
         let plan = step!(smart_cut::plan(&source_video, trim, &restarts));
         progress(tracker);
 
@@ -1537,24 +1544,30 @@ impl DownloadManager {
         // The re-encoded start, the copied middle, the re-encoded end, the audio.
         let mut names: Vec<&str> = Vec::new();
         if plan.has_head() {
-            let args = smart_cut::edge_args(
-                source,
-                plan.before(plan.first()),
+            let args = read(
+                smart_cut::edge_args(
+                    source,
+                    plan.before(plan.first()),
+                    plan.before(plan.copy_from),
+                    &encoder,
+                    plan.delay,
+                    &pieces.join("head.ts"),
+                ),
                 plan.before(plan.copy_from),
-                &encoder,
-                plan.delay,
-                &pieces.join("head.ts"),
             );
             step!(self.tool(job, &ffmpeg, args, None).await?, "re-encoding the start");
             names.push("head.ts");
         }
         progress(tracker);
-        let args = smart_cut::copy_args(
-            source,
-            plan.before(plan.copy_from),
-            Some(plan.before(plan.copy_until)),
-            codec,
-            &pieces.join("middle.ts"),
+        let args = read(
+            smart_cut::copy_args(
+                source,
+                plan.before(plan.copy_from),
+                Some(plan.before(plan.copy_until)),
+                codec,
+                &pieces.join("middle.ts"),
+            ),
+            plan.before(plan.copy_until),
         );
         step!(self.tool(job, &ffmpeg, args, None).await?, "copying the middle");
         names.push("middle.ts");
@@ -1562,7 +1575,12 @@ impl DownloadManager {
         // The end is re-encoded from a copy of just its packets: decoding the
         // source from the start to reach them would take as long as the part.
         let rest = pieces.join("rest.ts");
-        let args = smart_cut::copy_args(source, plan.before(plan.copy_until), None, codec, &rest);
+        // A downloaded part ends a second past the cut; a whole file goes on: only what the end needs.
+        let rest_until = from.map(|_| plan.end() + 2.0);
+        let args = read(
+            smart_cut::copy_args(source, plan.before(plan.copy_until), rest_until, codec, &rest),
+            plan.end(),
+        );
         step!(self.tool(job, &ffmpeg, args, None).await?, "copying the end's packets");
         let args = smart_cut::edge_args(
             &rest,
@@ -1576,7 +1594,10 @@ impl DownloadManager {
         names.push("tail.ts");
         progress(tracker);
         if let Some(piece) = &audio {
-            let args = smart_cut::audio_args(source, plan.first(), plan.end(), piece, &pieces.join("audio.mka"));
+            let args = read(
+                smart_cut::audio_args(source, plan.first(), plan.end(), piece, &pieces.join("audio.mka")),
+                plan.end(),
+            );
             step!(self.tool(job, &ffmpeg, args, None).await?, "cutting the audio");
         }
         progress(tracker);
@@ -1618,12 +1639,12 @@ impl DownloadManager {
 
         // Check the result: every frame at its time, the audio in sync, and
         // the joins decoding cleanly, the first copied frames exactly as in the source.
-        let clip_video = step!(self.packets(job, output, "v:0", pieces).await?);
+        let clip_video = step!(self.packets(job, output, "v:0", pieces, None, 0.0).await?);
         step!(smart_cut::check_video(&plan, &clip_video));
         if let Some(piece) = &audio {
-            let clip_audio = step!(self.packets(job, output, "a:0", pieces).await?);
+            let clip_audio = step!(self.packets(job, output, "a:0", pieces, None, 0.0).await?);
             let source_audio = match piece {
-                AudioPiece::Copy => Some(step!(self.packets(job, source, "a:0", pieces).await?)),
+                AudioPiece::Copy => Some(step!(self.packets(job, source, "a:0", pieces, from, trim.end).await?)),
                 AudioPiece::Encode(_) => None,
             };
             step!(smart_cut::check_audio(&plan, source_audio.as_deref(), &clip_audio));
@@ -1634,7 +1655,7 @@ impl DownloadManager {
             self.tool(
                 job,
                 &ffmpeg,
-                smart_cut::head_check_args(output, source, &plan, stats),
+                read(smart_cut::head_check_args(output, source, &plan, stats), plan.end()),
                 Some(pieces)
             )
             .await?,
@@ -1714,7 +1735,9 @@ impl DownloadManager {
     }
 
     /// The times of the source's key frames that decoding restarts at (see
-    /// `smart_cut::parse_restarts`).
+    /// `smart_cut::parse_restarts`); of a whole file, those from `from`
+    /// before the part up to `to` (see `plan::ReadFrom`).
+    #[allow(clippy::too_many_arguments)]
     async fn restarts(
         &self,
         job: &JobContext<'_>,
@@ -1722,12 +1745,19 @@ impl DownloadManager {
         codec: VideoCodec,
         time_base: f64,
         pieces: &Path,
+        from: Option<ReadFrom>,
+        to: f64,
     ) -> Result<std::result::Result<Vec<f64>, Fallback>> {
         let mut cmd = process::command(job.bins.ffmpeg());
-        cmd.args(smart_cut::key_frames_trace_args(source))
-            .current_dir(pieces)
-            // The trace goes to a report file: there is too much of it to keep in memory.
-            .env("FFREPORT", "file=keys.log:level=32");
+        cmd.args(smart_cut::reading_from(
+            smart_cut::key_frames_trace_args(source),
+            source,
+            from,
+            to,
+        ))
+        .current_dir(pieces)
+        // The trace goes to a report file: there is too much of it to keep in memory.
+        .env("FFREPORT", "file=keys.log:level=32");
         match self.run_child(job.bins, job.id, cmd, |_| {}).await {
             Ok(_) => {}
             Err(Failure::Stopped(_)) => return Err(AppError::cancelled()),
@@ -1749,16 +1779,20 @@ impl DownloadManager {
         Ok(Ok(smart_cut::parse_restarts(&trace, codec, time_base)))
     }
 
-    /// A stream's packets, in decode order, as ffprobe lists them.
+    /// A stream's packets, in decode order, as ffprobe lists them; of a
+    /// whole file, those from `from` before the part up to `to` (see `plan::ReadFrom`).
+    #[allow(clippy::too_many_arguments)]
     async fn packets(
         &self,
         job: &JobContext<'_>,
         file: &Path,
         stream: &str,
         pieces: &Path,
+        from: Option<ReadFrom>,
+        to: f64,
     ) -> Result<std::result::Result<Vec<smart_cut::Packet>, Fallback>> {
         let list = pieces.join("packets.csv");
-        let args = smart_cut::packets_args(file, stream, &list);
+        let args = smart_cut::probe_reading(smart_cut::packets_args(file, stream, &list), from, to);
         if let Err(fallback) = self.tool(job, &job.bins.ffprobe(), args, None).await? {
             return Ok(Err(fallback));
         }
@@ -2092,15 +2126,10 @@ impl DownloadManager {
             let mut cmd = process::command(&ffmpeg);
             // Subtitles drawn into the picture are read from here, by name.
             cmd.current_dir(work);
-            cmd.args(ffmpeg::convert_args_shifted(
-                recipe,
-                input,
-                output,
-                pass,
-                audio_shift,
-                subtitles,
-                None,
-            ));
+            let args = ffmpeg::convert_args_shifted(recipe, input, output, pass, audio_shift, subtitles, None);
+            // A part of a whole file is read from a little before it (see `plan::ReadFrom`).
+            let to = recipe.cut().map_or(0.0, |cut| cut.end);
+            cmd.args(smart_cut::reading_from(args, input, recipe.read_from, to));
             let result = self
                 .run_child(job.bins, job.id, cmd, |event| {
                     if let ChildEvent::Line(line) = event {
@@ -2530,6 +2559,7 @@ mod tests {
             subtitles: None,
             chat: None,
             measured: Default::default(),
+            read_from: None,
         }
     }
 

@@ -6,9 +6,12 @@
 //! 0. YouTube's own embedded player (YouTube links only).
 //! 1. A low-resolution stream straight from the site.
 //! 2. A small low-resolution copy downloaded to the cache folder.
+//!
+//! A file on this PC plays as it is where WebView2 can play it, and from a
+//! small copy made of it otherwise (see [`file_source`]).
 
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -16,7 +19,8 @@ use tauri::{AppHandle, Manager};
 
 use crate::binaries::BinaryManager;
 use crate::error::{AppError, ErrorKind, Result};
-use crate::plan::codecs::VideoCodec;
+use crate::local::Grants;
+use crate::plan::codecs::{AudioCodec, VideoCodec};
 use crate::process;
 use crate::sessions::Sessions;
 use crate::throttle::Throttle;
@@ -51,6 +55,9 @@ pub struct Preview {
 
 /// Finds a preview source at `level` or the next level that has one.
 pub async fn source(app: &AppHandle, bins: &BinaryManager, video: &VideoInfo, level: u8) -> Result<Preview> {
+    if video.file.is_some() {
+        return file_source(app, bins, video, level).await;
+    }
     if level == 0 && video.extractor.as_deref() == Some("Youtube") && !video.id.is_empty() {
         return Ok(Preview {
             source: PreviewSource::Youtube { id: video.id.clone() },
@@ -116,6 +123,133 @@ fn stream_url(video: &VideoInfo) -> Option<String> {
             )
         })
         .and_then(|format| format.stream_url.clone())
+}
+
+/// A file on this PC: itself, where WebView2 plays it (level 1), or a small
+/// copy made of it (level 2): Matroska, HEVC and an OBS recording's MPEG-TS
+/// it doesn't. The file is let through the asset protocol on its own; the
+/// protocol's scope is otherwise only Siphon's own folders.
+async fn file_source(app: &AppHandle, bins: &BinaryManager, video: &VideoInfo, level: u8) -> Result<Preview> {
+    let original = app
+        .state::<Grants>()
+        .get(&video.url)
+        .ok_or_else(|| AppError::internal("Siphon lost track of this file. Drop it on the window again."))?;
+    if level <= 1 && plays_as_it_is(video) {
+        app.asset_protocol_scope()
+            .allow_file(original.path())
+            .map_err(|err| AppError::internal("Couldn't show the file.").with_details(err.to_string()))?;
+        return Ok(Preview {
+            source: PreviewSource::File {
+                path: original.path().to_string_lossy().into_owned(),
+            },
+            level: 1,
+        });
+    }
+    if level <= LAST_LEVEL {
+        let copy = copy_of_file(app, bins, video, original.path()).await?;
+        return Ok(Preview {
+            source: PreviewSource::File {
+                path: copy.to_string_lossy().into_owned(),
+            },
+            level: LAST_LEVEL,
+        });
+    }
+    Err(AppError::new(
+        ErrorKind::Unavailable,
+        "A preview isn’t available for this file.",
+    ))
+}
+
+/// Whether WebView2 plays a file as it is: MP4, MOV or WebM with H.264, VP9,
+/// VP8 or AV1, or a sound file of a common kind.
+fn plays_as_it_is(video: &VideoInfo) -> bool {
+    let Some(format) = video.formats.first() else {
+        return false;
+    };
+    let picture = match format.video_codec {
+        None => true,
+        Some(codec) => matches!(
+            codec,
+            VideoCodec::H264 | VideoCodec::Vp9 | VideoCodec::Vp8 | VideoCodec::Av1
+        ),
+    };
+    let sound = format.audio_codec.is_none_or(|codec| {
+        matches!(
+            codec,
+            AudioCodec::Aac | AudioCodec::Mp3 | AudioCodec::Opus | AudioCodec::Vorbis | AudioCodec::Flac
+        )
+    });
+    let container = matches!(
+        format.ext.as_str(),
+        "mp4" | "m4v" | "mov" | "webm" | "m4a" | "mp3" | "ogg" | "oga" | "opus" | "flac"
+    );
+    picture && sound && container
+}
+
+/// A small copy of a file on this PC for previewing: its picture at 360p
+/// (the short side) and its sound, made here, which takes moments rather
+/// than a download's minutes. Its timestamps start at zero where the file
+/// starts, as a part to cut is counted (see `downloads::files`).
+async fn copy_of_file(app: &AppHandle, bins: &BinaryManager, video: &VideoInfo, file: &Path) -> Result<PathBuf> {
+    let dir = cache_dir(app)?;
+    tokio::fs::create_dir_all(&dir).await?;
+    let version = video
+        .file
+        .as_ref()
+        .map(|file| file.version.as_str())
+        .unwrap_or_default();
+    let target = dir.join(format!("{}-{version}.mp4", video.id));
+    if target.is_file() {
+        return Ok(target);
+    }
+    let partial = dir.join(format!("{}-{version}.making.mp4", video.id));
+    let mut cmd = process::command(bins.ffmpeg());
+    process::below_others(&mut cmd);
+    cmd.args(["-hide_banner", "-nostdin", "-y", "-loglevel", "error", "-i"])
+        .arg(file)
+        .args([
+            "-map",
+            "0:V:0?",
+            "-map",
+            "0:a:0?",
+            // The short side at 360, either way up.
+            "-vf",
+            "scale=w='if(gt(iw,ih),-2,360)':h='if(gt(iw,ih),360,-2)'",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "28",
+            // A key frame every second: the timeline seeks quickly.
+            "-g",
+            "30",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "96k",
+            "-movflags",
+            "+faststart",
+        ])
+        .arg(&partial);
+    let _in_use = bins.in_use().await;
+    let output = process::output_within(cmd, PROXY_TIMEOUT).await?.ok_or_else(|| {
+        AppError::new(
+            ErrorKind::Unavailable,
+            "Making the preview took too long. You can still type the times.",
+        )
+    })?;
+    if !output.status.success() || !partial.is_file() {
+        let _ = tokio::fs::remove_file(&partial).await;
+        return Err(
+            AppError::new(ErrorKind::Unavailable, "A preview isn’t available for this file.")
+                .with_details(String::from_utf8_lossy(&output.stderr).into_owned()),
+        );
+    }
+    tokio::fs::rename(&partial, &target).await?;
+    Ok(target)
 }
 
 fn cache_dir(app: &AppHandle) -> Result<PathBuf> {

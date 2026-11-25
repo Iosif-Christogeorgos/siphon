@@ -194,7 +194,7 @@ export function VideoPane({ video }: { video: VideoInfo }) {
   };
   const blocked = plan.data?.blocked ?? null;
   const nothing = plan.data?.nothing ?? null;
-  const canTrim = video.duration && !trimOpen && !live && !local;
+  const canTrim = video.duration && !trimOpen && !live;
   const record = live ? { from_start: recordFromStart } : null;
 
   return (
