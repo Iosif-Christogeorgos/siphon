@@ -30,7 +30,8 @@ A track is only left out when Siphon is certain of its language. Anything else i
 | What tells a track's language | How it is taken |
 | --- | --- |
 | The language tag in the file | Trusted |
-| No tag, or `und` | Unknown: kept, marked *Language unknown* |
+| No language element at all | English, by Matroska's own rule: MKVToolNix long left it out for English tracks, and every player reads it so (the Korra episodes' English tracks have none) |
+| `und` | Unknown: kept, marked *Language unknown* |
 | A text subtitle (SRT, ASS) without a tag | Its text is read and its language told from it; acted on only when the answer is clear (Greek from English is plain from the alphabet) |
 | Sound or picture subtitles (PGS, VobSub) without a tag | Can't be told without recognising speech or text: always kept, marked |
 | The track's name ("English", "Ελληνικά") | Never enough on its own to leave a track out. Shown; where it disagrees with the tag (tagged English, named Greek), the track is kept and marked *Check this one* |
@@ -46,6 +47,21 @@ A folder of subtitle or sound files dropped on a season is matched to the episod
 ## Engine
 
 Copying tracks is bound by the disk, not the processor: about a minute for 40 GB on an NVMe drive, the same with FFmpeg or MKVToolNix. Siphon's own FFmpeg costs no more space and, tried 2026-11-25 on a test file, removed a track and added an SRT, chapters and a font correctly. It is used unless real films show it can't: Dolby Vision, Blu-ray PGS, ASS with its fonts, chapters with editions. If one fails, `mkvmerge` (28 MB, from MKVToolNix's own downloads, checked against their `sha256sums.txt`) is fetched the first time the editor needs it, never at first launch. Measured 2026-11-25: the whole MKVToolNix 104.0 is 272 MB unpacked, `mkvmerge.exe` 28.3 MB and `mkvpropedit.exe` 22.5 MB, and both work alone, without its other files.
+
+### Tried on a real episode
+
+2026-11-25, *The Legend of Korra* S01E01 from the owner's library (290 MB, HEVC; Greek AAC marked to play first, English AAC "Surround", English AAC "Stereo-Commentary" with no commentary flag; Greek SRT, English PGS; four chapters), the English surround left out:
+
+| | FFmpeg (`-map … -c copy`) | `mkvmerge` |
+| --- | --- | --- |
+| Time | 0.66 s | 0.95 s |
+| Size | 248.7 MB | 243.2 MB (it laces sound frames) |
+| Every kept track's packets | Identical to the original's, all five | Sound and subtitles identical; the video's packets rewritten, its decoded frames identical |
+| Languages, names, chapters | Kept | Kept |
+| Which tracks play first | **Greek subtitles turned on**, though none were: FFmpeg's Matroska writer marks the first track of a kind to play first when none is (`-default_mode infer`). `-default_mode passthrough`, with the flags set by Siphon, keeps them as chosen | Kept |
+| The original | Unchanged (SHA-256) | Unchanged |
+
+So far FFmpeg holds. Dolby Vision, ASS with fonts and chapters with editions are not in the library to try.
 
 ## Steps
 
