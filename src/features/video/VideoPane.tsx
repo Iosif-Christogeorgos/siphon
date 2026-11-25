@@ -305,6 +305,7 @@ export function VideoPane({ video }: { video: VideoInfo }) {
           onCustomize={() =>
             customizing ? useChoices.getState().chooseGroup(useChoices.getState().choices?.group ?? "") : useChoices.getState().customize()
           }
+          customizable={!local}
           onTrim={canTrim ? openTrim : undefined}
           perHour={live !== null}
           subtitles={subtitleLabel}

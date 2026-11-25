@@ -1,10 +1,11 @@
 import { useQueries } from "@tanstack/react-query";
 import { AudioLines, Check, Files, RefreshCw, Search, TriangleAlert, X } from "lucide-react";
-import { motion } from "motion/react";
+import { AnimatePresence, motion } from "motion/react";
 import { type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { Button } from "@/components/ui/button";
 import { Hint } from "@/components/ui/tooltip";
+import { ManualPanel } from "@/features/options/ManualPanel";
 import { Box, fold, Thumb } from "@/features/playlist/rows";
 import { PresetArea } from "@/features/presets/PresetArea";
 import { formatBytes, formatDuration } from "@/lib/format";
@@ -55,6 +56,7 @@ type Status =
  */
 export function FilesPane({ intake }: { intake: Intake }) {
   const choice = useChoice();
+  const customizing = useChoices((state) => state.choices !== null && state.choices.active.kind !== "preset");
   const start = useDownloads((state) => state.start);
   const openPanel = useUi((state) => state.openPanel);
   const files = intake.files;
@@ -271,8 +273,21 @@ export function FilesPane({ intake }: { intake: Intake }) {
         </ul>
       </div>
 
-      <div className="pt-1">
+      <div className="space-y-2 pt-1">
         <PresetArea summary={undefined} disabled={false} file />
+        <AnimatePresence initial={false}>
+          {customizing && (
+            <motion.div
+              key="custom"
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: "auto" }}
+              exit={{ opacity: 0, height: 0 }}
+              transition={spring}
+            >
+              <ManualPanel disabled={false} />
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
       <p className="px-1 text-[13px] text-pretty text-muted-foreground">
         Each file is planned from what it holds, and what is made goes beside it. Files that already are what you chose

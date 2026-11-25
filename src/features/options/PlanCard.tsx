@@ -35,6 +35,7 @@ export function PlanCard({
   clips,
   customizing,
   onCustomize,
+  customizable = true,
   onTrim,
   perHour = false,
   subtitles,
@@ -45,6 +46,8 @@ export function PlanCard({
   /** The custom settings are open. */
   customizing: boolean;
   onCustomize: () => void;
+  /** Offers Customize here; a file has it beside the presets instead. */
+  customizable?: boolean;
   /** Opens the trimmer; offered when the plan is blocked for being too long. */
   onTrim?: () => void;
   /** A recording: sizes are for each hour of it. */
@@ -66,7 +69,7 @@ export function PlanCard({
     );
   }
 
-  const customize = (
+  const customize = customizable && (
     <button
       type="button"
       onClick={onCustomize}

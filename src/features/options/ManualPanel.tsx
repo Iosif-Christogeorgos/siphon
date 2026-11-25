@@ -36,8 +36,12 @@ const fromValue = <T extends string>(value: string) => (value === AUTO ? null : 
 const sizeHint = (format: Format) =>
   format.filesize ? `${format.filesize_estimated ? "≈ " : ""}${formatBytes(format.filesize)}` : undefined;
 
-/** Manual mode: pick the exact streams, container and codecs. */
-export function ManualPanel({ video, disabled }: { video: VideoInfo; disabled: boolean }) {
+/**
+ * Manual mode: pick the exact streams, container and codecs. Without a video
+ * (a list of files), or for a file, which has one picture and one sound, there
+ * are no streams to pick.
+ */
+export function ManualPanel({ video, disabled }: { video?: VideoInfo; disabled: boolean }) {
   const choices = useChoices((state) => state.choices);
   const setManual = useChoices((state) => state.setCustom);
   if (!choices) return null;
@@ -45,9 +49,11 @@ export function ManualPanel({ video, disabled }: { video: VideoInfo; disabled: b
     choices.active.kind === "saved" ? choices.saved.find((preset) => preset.id === (choices.active as { id: string }).id) : undefined;
   const manual = saved?.options ?? choices.custom;
 
-  const videos = videoFormats(video.formats);
-  const audios = audioFormats(video.formats);
-  const hasVideo = videos.length > 0;
+  const formats = video?.file ? [] : (video?.formats ?? []);
+  const videos = videoFormats(formats);
+  const audios = audioFormats(formats);
+  // A list of files may hold video; a file says itself whether it does.
+  const hasVideo = video ? videoFormats(video.formats).length > 0 : true;
   const audioOnly = manual.content === "audio_only" || !hasVideo;
   const wantsAudio = manual.content !== "video_only";
 
@@ -66,7 +72,7 @@ export function ManualPanel({ video, disabled }: { video: VideoInfo; disabled: b
       )}
 
       <div className="grid grid-cols-6 gap-x-3 gap-y-2.5">
-        {!audioOnly && (
+        {!audioOnly && videos.length > 0 && (
           <Field label="Video stream" wide>
             <Select
               value={toValue(manual.video_format)}

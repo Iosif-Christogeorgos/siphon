@@ -1,4 +1,4 @@
-import { RefreshCw } from "lucide-react";
+import { RefreshCw, SlidersHorizontal } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect } from "react";
 import { Facet } from "@/components/ui/facet";
@@ -25,6 +25,9 @@ export const CHAT_GROUPS = new Set(["max", "watch"]);
  * has, and a file already is its own. Watch, Share and Customize cover the rest.
  */
 const NOT_FOR_FILES = "max";
+
+/** For a file, Customize is the row's last choice rather than a link under the summary. */
+const CUSTOMIZE = "customize";
 
 /**
  * Where the download is going: the group (Max quality, Watch, …) on top, then
@@ -55,7 +58,7 @@ export function PresetArea({
   subtitles?: SubtitleTrack[] | "playlist";
   /** The video's chat can be drawn into the picture (Twitch). */
   chat?: boolean;
-  /** A file on this PC: Max quality isn't offered (see `NOT_FOR_FILES`). */
+  /** A file on this PC: Max quality isn't offered (see `NOT_FOR_FILES`), and Customize is in the row. */
   file?: boolean;
 }) {
   const registry = useRegistry();
@@ -88,21 +91,34 @@ export function PresetArea({
         label="What it’s for"
         group="preset-group"
         size="md"
-        value={presetActive ? group.id : null}
-        onChange={chooseGroup}
-        options={registry.groups
-          .filter((candidate) => !(file && candidate.id === NOT_FOR_FILES))
-          .map((candidate) => {
-            const Icon = iconFor(candidate.icon);
-            const later = live && candidate.id === FINISHED_ONLY;
-            return {
-              id: candidate.id,
-              label: candidate.label,
-              icon: <Icon />,
-              hint: later ? `${candidate.label} becomes available on the finished recording.` : candidate.description,
-              disabled: later,
-            };
-          })}
+        value={presetActive ? group.id : file ? CUSTOMIZE : null}
+        onChange={(id) => (id === CUSTOMIZE ? useChoices.getState().customize() : chooseGroup(id))}
+        options={[
+          ...registry.groups
+            .filter((candidate) => !(file && candidate.id === NOT_FOR_FILES))
+            .map((candidate) => {
+              const Icon = iconFor(candidate.icon);
+              const later = live && candidate.id === FINISHED_ONLY;
+              return {
+                id: candidate.id,
+                label: candidate.label,
+                icon: <Icon />,
+                hint: later ? `${candidate.label} becomes available on the finished recording.` : candidate.description,
+                disabled: later,
+              };
+            }),
+          ...(file
+            ? [
+                {
+                  id: CUSTOMIZE,
+                  label: "Customize",
+                  icon: <SlidersHorizontal />,
+                  hint: "Choose the file type and codecs yourself",
+                  disabled: false,
+                },
+              ]
+            : []),
+        ]}
       />
 
       <AnimatePresence mode="popLayout" initial={false}>
