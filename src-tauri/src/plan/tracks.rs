@@ -9,7 +9,8 @@
 //! track the file type can hold; a subtitle track it can't (pictures, in
 //! anything but an MKV) is left out, and the plan says so before anything
 //! starts. Share and Audio take the main sound alone: chat apps play only a
-//! file's first sound track, and a sound file holds one.
+//! file's first sound track, and a sound file holds one. Share leaves the
+//! subtitles out too, and says so.
 
 use serde::{Deserialize, Serialize};
 
@@ -165,6 +166,15 @@ pub(super) fn keep(recipe: &mut Recipe, file: &FileTracks, choice: &Choice, caps
             ))),
             _ => {}
         }
+    }
+    // Share leaves a file's subtitles out rather than drawing them in, as it
+    // does a download's (the owner's call, 2026-11-25): the file's own tracks
+    // are its to keep, and a converted copy for a chat is the moment, not the
+    // film. Said, as the sound is, but not marked in a list: it is expected.
+    if group == Some(Group::Share) && !file.subtitles.is_empty() {
+        recipe
+            .hints
+            .push(info("Its subtitles are left out: chat apps don't show them."));
     }
     let keeps_all = matches!(group, None | Some(Group::Watch | Group::Max));
     let Some(picture) = recipe.video_codec().filter(|_| keeps_all) else {
@@ -469,6 +479,15 @@ mod tests {
             .hints
             .iter()
             .any(|hint| hint.text.contains("chat apps play just one")));
+        // Its subtitles are left out with a note, which isn't a warning, so
+        // the list doesn't mark the file for it.
+        assert!(discord
+            .hints
+            .iter()
+            .any(|hint| hint.level == HintLevel::Info && hint.text.contains("subtitles are left out")));
+        assert!(warnings(&discord).is_empty());
+        let without = planned(&film("mkv", &[]), &preset(TargetId::Discord));
+        assert!(!without.hints.iter().any(|hint| hint.text.contains("subtitles")));
         let music = planned(&mkv, &preset(TargetId::Music));
         assert!(music.tracks.sounds.is_empty());
         assert!(music.hints.iter().any(|hint| hint.text.contains("of the 3 it has")));
