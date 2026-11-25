@@ -61,7 +61,19 @@ Copying tracks is bound by the disk, not the processor: about a minute for 40 GB
 | Which tracks play first | **Greek subtitles turned on**, though none were: FFmpeg's Matroska writer marks the first track of a kind to play first when none is (`-default_mode infer`). `-default_mode passthrough`, with the flags set by Siphon, keeps them as chosen | Kept |
 | The original | Unchanged (SHA-256) | Unchanged |
 
-So far FFmpeg holds. Dolby Vision, ASS with fonts and chapters with editions are not in the library to try.
+### Tried on the hard cases
+
+2026-11-25, each made into an MKV by `mkvmerge` as releases are, then copied by FFmpeg as Siphon would (`-map 0 … -c copy -default_mode passthrough`) and compared:
+
+| Case | Sample | FFmpeg's copy |
+| --- | --- | --- |
+| Dolby Vision profiles 5, 7 (with its enhancement layer, `hvcE`), 8.1 and 8.4 | FFmpeg's test suite (`fate-suite.ffmpeg.org`: `mov/dovi-p5.mp4`, `mkv/dovi-p7-hvce.mkv`, `mov/dovi-p81.mp4`, `hevc/dv84.mov`) | **Kept**: every video packet identical, and the `dvcC` and `hvcE` blocks byte for byte; FFmpeg only adds their optional names |
+| HDR10+ (HEVC) | `hevc/hdr10_plus_h265_sample.hevc` | **Kept**: it travels inside the video packets, and the frame still carries it |
+| ASS: two styles, `\pos`, `\fad`, `\k`, a Comment line, an event out of order, Greek text, `YCbCr Matrix` | Made here | **Kept**: extracted, byte for byte the file `mkvmerge` was given |
+| Two fonts attached | Arial, Segoe UI | **Kept**: same bytes, names and `font/ttf` |
+| Chapters: two editions, a nested chapter, a hidden one, names in two languages | Made here | **Flattened**: the second edition, the nested chapter, the hidden flag and the second language's names are lost; the names left are marked `und`. Plain chapters (one edition, one name each, as Korra's) are kept |
+
+So FFmpeg holds for everything but chapters beyond a plain list, which it can neither read (ffprobe flattens them too) nor write.
 
 ## Steps
 
