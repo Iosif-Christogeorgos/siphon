@@ -290,6 +290,7 @@ const SHORT_STAGES: Record<Stage, string | null> = {
   recording: null,
   reconnecting: "Stream paused",
   finalizing: "Finishing",
+  copying_tracks: "Copying tracks",
 };
 
 const percent = (download: Download) => formatPercent(download.progress.fraction);

@@ -119,6 +119,10 @@ pub struct DownloadRequest {
     /// it hasn't, and records until it ends or is stopped.
     #[serde(default)]
     pub record: Option<live::RecordRequest>,
+    /// For an MKV on this PC: keep these of its tracks, as chosen, instead
+    /// of converting it as `choice` says (see `local::mkv`).
+    #[serde(default)]
+    pub tracks: Option<crate::local::mkv::edit::TrackEdit>,
 }
 
 /// How a job ended well: the finished file, and anything worth saying about it.
@@ -569,7 +573,10 @@ impl DownloadManager {
 
             let outcome = match (&source, recording) {
                 (Source::File(original), _) => {
-                    let outcome = manager.run_file(&job(), original, &request.choice, request.trim).await;
+                    let outcome = match &request.tracks {
+                        Some(edit) => manager.run_tracks(&job(), original, edit).await,
+                        None => manager.run_file(&job(), original, &request.choice, request.trim).await,
+                    };
                     if let Err(error) = &outcome {
                         if error.kind != ErrorKind::Cancelled {
                             let name = original.name();

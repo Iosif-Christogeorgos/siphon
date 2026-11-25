@@ -12,10 +12,11 @@ use std::path::Path;
 
 use tauri::Manager;
 
-use super::tracker::Tracker;
+use super::tracker::{Stage, Tracker};
 use super::{free_space, work_dir, ChildEvent, Done, DownloadManager, Failure, JobContext, Note};
 use crate::error::{AppError, ErrorKind, Result};
 use crate::ffmpeg::{self, encoders::Hardware};
+use crate::local::mkv::{self, edit::TrackEdit};
 use crate::local::{self, LocalFile, Original};
 use crate::plan::{self, Choice, ReadFrom, Recipe, Trim};
 use crate::process;
@@ -121,6 +122,121 @@ impl DownloadManager {
         let made = self.convert_file(job, original, &file, choice, &recipe, trim).await;
         self.end_turn(load);
         made
+    }
+
+    /// Keeps the tracks of an MKV on this PC that `edit` says, copied as they
+    /// are, in a file of the same name in an `Edited` folder beside it (or in
+    /// the download folder, if that can't be written to). Checked to hold
+    /// every track kept, the whole length, before it gets its name.
+    pub(super) async fn run_tracks(&self, job: &JobContext<'_>, original: &Original, edit: &TrackEdit) -> Result<Done> {
+        job.emit(Tracker::queued());
+        let contents = mkv::inspect(job.bins, original).await?;
+        edit.check(&contents)?;
+        if !self.wait_for_turn(job.id, Load::Disk).await {
+            return Err(AppError::cancelled());
+        }
+        let made = self.keep_tracks(job, original, edit, &contents).await;
+        self.end_turn(Load::Disk);
+        made
+    }
+
+    async fn keep_tracks(
+        &self,
+        job: &JobContext<'_>,
+        original: &Original,
+        edit: &TrackEdit,
+        contents: &mkv::Contents,
+    ) -> Result<Done> {
+        let mut tracker = Tracker::converting();
+        tracker.set_pass_stage(Stage::CopyingTracks);
+        job.emit(tracker.on_convert(0.0));
+        let edited = original.folder().map(|folder| folder.join(EDITED));
+        let made_folder = match &edited {
+            Some(folder) if !folder.exists() => tokio::fs::create_dir(folder).await.is_ok(),
+            _ => false,
+        };
+        let (folder, note) = match edited.as_deref().filter(|folder| local::writable(folder, job.id)) {
+            Some(folder) => (folder.to_path_buf(), None),
+            None => (
+                job.output_dir().await?,
+                Some(Note {
+                    text: "Saved in your download folder, because the file's own folder can't be written to."
+                        .to_string(),
+                    label: "In download folder",
+                }),
+            ),
+        };
+        let made = self
+            .copy_tracks(job, original, edit, contents, &folder, &mut tracker)
+            .await;
+        // An `Edited` folder made for a copy that didn't come about is taken away again, if empty.
+        if made.is_err() && made_folder {
+            if let Some(edited) = &edited {
+                let _ = tokio::fs::remove_dir(edited).await;
+            }
+        }
+        Ok(Done::file(made?, note))
+    }
+
+    async fn copy_tracks(
+        &self,
+        job: &JobContext<'_>,
+        original: &Original,
+        edit: &TrackEdit,
+        contents: &mkv::Contents,
+        folder: &Path,
+        tracker: &mut Tracker,
+    ) -> Result<std::path::PathBuf> {
+        if let (Some(free), Some(needs)) = (free_space(folder), edit.size(contents)) {
+            let needs = needs + needs / 50 + 256 * 1024 * 1024;
+            if free < needs {
+                return Err(AppError::new(
+                    ErrorKind::DiskFull,
+                    format!(
+                        "There isn't room for it on the disk: it needs about {}, and {} is free.",
+                        size_text(needs),
+                        size_text(free)
+                    ),
+                ));
+            }
+        }
+        let output = self.unique_output(folder.join(original.name()), job.id);
+        let partial = local::partial_name(&output, job.id);
+        let mut cmd = process::command(job.bins.ffmpeg());
+        cmd.args(mkv::edit::args(original.path(), &partial, edit, contents));
+        let length = contents.duration;
+        let started = std::time::Instant::now();
+        let result = self
+            .run_child(job.bins, job.id, cmd, |event| {
+                if let (ChildEvent::Line(line), Some(length)) = (event, length) {
+                    if let Some(done) = ffmpeg::parse_progress(line) {
+                        job.emit(tracker.on_convert((done / length).min(1.0)));
+                    }
+                }
+            })
+            .await;
+        let checked = match result {
+            Ok(_) => check_copy(job, &partial, edit, contents).await,
+            Err(Failure::Stopped(_)) => Err(AppError::cancelled()),
+            Err(Failure::Exited(log)) => Err(AppError::internal("Copying the tracks failed.").with_details(log)),
+            Err(Failure::Spawn(error)) => Err(error),
+        };
+        if let Err(error) = checked {
+            let _ = tokio::fs::remove_file(&partial).await;
+            return Err(error);
+        }
+        tokio::fs::rename(&partial, &output).await?;
+        crate::log::line(
+            job.app,
+            &format!(
+                "tracks of {}: kept {} of {}, {:.1} s",
+                original.name(),
+                edit.tracks.len(),
+                contents.tracks.len(),
+                started.elapsed().as_secs_f64()
+            ),
+        );
+        Ok(output)
     }
 
     /// Waits until it is this conversion's turn for its kind of load.
@@ -301,6 +417,38 @@ impl DownloadManager {
 /// The room a conversion needs on its disk: what it is likely to make, a
 /// fifth more for a picture busier than expected, and a quarter of a
 /// gigabyte to spare. None when the size can't be told.
+/// Where a copy keeping some of an MKV's tracks goes, beside the original:
+/// under the same name, which media servers read the title and episode from.
+const EDITED: &str = "Edited";
+
+/// A copy must hold every track kept, of the kinds and in the order chosen,
+/// and the whole length: FFmpeg can finish without an error having written less.
+async fn check_copy(job: &JobContext<'_>, copy: &Path, edit: &TrackEdit, original: &mkv::Contents) -> Result<()> {
+    let problem = match mkv::inspect_path(job.bins, copy).await {
+        Err(why) => Some(format!("ffprobe couldn't read it: {why}")),
+        Ok(made) => {
+            let kinds: Vec<mkv::Kind> = made.tracks.iter().map(|track| track.kind).collect();
+            let short = match (original.duration, made.duration) {
+                (Some(wanted), Some(got)) => got < wanted - 2.0_f64.max(wanted * 0.001),
+                (Some(_), None) => true,
+                _ => false,
+            };
+            if kinds != edit.kinds(original) {
+                Some(format!("it holds {kinds:?}, not {:?}", edit.kinds(original)))
+            } else if short {
+                Some(format!("it lasts {:?} s of {:?}", made.duration, original.duration))
+            } else {
+                None
+            }
+        }
+    };
+    match problem {
+        Some(why) => Err(AppError::internal("The copy came out wrong, so it wasn't kept.")
+            .with_details(format!("{}: {why}", copy.display()))),
+        None => Ok(()),
+    }
+}
+
 fn room_needed(recipe: &Recipe) -> Option<u64> {
     let likely = recipe.estimated_size()?;
     Some(likely + likely / 5 + 256 * 1024 * 1024)

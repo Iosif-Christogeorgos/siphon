@@ -51,8 +51,9 @@ pub fn parse(json: &str) -> Option<Contents> {
             _ => None,
         };
         let Some(kind) = kind else {
-            if let Some(name) = tag(tags, "filename") {
+            if let (Some(name), Some(index)) = (tag(tags, "filename"), whole(&stream["index"])) {
                 attachments.push(Attachment {
+                    index: index as usize,
                     name: name.to_string(),
                     mime: tag(tags, "mimetype").map(str::to_string),
                 });
@@ -78,6 +79,7 @@ pub fn parse(json: &str) -> Option<Contents> {
             width: whole(&stream["width"]).and_then(|n| u32::try_from(n).ok()),
             height: whole(&stream["height"]).and_then(|n| u32::try_from(n).ok()),
             entries: tag(tags, "NUMBER_OF_FRAMES").and_then(|n| n.trim().parse().ok()),
+            bytes: tag(tags, "NUMBER_OF_BYTES").and_then(|n| n.trim().parse().ok()),
             name,
             doubts: Vec::new(),
             notes: Vec::new(),

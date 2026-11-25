@@ -200,7 +200,7 @@ export interface MkvContents {
   tracks: MkvTrack[];
   chapters: MkvChapters;
   /** Files carried in it: fonts for its ASS subtitles, a cover. */
-  attachments: { name: string; mime: string | null }[];
+  attachments: { index: number; name: string; mime: string | null }[];
   /** What casts doubt on the file as a whole. */
   doubts: string[];
 }
@@ -230,6 +230,8 @@ export interface MkvTrack {
   height: number | null;
   /** Lines, packets or frames it holds, where the file says. */
   entries: number | null;
+  /** How many bytes it takes, where the file says. */
+  bytes: number | null;
   /** What casts doubt on its language: it is kept, never left out for it. */
   doubts: string[];
   /** What reading it found, besides: a tag put right, SDH, forced. */
@@ -238,6 +240,29 @@ export interface MkvTrack {
   read: boolean;
   /** Its language is known and nothing casts doubt on it (always, for video). */
   certain: boolean;
+}
+
+/** The tracks an MKV keeps, and how (`local/mkv/edit.rs`). */
+export interface TrackEdit {
+  /** The tracks kept, in the order they go in the copy. */
+  tracks: KeptTrack[];
+  chapters: boolean;
+  attachments: boolean;
+}
+
+export interface KeptTrack {
+  /** Its place among the original's streams. */
+  index: number;
+  /** The language the copy tags it with; null leaves the tag as it is. */
+  language: string | null;
+  /** Its name in the copy; empty for none. */
+  name: string;
+  default: boolean;
+  forced: boolean;
+  sdh: boolean;
+  commentary: boolean;
+  described: boolean;
+  original: boolean;
 }
 
 export interface MkvChapters {
@@ -568,7 +593,9 @@ export type Stage =
   /** The stream stopped sending; the recording waits a few minutes for it to come back. */
   | "reconnecting"
   /** The recording ended and is being made into its file. */
-  | "finalizing";
+  | "finalizing"
+  /** The tracks of an MKV that were chosen are being copied into a new file. */
+  | "copying_tracks";
 
 export interface Progress {
   stage: Stage;
@@ -617,6 +644,8 @@ export interface DownloadRequest {
   account: boolean;
   /** Record a live stream instead, waiting for it to start if it hasn't. */
   record: RecordRequest | null;
+  /** An MKV on this PC: keep these of its tracks instead of converting it. */
+  tracks: TrackEdit | null;
 }
 
 export interface RecordRequest {

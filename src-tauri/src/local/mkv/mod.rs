@@ -8,6 +8,7 @@
 
 mod chapters;
 mod doubts;
+pub mod edit;
 mod pictures;
 mod probe;
 mod words;
@@ -81,6 +82,8 @@ pub struct Track {
     /// file says (MKVToolNix writes it): a forced subtitle track has far
     /// fewer lines than a full one.
     pub entries: Option<u64>,
+    /// How many bytes it takes, where the file says (MKVToolNix writes it).
+    pub bytes: Option<u64>,
     /// What casts doubt on its language: "Its name says Greek, but it is tagged English."
     pub doubts: Vec<String>,
     /// What reading it found, besides: "Tagged English, but its words are Greek: the copy says Greek."
@@ -131,14 +134,16 @@ impl Chapters {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Attachment {
+    /// Its place among the file's streams (`0:N`), as FFmpeg counts them.
+    pub index: usize,
     /// "Arial.ttf"
     pub name: String,
     /// "font/ttf", "image/jpeg"
     pub mime: Option<String>,
 }
 
-/// Reads what the MKV the user gave holds, track by track. An error for a
-/// file that isn't an MKV.
+/// Reads what the MKV the user gave holds, track by track, its subtitles
+/// read for their language. An error for a file that isn't an MKV.
 pub async fn read(app: &AppHandle, bins: &BinaryManager, key: &str) -> Result<Contents> {
     let original = app.state::<Grants>().get(key).ok_or_else(lost_track)?;
     if !original.path().is_file() {
@@ -148,18 +153,7 @@ pub async fn read(app: &AppHandle, bins: &BinaryManager, key: &str) -> Result<Co
         .acquire()
         .await
         .map_err(|err| AppError::internal("Couldn't read the file.").with_details(err.to_string()))?;
-    let mut cmd = process::command(bins.ffprobe());
-    cmd.args(probe::args(original.path()));
-    let output = {
-        let _in_use = bins.in_use().await;
-        process::output_within(cmd, READ_TIMEOUT)
-            .await?
-            .ok_or_else(|| AppError::new(ErrorKind::Unavailable, "Reading this file took too long."))?
-    };
-    let json = String::from_utf8_lossy(&output.stdout);
-    let mut contents = probe::parse(&json)
-        .filter(|_| output.status.success())
-        .ok_or_else(|| not_mkv(&original).with_details(String::from_utf8_lossy(&output.stderr).trim().to_string()))?;
+    let mut contents = inspect(bins, &original).await?;
     contents.chapters.shape = chapter_shape(original.path()).await;
     let windows = words::windows(contents.duration, contents.size);
     let mut lines = read_words(bins, original.path(), &mut contents.tracks, windows.as_deref()).await;
@@ -168,6 +162,32 @@ pub async fn read(app: &AppHandle, bins: &BinaryManager, key: &str) -> Result<Co
     doubts::cast(&mut contents, &original.name());
     settle(&mut contents);
     Ok(contents)
+}
+
+/// What an MKV holds as ffprobe lists it, without reading its subtitles:
+/// what a copy is made from, and checked against.
+pub async fn inspect(bins: &BinaryManager, original: &Original) -> Result<Contents> {
+    inspect_path(bins, original.path())
+        .await
+        .map_err(|details| not_mkv(original).with_details(details))
+}
+
+/// As [`inspect`], for a file Siphon made: the copy, checked.
+pub async fn inspect_path(bins: &BinaryManager, path: &Path) -> std::result::Result<Contents, String> {
+    let mut cmd = process::command(bins.ffprobe());
+    cmd.args(probe::args(path));
+    let output = {
+        let _in_use = bins.in_use().await;
+        process::output_within(cmd, READ_TIMEOUT).await
+    };
+    let output = match output {
+        Ok(Some(output)) => output,
+        Ok(None) => return Err("ffprobe took too long".into()),
+        Err(error) => return Err(error.to_string()),
+    };
+    probe::parse(&String::from_utf8_lossy(&output.stdout))
+        .filter(|_| output.status.success())
+        .ok_or_else(|| String::from_utf8_lossy(&output.stderr).trim().to_string())
 }
 
 /// Says, once all is read, which tracks' languages are certain, and what a

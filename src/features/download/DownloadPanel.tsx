@@ -158,7 +158,9 @@ export function DownloadPanel({
                 done={
                   download.record
                     ? "Recorded"
-                    : convert
+                    : download.tracks
+                      ? "Saved"
+                      : convert
                       ? download.count > 1
                         ? `${download.count} clips cut`
                         : "Converted"

@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 import { ipc, toAppError } from "@/lib/ipc";
-import type { AppError, Choice, DownloadEvent, Place, Progress, RecordRequest, Trim } from "@/types";
+import type { AppError, Choice, DownloadEvent, Place, Progress, RecordRequest, TrackEdit, Trim } from "@/types";
 
 export type DownloadStatus = "queued" | "running" | "paused" | "finished" | "failed";
 
@@ -34,6 +34,8 @@ export interface Download extends DownloadSource {
   account?: boolean;
   /** A live recording: records the stream (waiting for it to start) instead of downloading a file. */
   record?: RecordRequest | null;
+  /** An MKV on this PC: these of its tracks are kept, instead of converting it. */
+  tracks?: TrackEdit | null;
   /** Something worth saying about the finished file (why a recording was kept as recorded, or that the disk filled up). */
   note?: string;
   /** A recording kept as it was recorded, not made into the preset's file. Missing on recordings finished before 0.13.1. */
@@ -55,6 +57,7 @@ interface DownloadsState {
     trim: Trim | null,
     place?: Place | null,
     record?: RecordRequest | null,
+    tracks?: TrackEdit | null,
   ) => string;
   /** Ends a recording there and makes it into its file. */
   stop: (id: string) => void;
@@ -153,16 +156,16 @@ export const useDownloads = create<DownloadsState>((set, get) => {
    * or failed.
    */
   const submit = (download: Download) => {
-    const { id, url, choice, trim, place = null, account = false, record = null } = download;
+    const { id, url, choice, trim, place = null, account = false, record = null, tracks = null } = download;
     ipc
-      .startDownload({ id, url, choice, trim, place, account, record })
+      .startDownload({ id, url, choice, trim, place, account, record, tracks })
       .catch((error) => patch(id, { status: "failed", error: toAppError(error) }));
   };
 
   return {
     ...restore(),
 
-    start: (source, choice, trim, place = null, record = null) => {
+    start: (source, choice, trim, place = null, record = null, tracks = null) => {
       const download: Download = {
         ...source,
         id: crypto.randomUUID(),
@@ -170,6 +173,7 @@ export const useDownloads = create<DownloadsState>((set, get) => {
         trim,
         place,
         record,
+        tracks,
         status: "queued",
         progress: WAITING,
         path: null,

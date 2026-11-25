@@ -323,6 +323,7 @@ mod tests {
             width: None,
             height: None,
             entries: None,
+            bytes: None,
             doubts: Vec::new(),
             notes: Vec::new(),
             read: false,

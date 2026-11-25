@@ -19,6 +19,7 @@ export const STAGE_LABELS: Record<Stage, string> = {
   recording: "Recording",
   reconnecting: "Stream paused, waiting for it",
   finalizing: "Finishing the recording",
+  copying_tracks: "Copying its tracks",
 };
 
 /** Stages that wait rather than work: their name says so, and nothing moves. */

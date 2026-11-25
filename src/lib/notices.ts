@@ -53,9 +53,10 @@ function send() {
   const list = (items: typeof done) =>
     items.length <= 2 ? items.map(name).join("\n") : `${items.slice(0, 2).map(name).join("\n")}\nand ${items.length - 2} more`;
   // "Recording finished" when everything in it was a recording, "Conversion" a file
-  // converted, "Download" a download; several of different kinds are just "finished".
+  // converted, "Copy" an MKV's chosen tracks copied, "Download" a download; several
+  // of different kinds are just "finished".
   const kind = (download: (typeof done)[number]) =>
-    download.record ? "recording" : isFileKey(download.url) ? "conversion" : "download";
+    download.record ? "recording" : download.tracks ? "copy" : isFileKey(download.url) ? "conversion" : "download";
   const one = (items: typeof done) => {
     const first = items[0] ? kind(items[0]) : "download";
     return items.every((download) => kind(download) === first) ? first : null;
@@ -66,7 +67,7 @@ function send() {
   };
   const nouns = (items: typeof done) => {
     const word = one(items);
-    return word ? `${word}s ` : "";
+    return word ? `${word === "copy" ? "copies" : `${word}s`} ` : "";
   };
 
   let title: string;

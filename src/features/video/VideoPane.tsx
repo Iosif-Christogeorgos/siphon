@@ -10,6 +10,7 @@ import { DownloadPanel } from "@/features/download/DownloadPanel";
 import { ManualPanel } from "@/features/options/ManualPanel";
 import { LiveWaitCard, Note, PlanCard } from "@/features/options/PlanCard";
 import { CHAT_GROUPS, PresetArea } from "@/features/presets/PresetArea";
+import { changesOf, type Draft, editOf } from "@/features/tracks/draft";
 import { TracksPanel } from "@/features/tracks/TracksPanel";
 import { TrimPanel } from "@/features/trim/TrimPanel";
 import { ipc, toAppError } from "@/lib/ipc";
@@ -77,6 +78,9 @@ export function VideoPane({ video }: { video: VideoInfo }) {
   // An MKV's tracks can be chosen instead (docs/mkv-editor.md).
   const tracksOffered = video.file?.matroska === true;
   const [tracksOn, setTracksOn] = useState(false);
+  // What has been chosen of its tracks so far.
+  const [draft, setDraft] = useState<Draft | null>(null);
+  const trackChanges = draft ? changesOf(draft) : null;
   const customizing = useChoices((state) => state.choices !== null && state.choices.active.kind !== "preset");
   // A Twitch video's or stream's chat can be drawn into the picture, with the presets that keep it as it is.
   const chatSource = video.chat;
@@ -155,7 +159,7 @@ export function VideoPane({ video }: { video: VideoInfo }) {
   const shownTrim = trims[Math.min(activeIndex, trims.length - 1)] ?? null;
 
   // Changing a choice after a download finished (or failed) brings back the Download button.
-  const choices = JSON.stringify([choice, trims, recordFromStart]);
+  const choices = JSON.stringify([choice, trims, recordFromStart, tracksOn ? draft?.tracks : null]);
   useEffect(() => {
     setDownloadIds((ids) =>
       ids.some((id) => {
@@ -299,7 +303,13 @@ export function VideoPane({ video }: { video: VideoInfo }) {
       </div>
 
       {tracksOn && video.file ? (
-        <TracksPanel fileKey={video.file.key} version={video.file.version} />
+        <TracksPanel
+          fileKey={video.file.key}
+          version={video.file.version}
+          draft={draft}
+          onDraft={setDraft}
+          disabled={running}
+        />
       ) : live && live.status !== "live" ? (
         <LiveWaitCard status={live.status} />
       ) : plan.isError ? (
@@ -337,7 +347,29 @@ export function VideoPane({ video }: { video: VideoInfo }) {
         )}
       </AnimatePresence>
 
-      {!tracksOn && (
+      {tracksOn ? (
+        <DownloadPanel
+          download={download}
+          onStart={() => {
+            if (!choice || !draft || !video.file) return;
+            // A file is listed by its name, as in a list of files.
+            const source = { ...video, title: video.file.name };
+            setDownloadIds([start(source, choice, null, null, null, editOf(draft))]);
+          }}
+          disabled={!choice || !trackChanges?.changed || trackChanges.kept === 0}
+          convert
+          nothing={trackChanges !== null && !trackChanges.changed}
+          label={
+            !trackChanges || !trackChanges.changed
+              ? "Nothing to change"
+              : trackChanges.kept === 0
+                ? "Keep at least one track"
+                : trackChanges.removed > 0
+                  ? `Save without ${trackChanges.removed} track${trackChanges.removed === 1 ? "" : "s"}`
+                  : "Save the changes"
+          }
+        />
+      ) : (
         <DownloadPanel
           download={download}
           onStart={() => {

@@ -38,6 +38,8 @@ pub enum Stage {
     Reconnecting,
     /// A live recording has ended and is being made into its file.
     Finalizing,
+    /// Copying the tracks of an MKV that were chosen into a new file (see `local::mkv`).
+    CopyingTracks,
 }
 
 #[derive(Debug, Clone, Serialize)]

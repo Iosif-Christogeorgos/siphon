@@ -232,6 +232,7 @@ mod tests {
             width: Some(1920),
             height: Some(1080),
             entries: None,
+            bytes: None,
             doubts: Vec::new(),
             notes: Vec::new(),
             read: false,
