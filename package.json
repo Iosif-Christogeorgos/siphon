@@ -2,7 +2,7 @@
   "name": "siphon",
   "private": true,
   "license": "GPL-3.0-or-later",
-  "version": "0.19.0",
+  "version": "0.20.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
