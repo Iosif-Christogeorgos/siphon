@@ -30,6 +30,8 @@ pub const EXTENSIONS: &[&str] = &[
     "opus", "ogg", "oga", "wav",
     // Videos, for their tracks
     "mkv", "mp4", "m4v", "mov", "webm",
+    // Chapters (see `chapter_files`), and fonts to attach
+    "xml", "txt", "ttf", "otf", "ttc",
 ];
 
 /// Text subtitles written again as SRT when read in another encoding (ASS stays ASS).

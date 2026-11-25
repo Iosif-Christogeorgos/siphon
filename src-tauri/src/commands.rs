@@ -141,8 +141,8 @@ pub async fn pick_track_files(app: AppHandle, grants: State<'_, Grants>) -> Resu
     let mut dialog = app
         .dialog()
         .file()
-        .set_title("Choose subtitles or sound to add")
-        .add_filter("Subtitles and sound", local::mkv::added::EXTENSIONS)
+        .set_title("Choose subtitles, sound, chapters or fonts to add")
+        .add_filter("Subtitles, sound, chapters and fonts", local::mkv::added::EXTENSIONS)
         .add_filter("All files", &["*"]);
     if let Some(window) = app.get_webview_window("main") {
         dialog = dialog.set_parent(&window);
@@ -177,6 +177,13 @@ pub async fn read_added(
 ) -> Result<local::mkv::added::Added> {
     ensure_ready(&bins)?;
     local::mkv::added::read(&app, &bins, &key, charset.as_deref()).await
+}
+
+/// The chapters in a file the user gave: a chapters file, or a video's (see `local::mkv::chapter_files`).
+#[tauri::command]
+pub async fn read_chapters(app: AppHandle, bins: Binaries<'_>, key: String) -> Result<Vec<local::mkv::Chapter>> {
+    ensure_ready(&bins)?;
+    local::mkv::chapter_files::read(&app, &bins, &key).await
 }
 
 /// Which of a season's episodes each file to add goes with, by their names.

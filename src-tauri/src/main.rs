@@ -137,6 +137,7 @@ fn main() {
             commands::pick_files,
             commands::pick_track_files,
             commands::read_added,
+            commands::read_chapters,
             commands::match_episodes,
             commands::read_file,
             commands::read_tracks,

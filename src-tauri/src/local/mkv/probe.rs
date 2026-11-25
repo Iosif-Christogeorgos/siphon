@@ -5,7 +5,7 @@ use std::path::Path;
 
 use serde_json::Value;
 
-use super::{Attachment, Chapters, Contents, Kind, Track};
+use super::{Attachment, Chapter, Chapters, Contents, Kind, Track};
 use crate::local::probe::tag;
 use crate::ytdlp::subtitles::language_tag;
 
@@ -21,7 +21,7 @@ pub fn args(file: &Path) -> Vec<OsString> {
             "format=format_name,duration,size",
             ":stream=index,codec_type,codec_name,width,height,channels",
             ":stream_tags:stream_disposition",
-            ":chapter=start_time",
+            ":chapter=start_time:chapter_tags=title",
         ),
     ]
     .map(OsString::from)
@@ -101,6 +101,18 @@ fn parse_with(json: &str, matroska: bool) -> Option<Contents> {
         tracks,
         chapters: Chapters {
             count: value["chapters"].as_array().map_or(0, Vec::len),
+            list: value["chapters"]
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|chapter| {
+                    Some(Chapter {
+                        start: number(&chapter["start_time"])?,
+                        title: tag(&chapter["tags"], "title").unwrap_or_default().to_string(),
+                    })
+                })
+                .collect(),
             ..Chapters::default()
         },
         attachments,

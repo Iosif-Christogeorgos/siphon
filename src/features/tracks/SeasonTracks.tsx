@@ -1,4 +1,4 @@
-import { Captions, Check, Minus, Plus, TriangleAlert, Volume2, X, Zap } from "lucide-react";
+import { BookOpen, Captions, Check, Minus, Paperclip, Plus, TriangleAlert, Volume2, X, Zap } from "lucide-react";
 import { AnimatePresence } from "motion/react";
 import { useRef, useState } from "react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -9,7 +9,9 @@ import { languageName } from "@/lib/languages";
 import { cn } from "@/lib/utils";
 import { useUi } from "@/stores/ui";
 import type { PickedFile } from "@/types";
-import { addTracks, type Draft } from "./draft";
+import { type Draft, withFonts } from "./draft";
+import { kindOfPicked, readPicked } from "./reading";
+import { applyPicked } from "./TracksPanel";
 import {
   allAsItIs,
   allMine,
@@ -131,6 +133,8 @@ export function SeasonTracks({
         );
       })}
 
+      <SeasonExtras files={files} onDrafts={onDrafts} />
+
       <SeasonAdd files={files} onDrafts={onDrafts} />
 
       {unsure > 0 && (
@@ -238,13 +242,132 @@ function Row({
 }
 
 /**
- * Adding tracks to a season's episodes: each file picked goes with the
- * episode its name matches ("Show S01E03.el.srt" with "Show S01E03.mkv", or
- * the same season and episode); one that matches none is listed, to be given
- * an episode by hand.
+ * Chapters and attached files, across the season: kept in every file, or
+ * left out of every file; fonts added to every file, or taken away.
+ */
+function SeasonExtras({ files, onDrafts }: { files: SeasonFile[]; onDrafts: (drafts: Map<string, Draft>) => void }) {
+  const withChapters = files.filter((file) => file.contents.chapters.count > 0 || file.draft.chapterList !== null);
+  const withAttachments = files.filter((file) => file.contents.attachments.length > 0);
+  const fonts = files[0]?.draft.fonts.filter((font) => files.every((file) => file.draft.fonts.some((f) => f.key === font.key))) ?? [];
+  if (withChapters.length === 0 && withAttachments.length === 0 && fonts.length === 0) return null;
+  const state = (count: number, of: number) => (count === 0 ? "none" : count === of ? "all" : "some");
+  const chaptersKept = state(
+    withChapters.filter((file) => file.draft.chapters || file.draft.chapterList !== null).length,
+    withChapters.length,
+  );
+  const attachmentsKept = state(
+    withAttachments.filter((file) => file.draft.attachments && file.draft.leftOutAttachments.length === 0).length,
+    withAttachments.length,
+  );
+  const each = (of: SeasonFile[], change: (draft: Draft, file: SeasonFile) => Draft) =>
+    onDrafts(new Map(of.map((file) => [file.key, change(file.draft, file)])));
+  return (
+    <section aria-label="Chapters and attached files">
+      <p className="px-1 pb-1 text-xs font-medium text-subtle-foreground">Chapters and attached files</p>
+      <ul className="divide-y divide-border/60 overflow-hidden rounded-xl bg-secondary/50">
+        {withChapters.length > 0 && (
+          <ExtraRow
+            icon={<BookOpen className="size-4 shrink-0 text-muted-foreground" />}
+            name="Chapters"
+            said={withChapters.length === files.length ? `In every file (${files.length})` : `In ${withChapters.length} of ${files.length} files`}
+            kept={chaptersKept}
+            onKeep={(keep) =>
+              each(withChapters, (draft) =>
+                keep ? { ...draft, chapters: true } : { ...draft, chapters: false, chapterList: null, chaptersFrom: null },
+              )
+            }
+          />
+        )}
+        {withAttachments.length > 0 && (
+          <ExtraRow
+            icon={<Paperclip className="size-4 shrink-0 text-muted-foreground" />}
+            name="Their attached files"
+            said="Fonts for ASS subtitles, covers"
+            kept={attachmentsKept}
+            onKeep={(keep) =>
+              each(withAttachments, (draft, file) => ({
+                ...draft,
+                attachments: true,
+                leftOutAttachments: keep ? [] : file.contents.attachments.map((attachment) => attachment.index),
+              }))
+            }
+          />
+        )}
+        {fonts.map((font) => (
+          <li key={font.key} className="flex items-center gap-3 px-3 py-2">
+            <Paperclip className="size-4 shrink-0 text-muted-foreground" />
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-medium">
+                {font.name}
+                <span className="font-normal text-muted-foreground"> · Added</span>
+              </p>
+              <p className="truncate text-xs text-muted-foreground">Attached to every file ({files.length})</p>
+            </div>
+            <button
+              type="button"
+              aria-label={`Don’t attach ${font.name}`}
+              onClick={() => each(files, (draft) => ({ ...draft, fonts: draft.fonts.filter((f) => f.key !== font.key) }))}
+              className="grid size-7 shrink-0 place-items-center rounded-md text-subtle-foreground transition-colors hover:bg-accent hover:text-foreground"
+            >
+              <X className="size-3.5" />
+            </button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function ExtraRow({
+  icon,
+  name,
+  said,
+  kept,
+  onKeep,
+}: {
+  icon: React.ReactNode;
+  name: string;
+  said: string;
+  kept: "all" | "none" | "some";
+  onKeep: (keep: boolean) => void;
+}) {
+  return (
+    <li className={cn("flex items-center gap-3 px-3 py-2 transition-opacity", kept === "none" && "opacity-55")}>
+      <button
+        type="button"
+        role="checkbox"
+        aria-checked={kept === "all" ? true : kept === "none" ? false : "mixed"}
+        aria-label={`Keep ${name.toLowerCase()}`}
+        onClick={() => onKeep(kept !== "all")}
+        className={cn(
+          "grid size-5 shrink-0 place-items-center rounded-md border transition-colors focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-none",
+          kept !== "none"
+            ? "border-primary bg-primary text-primary-foreground"
+            : "border-border-strong bg-card text-transparent hover:border-primary",
+        )}
+      >
+        {kept === "some" ? <Minus className="size-3.5" strokeWidth={3} /> : <Check className="size-3.5" strokeWidth={3} />}
+      </button>
+      {icon}
+      <div className="min-w-0 flex-1">
+        <p className={cn("truncate text-sm font-medium", kept === "none" && "line-through")}>{name}</p>
+        <p className="truncate text-xs text-muted-foreground">
+          {said}
+          {kept === "some" && " · kept in some"}
+        </p>
+      </div>
+    </li>
+  );
+}
+
+/**
+ * Adding to a season's episodes: each subtitle, sound or chapters file
+ * picked goes with the episode its name matches ("Show S01E03.el.srt" with
+ * "Show S01E03.mkv", or the same season and episode); one that matches none
+ * is listed, to be given an episode by hand. A font goes in every episode.
  */
 function SeasonAdd({ files, onDrafts }: { files: SeasonFile[]; onDrafts: (drafts: Map<string, Draft>) => void }) {
-  // The files are read a moment after they are picked: their tracks go in the drafts as they are then.
+  // The files are read a moment after they are picked: they go in the drafts as they are then.
   const latest = useRef(files);
   latest.current = files;
   const [reading, setReading] = useState(0);
@@ -254,7 +377,7 @@ function SeasonAdd({ files, onDrafts }: { files: SeasonFile[]; onDrafts: (drafts
   const addTo = async (pairs: { file: PickedFile; episode: string }[]) => {
     if (pairs.length === 0) return;
     setReading((count) => count + pairs.length);
-    const reads = await Promise.allSettled(pairs.map((pair) => ipc.readAdded(pair.file.key)));
+    const reads = await Promise.allSettled(pairs.map((pair) => readPicked(pair.file)));
     setReading((count) => count - pairs.length);
     setFailed(reads.flatMap((read) => (read.status === "rejected" ? [toAppError(read.reason).message] : [])));
     const drafts = new Map<string, Draft>();
@@ -262,7 +385,7 @@ function SeasonAdd({ files, onDrafts }: { files: SeasonFile[]; onDrafts: (drafts
       const episode = pairs[at]?.episode;
       if (read.status !== "fulfilled" || !episode) return;
       const draft = drafts.get(episode) ?? latest.current.find((file) => file.key === episode)?.draft;
-      if (draft) drafts.set(episode, addTracks(draft, read.value));
+      if (draft) drafts.set(episode, applyPicked(draft, read.value));
     });
     if (drafts.size > 0) onDrafts(drafts);
   };
@@ -271,18 +394,23 @@ function SeasonAdd({ files, onDrafts }: { files: SeasonFile[]; onDrafts: (drafts
     const picked = await ipc.pickTrackFiles().catch(() => null);
     if (!picked || picked.length === 0) return;
     const episodes = latest.current;
+    // Fonts are for every episode: their ASS subtitles are drawn with them.
+    const fonts = picked.filter((file) => kindOfPicked(file.name) === "font");
+    if (fonts.length > 0) onDrafts(new Map(episodes.map((file) => [file.key, withFonts(file.draft, fonts)])));
+    const rest = picked.filter((file) => kindOfPicked(file.name) !== "font");
+    if (rest.length === 0) return;
     const matches = await ipc.matchEpisodes(
       episodes.map((file) => file.name),
-      picked.map((file) => file.name),
+      rest.map((file) => file.name),
     );
-    const pairs = picked.flatMap((file, at) => {
+    const pairs = rest.flatMap((file, at) => {
       const place = matches[at];
       const episode = place != null ? episodes[place] : undefined;
       return episode ? [{ file, episode: episode.key }] : [];
     });
     setUnplaced((now) => [
       ...now,
-      ...picked.filter((file, at) => matches[at] == null && !now.some((other) => other.key === file.key)),
+      ...rest.filter((file, at) => matches[at] == null && !now.some((other) => other.key === file.key)),
     ]);
     await addTo(pairs);
   };
@@ -297,7 +425,9 @@ function SeasonAdd({ files, onDrafts }: { files: SeasonFile[]; onDrafts: (drafts
       >
         <Plus className="size-4 shrink-0" />
         <span className="min-w-0 flex-1 truncate">
-          {reading > 0 ? `Reading ${reading} ${reading === 1 ? "file" : "files"}…` : "Add subtitles or sound to the episodes"}
+          {reading > 0
+            ? `Reading ${reading} ${reading === 1 ? "file" : "files"}…`
+            : "Add subtitles, sound, chapters or fonts to the episodes"}
         </span>
         <span className="shrink-0 text-xs text-subtle-foreground">Matched by name</span>
       </button>

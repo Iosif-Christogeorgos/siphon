@@ -9,12 +9,12 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use super::{added, Contents, Kind, Track};
+use super::{added, chapter_files, Chapter, Contents, Kind, Track};
 use crate::error::{AppError, Result};
 use crate::ytdlp::subtitles::iso639_2;
 
 /// The tracks an MKV keeps, and how.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TrackEdit {
     /// The tracks kept, in the order they go in the copy.
     pub tracks: Vec<KeptTrack>,
@@ -24,6 +24,28 @@ pub struct TrackEdit {
     /// Keep the files attached: the fonts ASS subtitles are drawn with, a cover.
     #[serde(default = "yes")]
     pub attachments: bool,
+    /// The chapters the copy gets, as chosen: renamed, some left out, or
+    /// taken from another file. None: as the MKV has them (or none, with
+    /// `chapters` false).
+    #[serde(default)]
+    pub chapter_list: Option<Vec<Chapter>>,
+    /// The MKV's attached files left out, by their place among its streams.
+    #[serde(default)]
+    pub left_out_attachments: Vec<usize>,
+    /// Font files to attach, by key: what ASS subtitles are drawn with.
+    #[serde(default)]
+    pub fonts: Vec<String>,
+}
+
+/// The font files a copy can attach, by extension, and how Matroska names their kind.
+pub const FONTS: &[(&str, &str)] = &[("ttf", "font/ttf"), ("otf", "font/otf"), ("ttc", "font/collection")];
+
+/// What else goes into a copy besides tracks, found when it is made: the
+/// file its chapters are written in, and the fonts it attaches.
+#[derive(Debug, Clone, Default)]
+pub struct Extras {
+    pub chapters: Option<PathBuf>,
+    pub fonts: Vec<PathBuf>,
 }
 
 fn yes() -> bool {
@@ -111,6 +133,19 @@ impl TrackEdit {
                 return Err(AppError::internal("Siphon doesn't know that encoding."));
             }
         }
+        if let Some(chapters) = &self.chapter_list {
+            let fine = chapters.len() <= chapter_files::MOST
+                && chapters.iter().all(|chapter| {
+                    chapter.start.is_finite() && chapter.start >= 0.0 && chapter.title.chars().count() <= 500
+                })
+                && chapters.windows(2).all(|pair| pair[0].start < pair[1].start);
+            if !fine {
+                return Err(AppError::internal("The chapters chosen aren't in order."));
+            }
+        }
+        if self.fonts.len() > 100 {
+            return Err(AppError::internal("That is too many fonts to attach."));
+        }
         Ok(())
     }
 
@@ -152,14 +187,15 @@ impl TrackEdit {
 }
 
 /// The arguments that make FFmpeg copy what `edit` keeps of `source`, and
-/// adds from `added`, into `output`, an MKV, saying how far it has got on
-/// its standard output.
+/// adds from `added` and `extras`, into `output`, an MKV, saying how far it
+/// has got on its standard output.
 pub fn args(
     source: &Path,
     output: &Path,
     edit: &TrackEdit,
     contents: &Contents,
     added: &[AddedInput],
+    extras: &Extras,
 ) -> Vec<OsString> {
     let mut args: Vec<OsString> = [
         "-hide_banner",
@@ -193,6 +229,12 @@ pub fn args(
         args.push("-i".into());
         args.push(input.path.clone().into());
     }
+    // The chapters chosen, written for FFmpeg (see `chapter_files`): an input of their own.
+    let chapters_input = extras.chapters.as_ref().map(|path| {
+        args.extend(["-f", "ffmetadata", "-i"].map(OsString::from));
+        args.push(path.into());
+        inputs.len() + 1
+    });
     let input_of = |kept: &KeptTrack| match &kept.from {
         None => 0,
         Some(key) => inputs
@@ -204,12 +246,22 @@ pub fn args(
     for kept in &edit.tracks {
         push(&["-map", &format!("{}:{}", input_of(kept), kept.index)]);
     }
+    let mut attached = 0;
     if edit.attachments {
         for attachment in &contents.attachments {
-            push(&["-map", &format!("0:{}", attachment.index)]);
+            if !edit.left_out_attachments.contains(&attachment.index) {
+                push(&["-map", &format!("0:{}", attachment.index)]);
+                attached += 1;
+            }
         }
     }
-    push(&["-map_chapters", if edit.chapters { "0" } else { "-1" }]);
+    let chapters = match (&edit.chapter_list, chapters_input) {
+        (Some(_), Some(input)) => input.to_string(),
+        (Some(_), None) => "-1".to_string(),
+        (None, _) if edit.chapters => "0".to_string(),
+        (None, _) => "-1".to_string(),
+    };
+    push(&["-map_chapters", &chapters]);
     push(&["-map_metadata", "0", "-c", "copy"]);
     // Text that has to be re-written: a subtitle file not in UTF-8, read in
     // its encoding; an MP4's timed text, which Matroska doesn't hold.
@@ -239,7 +291,32 @@ pub fn args(
         push(&[&format!("-metadata:s:{place}"), &format!("title={}", kept.name.trim())]);
         push(&[&format!("-disposition:{place}"), &disposition(kept)]);
     }
-    push(&["-f", "matroska"]);
+    // Fonts attached, each named by its file and of its kind, after the MKV's own.
+    for (place, font) in extras.fonts.iter().enumerate() {
+        let mime = font
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .and_then(|ext| FONTS.iter().find(|(known, _)| known.eq_ignore_ascii_case(ext)))
+            .map_or("font/ttf", |(_, mime)| mime);
+        args.push("-attach".into());
+        args.push(font.into());
+        // Named by its file alone: FFmpeg would name it by the whole path it was given.
+        let name = font
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let stream = format!("-metadata:s:t:{}", attached + place);
+        args.extend(
+            [
+                stream.clone(),
+                format!("mimetype={mime}"),
+                stream,
+                format!("filename={name}"),
+            ]
+            .map(OsString::from),
+        );
+    }
+    args.extend(["-f", "matroska"].map(OsString::from));
     args.push(output.into());
     args
 }
@@ -359,6 +436,7 @@ mod tests {
             ],
             chapters: true,
             attachments: true,
+            ..Default::default()
         };
         let args = texts(&args(
             Path::new("Korra.mkv"),
@@ -366,6 +444,7 @@ mod tests {
             &edit,
             &korra(),
             &[],
+            &Extras::default(),
         ));
         let joined = args.join(" ");
         assert!(joined.contains("-map 0:0 -map 0:1 -map 0:3 -map 0:5 -map 0:4 -map 0:6 -map_chapters 0"));
@@ -385,8 +464,17 @@ mod tests {
             tracks: vec![kept(0, None, "")],
             chapters: false,
             attachments: false,
+            ..Default::default()
         };
-        let joined = texts(&args(Path::new("a.mkv"), Path::new("b.mkv"), &edit, &korra(), &[])).join(" ");
+        let joined = texts(&args(
+            Path::new("a.mkv"),
+            Path::new("b.mkv"),
+            &edit,
+            &korra(),
+            &[],
+            &Extras::default(),
+        ))
+        .join(" ");
         assert!(joined.contains("-map 0:0 -map_chapters -1"));
         assert!(!joined.contains("0:6"));
     }
@@ -398,6 +486,7 @@ mod tests {
             tracks: Vec::new(),
             chapters: true,
             attachments: true,
+            ..Default::default()
         };
         assert!(none.check(&contents, &[]).is_err());
         let missing = TrackEdit {
@@ -425,6 +514,7 @@ mod tests {
             tracks: vec![kept(0, None, ""), kept(1, None, "")],
             chapters: true,
             attachments: true,
+            ..Default::default()
         };
         assert_eq!(edit.size(&contents, &[]), Some(217_331_196 + 2_173_311));
         contents.tracks[1].bytes = None;
@@ -480,6 +570,7 @@ mod tests {
             ],
             chapters: true,
             attachments: false,
+            ..Default::default()
         };
         let contents = korra();
         assert!(edit.check(&contents, &added).is_ok());
@@ -499,6 +590,7 @@ mod tests {
             &edit,
             &contents,
             &added,
+            &Extras::default(),
         ))
         .join(" ");
         // The Greek file is read as Windows-1253 and its text written as UTF-8; the pictures are copied.
@@ -523,5 +615,83 @@ mod tests {
             ..edit.clone()
         };
         assert!(unknown.check(&contents, &added).is_err());
+    }
+
+    #[test]
+    fn writes_the_chapters_chosen_leaves_out_attachments_and_attaches_fonts() {
+        let mut contents = korra();
+        contents.attachments.push(Attachment {
+            index: 7,
+            name: "Cover.jpg".into(),
+            mime: Some("image/jpeg".into()),
+        });
+        let edit = TrackEdit {
+            tracks: vec![kept(0, None, ""), kept(1, Some("el"), "")],
+            chapters: true,
+            attachments: true,
+            chapter_list: Some(vec![
+                Chapter {
+                    start: 0.0,
+                    title: "Αρχή".into(),
+                },
+                Chapter {
+                    start: 434.225,
+                    title: "Part 2".into(),
+                },
+            ]),
+            left_out_attachments: vec![7],
+            fonts: vec!["siphon-file:font".into()],
+        };
+        assert!(edit.check(&contents, &[]).is_ok());
+        let extras = Extras {
+            chapters: Some(PathBuf::from("work/chapters.txt")),
+            fonts: vec![PathBuf::from("Fonts/Comic.OTF")],
+        };
+        let joined = texts(&args(
+            Path::new("Korra.mkv"),
+            Path::new("out.mkv"),
+            &edit,
+            &contents,
+            &[],
+            &extras,
+        ))
+        .join(" ");
+        assert!(joined.contains("-i Korra.mkv -f ffmetadata -i work/chapters.txt"));
+        // The font the MKV has stays; its cover goes; the chapters come from the second input.
+        assert!(joined.contains("-map 0:0 -map 0:1 -map 0:6 -map_chapters 1"));
+        assert!(!joined.contains("0:7"));
+        assert!(joined.contains(
+            "-attach Fonts/Comic.OTF -metadata:s:t:1 mimetype=font/otf -metadata:s:t:1 filename=Comic.OTF -f matroska out.mkv"
+        ));
+        // No chapters chosen: none.
+        let none = TrackEdit {
+            chapter_list: Some(Vec::new()),
+            ..edit.clone()
+        };
+        let joined = texts(&args(
+            Path::new("a.mkv"),
+            Path::new("b.mkv"),
+            &none,
+            &contents,
+            &[],
+            &Extras::default(),
+        ))
+        .join(" ");
+        assert!(joined.contains("-map_chapters -1"));
+        // Chapters out of order don't fit.
+        let jumbled = TrackEdit {
+            chapter_list: Some(vec![
+                Chapter {
+                    start: 60.0,
+                    title: String::new(),
+                },
+                Chapter {
+                    start: 0.0,
+                    title: String::new(),
+                },
+            ]),
+            ..edit
+        };
+        assert!(jumbled.check(&contents, &[]).is_err());
     }
 }

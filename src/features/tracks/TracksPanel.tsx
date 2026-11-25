@@ -1,22 +1,39 @@
 import { useQuery } from "@tanstack/react-query";
-import { ArrowDown, ArrowUp, Captions, Check, ChevronDown, Film, Plus, Tag, TriangleAlert, Volume2, Zap } from "lucide-react";
+import {
+  ArrowDown,
+  ArrowUp,
+  Captions,
+  Check,
+  ChevronDown,
+  File as FileIcon,
+  Film,
+  Image,
+  Plus,
+  Tag,
+  TriangleAlert,
+  Type,
+  Volume2,
+  X,
+  Zap,
+} from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { ErrorCard } from "@/components/ErrorCard";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Hint } from "@/components/ui/tooltip";
 import { Note } from "@/features/options/PlanCard";
-import { formatBytes } from "@/lib/format";
+import { formatBytes, formatDuration } from "@/lib/format";
 import { ipc, toAppError } from "@/lib/ipc";
 import { useUi } from "@/stores/ui";
 import { COMMON_LANGUAGES, languageName, primary, systemLanguage } from "@/lib/languages";
 import { spring } from "@/lib/motion";
 import { cn } from "@/lib/utils";
-import type { AddedFile, MkvContents, MkvKind, MkvTrack, Suggestion } from "@/types";
+import type { Attachment, MkvContents, MkvKind, MkvTrack, Suggestion } from "@/types";
 import {
   addedOf,
   addTracks,
   asItIs,
+  chaptersOf,
   changesOf,
   type Draft,
   type DraftAdded,
@@ -26,9 +43,11 @@ import {
   moved,
   readOf,
   sizeOf,
+  withChapters,
+  withFonts,
   withTrack,
 } from "./draft";
-import { tracksQuery, useLanguagesKey } from "./reading";
+import { type PickedRead, readPicked, tracksQuery, useLanguagesKey } from "./reading";
 
 const KINDS: { kind: MkvKind; label: string; icon: typeof Film }[] = [
   { kind: "video", label: "Video", icon: Film },
@@ -140,11 +159,7 @@ export function TracksPanel({
     );
   }
 
-  const { chapters, attachments, doubts } = data;
-  const extras = [
-    chapters.count > 0 ? `${chapters.count} chapter${chapters.count === 1 ? "" : "s"}` : null,
-    attachments.length > 0 ? `${attachments.length} attached file${attachments.length === 1 ? "" : "s"}` : null,
-  ].filter((extra) => extra !== null);
+  const { chapters, doubts } = data;
 
   return (
     <fieldset disabled={disabled} className="min-w-0 space-y-3 border-0 p-0 py-1.5">
@@ -186,9 +201,10 @@ export function TracksPanel({
         );
       })}
 
-      <AddTracks onAdded={(files) => latest.current && onDraft(files.reduce(addTracks, latest.current))} />
+      <ChaptersPart draft={draft} contents={data} onDraft={onDraft} />
+      <AttachedPart draft={draft} contents={data} onDraft={onDraft} />
 
-      {extras.length > 0 && <p className="px-1 text-xs text-muted-foreground">{extras.join(" · ")}</p>}
+      <AddTracks onAdded={(reads) => latest.current && onDraft(reads.reduce(applyPicked, latest.current))} />
 
       <AnimatePresence initial={false}>
         {doubts.map((doubt) => (
@@ -309,18 +325,24 @@ function Summary({ draft, contents }: { draft: Draft; contents: MkvContents }) {
   );
 }
 
+/** What a file picked to add does to a draft: its tracks added, its chapters taken, a font attached. */
+export function applyPicked(draft: Draft, read: PickedRead): Draft {
+  switch (read.kind) {
+    case "tracks":
+      return addTracks(draft, read.added);
+    case "chapters":
+      return withChapters(draft, read.chapters, read.file.name);
+    case "font":
+      return withFonts(draft, [read.file]);
+  }
+}
+
 /**
- * Adding tracks from other files (docs/mkv-editor.md, step 6): subtitles,
- * sound, or another video's, picked in Windows' file dialog and read before
- * they go in, each after the last of its kind.
+ * Adding to the copy from other files (docs/mkv-editor.md, steps 6 and 7):
+ * subtitles, sound or another video's tracks, a chapters file, fonts;
+ * picked in Windows' file dialog and read before they go in.
  */
-export function AddTracks({
-  onAdded,
-  label = "Add subtitles or sound from a file",
-}: {
-  onAdded: (files: AddedFile[]) => void;
-  label?: string;
-}) {
+function AddTracks({ onAdded }: { onAdded: (reads: PickedRead[]) => void }) {
   const [reading, setReading] = useState<string[]>([]);
   const [failed, setFailed] = useState<string[]>([]);
   const add = async () => {
@@ -328,11 +350,11 @@ export function AddTracks({
     if (!picked || picked.length === 0) return;
     setFailed([]);
     setReading(picked.map((file) => file.name));
-    const reads = await Promise.allSettled(picked.map((file) => ipc.readAdded(file.key)));
+    const reads = await Promise.allSettled(picked.map(readPicked));
     setReading([]);
     setFailed(reads.flatMap((read) => (read.status === "rejected" ? [toAppError(read.reason).message] : [])));
-    const files = reads.flatMap((read) => (read.status === "fulfilled" ? [read.value] : []));
-    if (files.length > 0) onAdded(files);
+    const done = reads.flatMap((read) => (read.status === "fulfilled" ? [read.value] : []));
+    if (done.length > 0) onAdded(done);
   };
   return (
     <div className="space-y-2">
@@ -344,7 +366,9 @@ export function AddTracks({
       >
         <Plus className="size-4 shrink-0" />
         <span className="min-w-0 truncate">
-          {reading.length > 0 ? `Reading ${reading.length === 1 ? reading[0] : `${reading.length} files`}…` : label}
+          {reading.length > 0
+            ? `Reading ${reading.length === 1 ? reading[0] : `${reading.length} files`}…`
+            : "Add subtitles, sound, chapters or fonts"}
         </span>
       </button>
       <AnimatePresence initial={false}>
@@ -355,6 +379,211 @@ export function AddTracks({
         ))}
       </AnimatePresence>
     </div>
+  );
+}
+
+/** A small action beside a section's name. */
+function SectionAction({ onClick, children }: { onClick: () => void; children: ReactNode }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="rounded-md px-1.5 py-0.5 text-xs text-primary transition-colors hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-none"
+    >
+      {children}
+    </button>
+  );
+}
+
+/** A chapter list longer than this shows its first ones, and the rest on asking. */
+const CHAPTERS_SHOWN = 5;
+
+/**
+ * The copy's chapters (docs/mkv-editor.md, step 7): each renamed or left
+ * out, all left out, or taken from a chapters file added.
+ */
+function ChaptersPart({
+  draft,
+  contents,
+  onDraft,
+}: {
+  draft: Draft;
+  contents: MkvContents;
+  onDraft: (draft: Draft) => void;
+}) {
+  const [all, setAll] = useState(false);
+  const own = contents.chapters.list;
+  if (own.length === 0 && draft.chapterList === null) return null;
+  const list = chaptersOf(draft, contents);
+  const kept = draft.chapters || draft.chapterList !== null;
+  const shown = all ? list : list.slice(0, CHAPTERS_SHOWN);
+  return (
+    <section aria-label="Chapters">
+      <div className="flex items-center gap-2 px-1 pb-1">
+        <p className="min-w-0 flex-1 truncate text-xs font-medium text-subtle-foreground">
+          Chapters
+          {kept && list.length > 0 && <span className="tabular-nums"> · {list.length}</span>}
+          {draft.chaptersFrom && <span className="font-normal"> · from {draft.chaptersFrom}</span>}
+        </p>
+        {draft.chapterList !== null && own.length > 0 && (
+          <SectionAction onClick={() => onDraft({ ...draft, chapters: true, chapterList: null, chaptersFrom: null })}>
+            As the file has them
+          </SectionAction>
+        )}
+        {kept && list.length > 0 ? (
+          <SectionAction onClick={() => onDraft({ ...draft, chapters: false, chapterList: null, chaptersFrom: null })}>
+            Leave them out
+          </SectionAction>
+        ) : (
+          !kept && <SectionAction onClick={() => onDraft({ ...draft, chapters: true })}>Keep them</SectionAction>
+        )}
+      </div>
+      {kept && list.length > 0 ? (
+        <ul className="divide-y divide-border/60 overflow-hidden rounded-xl bg-secondary/50">
+          {shown.map((chapter, place) => (
+            <li key={`${chapter.start}-${place}`} className="flex items-center gap-2 py-1 pr-2 pl-3">
+              <span className="w-16 shrink-0 text-xs text-muted-foreground tabular-nums">
+                {formatDuration(chapter.start)}
+              </span>
+              <input
+                aria-label={`Chapter ${place + 1}’s name`}
+                placeholder="No name"
+                value={chapter.title}
+                onChange={(event) =>
+                  onDraft(
+                    withChapters(
+                      draft,
+                      list.map((other, at) => (at === place ? { ...other, title: event.target.value } : other)),
+                    ),
+                  )
+                }
+                className="h-8 min-w-0 flex-1 rounded-lg bg-transparent px-2 text-[13px] outline-none transition-colors placeholder:text-subtle-foreground hover:bg-background/50 focus-visible:bg-background/70 focus-visible:ring-[3px] focus-visible:ring-ring/40"
+              />
+              <Hint label="Leave this chapter out">
+                <button
+                  type="button"
+                  aria-label={`Leave chapter ${place + 1} out`}
+                  onClick={() => onDraft(withChapters(draft, list.filter((_, at) => at !== place)))}
+                  className="grid size-7 shrink-0 place-items-center rounded-md text-subtle-foreground transition-colors hover:bg-accent hover:text-foreground"
+                >
+                  <X className="size-3.5" />
+                </button>
+              </Hint>
+            </li>
+          ))}
+          {list.length > CHAPTERS_SHOWN && (
+            <li>
+              <button
+                type="button"
+                onClick={() => setAll(!all)}
+                className="w-full px-3 py-2 text-left text-xs text-primary hover:bg-accent"
+              >
+                {all ? "Show fewer" : `Show all ${list.length}`}
+              </button>
+            </li>
+          )}
+        </ul>
+      ) : (
+        <p className="rounded-xl bg-secondary/50 px-3 py-2.5 text-xs text-muted-foreground">
+          Left out: the copy has no chapters.
+        </p>
+      )}
+    </section>
+  );
+}
+
+/** "Font", "Picture": what an attached file is, as people say it. */
+function attachmentKind(mime: string | null, name: string): { label: string; icon: typeof Type } {
+  const ext = name.split(".").pop()?.toLowerCase() ?? "";
+  if (mime?.startsWith("image/")) return { label: "Picture", icon: Image };
+  if (mime?.includes("font") || mime?.includes("opentype") || ["ttf", "otf", "ttc"].includes(ext)) {
+    return { label: "Font, for its ASS subtitles", icon: Type };
+  }
+  return { label: "File", icon: FileIcon };
+}
+
+/**
+ * The files attached to the copy (docs/mkv-editor.md, step 7): the MKV's
+ * own, each kept or left out, and fonts added for ASS subtitles.
+ */
+function AttachedPart({
+  draft,
+  contents,
+  onDraft,
+}: {
+  draft: Draft;
+  contents: MkvContents;
+  onDraft: (draft: Draft) => void;
+}) {
+  const own: Attachment[] = contents.attachments;
+  if (own.length === 0 && draft.fonts.length === 0) return null;
+  return (
+    <section aria-label="Attached files">
+      <p className="px-1 pb-1 text-xs font-medium text-subtle-foreground">Attached files</p>
+      <ul className="divide-y divide-border/60 overflow-hidden rounded-xl bg-secondary/50">
+        {own.map((file) => {
+          const kept = draft.attachments && !draft.leftOutAttachments.includes(file.index);
+          const { label, icon: Icon } = attachmentKind(file.mime, file.name);
+          return (
+            <li key={file.index} className={cn("flex items-center gap-3 px-3 py-2 transition-opacity", !kept && "opacity-55")}>
+              <button
+                type="button"
+                role="checkbox"
+                aria-checked={kept}
+                aria-label={`Keep ${file.name}`}
+                onClick={() =>
+                  onDraft({
+                    ...draft,
+                    attachments: true,
+                    leftOutAttachments: kept
+                      ? [...draft.leftOutAttachments, file.index]
+                      : draft.leftOutAttachments.filter((index) => index !== file.index),
+                  })
+                }
+                className={cn(
+                  "grid size-5 shrink-0 place-items-center rounded-md border transition-colors focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-none",
+                  kept
+                    ? "border-primary bg-primary text-primary-foreground"
+                    : "border-border-strong bg-card text-transparent hover:border-primary",
+                )}
+              >
+                <Check className="size-3.5" strokeWidth={3} />
+              </button>
+              <Icon className="size-4 shrink-0 text-muted-foreground" />
+              <div className="min-w-0 flex-1">
+                <p className={cn("truncate text-sm font-medium", !kept && "line-through")}>{file.name}</p>
+                <p className="truncate text-xs text-muted-foreground">{label}</p>
+              </div>
+            </li>
+          );
+        })}
+        {draft.fonts.map((font) => (
+          <li key={font.key} className="flex items-center gap-3 px-3 py-2">
+            <span className="grid size-5 shrink-0 place-items-center rounded-md bg-primary text-primary-foreground">
+              <Check className="size-3.5" strokeWidth={3} />
+            </span>
+            <Type className="size-4 shrink-0 text-muted-foreground" />
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-medium">{font.name}</p>
+              <p className="truncate text-xs text-muted-foreground">Font, for its ASS subtitles</p>
+            </div>
+            <span className="shrink-0 rounded-md bg-background/70 px-1.5 py-0.5 text-[11px] text-muted-foreground">
+              Added
+            </span>
+            <Hint label="Don’t attach it">
+              <button
+                type="button"
+                aria-label={`Don’t attach ${font.name}`}
+                onClick={() => onDraft({ ...draft, fonts: draft.fonts.filter((other) => other.key !== font.key) })}
+                className="grid size-7 shrink-0 place-items-center rounded-md text-subtle-foreground transition-colors hover:bg-accent hover:text-foreground"
+              >
+                <X className="size-3.5" />
+              </button>
+            </Hint>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 

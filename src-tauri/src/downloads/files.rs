@@ -18,7 +18,7 @@ use crate::error::{AppError, ErrorKind, Result};
 use crate::ffmpeg::{self, encoders::Hardware};
 use crate::local::mkv::{
     self,
-    edit::{AddedInput, TrackEdit},
+    edit::{AddedInput, Extras, TrackEdit},
 };
 use crate::local::{self, Grants, LocalFile, Original};
 use crate::plan::{self, Choice, ReadFrom, Recipe, Trim};
@@ -136,6 +136,7 @@ impl DownloadManager {
         let contents = mkv::inspect(job.bins, original).await?;
         let added = added_inputs(job, edit).await?;
         edit.check(&contents, &added)?;
+        let extras = extras(job, edit, &contents).await?;
         if !self.wait_for_turn(job.id, Load::Disk).await {
             return Err(AppError::cancelled());
         }
@@ -144,6 +145,7 @@ impl DownloadManager {
                 job,
                 original,
                 TrackCopy {
+                    extras: &extras,
                     edit,
                     contents: &contents,
                     added: &added,
@@ -192,7 +194,12 @@ impl DownloadManager {
         folder: &Path,
         tracker: &mut Tracker,
     ) -> Result<std::path::PathBuf> {
-        let TrackCopy { edit, contents, added } = copy;
+        let TrackCopy {
+            edit,
+            contents,
+            added,
+            extras,
+        } = copy;
         if let (Some(free), Some(needs)) = (free_space(folder), edit.size(contents, added)) {
             let needs = needs + needs / 50 + 256 * 1024 * 1024;
             if free < needs {
@@ -209,7 +216,14 @@ impl DownloadManager {
         let output = self.unique_output(folder.join(original.name()), job.id);
         let partial = local::partial_name(&output, job.id);
         let mut cmd = process::command(job.bins.ffmpeg());
-        cmd.args(mkv::edit::args(original.path(), &partial, edit, contents, added));
+        cmd.args(mkv::edit::args(
+            original.path(),
+            &partial,
+            edit,
+            contents,
+            added,
+            extras,
+        ));
         let length = contents.duration;
         let started = std::time::Instant::now();
         let result = self
@@ -437,6 +451,52 @@ struct TrackCopy<'a> {
     edit: &'a TrackEdit,
     contents: &'a mkv::Contents,
     added: &'a [AddedInput],
+    extras: &'a Extras,
+}
+
+/// What else an edit puts in the copy: its chapters, written where the job
+/// keeps its work for FFmpeg to read, and the fonts it attaches, found again
+/// by their keys. An error if a font isn't there any more, or isn't a font.
+async fn extras(job: &JobContext<'_>, edit: &TrackEdit, contents: &mkv::Contents) -> Result<Extras> {
+    let mut extras = Extras::default();
+    if let Some(chapters) = edit.chapter_list.as_ref().filter(|list| !list.is_empty()) {
+        let folder = work_dir(job.app, job.id)?;
+        tokio::fs::create_dir_all(&folder).await?;
+        let path = folder.join("chapters.txt");
+        let text = mkv::chapter_files::ffmetadata_of(chapters, contents.duration);
+        tokio::fs::write(&path, text).await?;
+        extras.chapters = Some(path);
+    }
+    for key in &edit.fonts {
+        let font = job
+            .app
+            .state::<Grants>()
+            .get(key)
+            .ok_or_else(|| AppError::internal("Siphon lost track of a font to attach. Add it again."))?;
+        let path = font.path().to_path_buf();
+        let is_font = path.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| {
+            mkv::edit::FONTS
+                .iter()
+                .any(|(known, _)| known.eq_ignore_ascii_case(ext))
+        });
+        if !is_font {
+            return Err(AppError::new(
+                ErrorKind::Unsupported,
+                format!("{} isn't a font Siphon can attach.", font.name()),
+            ));
+        }
+        if !path.is_file() {
+            return Err(AppError::new(
+                ErrorKind::Unavailable,
+                format!(
+                    "{} isn't there any more. It may have been moved or deleted.",
+                    font.name()
+                ),
+            ));
+        }
+        extras.fonts.push(path);
+    }
+    Ok(extras)
 }
 
 /// The files an edit adds tracks from, found again by their keys and read

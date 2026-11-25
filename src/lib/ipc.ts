@@ -12,6 +12,7 @@ import type {
   Media,
   MkvContents,
   AddedFile,
+  Chapter,
   PickedFile,
   Placement,
   PlanSummary,
@@ -49,6 +50,8 @@ export const ipc = {
   pickTrackFiles: () => invoke<PickedFile[] | null>("pick_track_files"),
   /** A file to add tracks from, read; a text subtitle file in `charset`, if chosen. */
   readAdded: (key: string, charset: string | null = null) => invoke<AddedFile>("read_added", { key, charset }),
+  /** The chapters in a chapters file (XML, text) or a video the user gave. */
+  readChapters: (key: string) => invoke<Chapter[]>("read_chapters", { key }),
   /** Which episode each file to add goes with, by name: its place in `episodes`, or null. */
   matchEpisodes: (episodes: string[], files: string[]) =>
     invoke<(number | null)[]>("match_episodes", { episodes, files }),

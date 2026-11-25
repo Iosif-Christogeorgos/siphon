@@ -1,5 +1,5 @@
 import { primary } from "@/lib/languages";
-import type { AddedFile, KeptTrack, MkvContents, MkvKind, MkvTrack, TrackEdit } from "@/types";
+import type { AddedFile, Chapter, KeptTrack, MkvContents, MkvKind, MkvTrack, PickedFile, TrackEdit } from "@/types";
 
 /**
  * A track as the user has it: kept or not, and what the copy says of it.
@@ -33,6 +33,14 @@ export interface Draft {
   mine: boolean;
   /** Files tracks were added from (docs/mkv-editor.md, step 6). */
   added: DraftAdded[];
+  /** The chapters the copy gets, as chosen; null: as the file has them (or none, `chapters` false). */
+  chapterList: Chapter[] | null;
+  /** Where a chapter list taken from a file came from: "Film.chapters.xml". */
+  chaptersFrom: string | null;
+  /** The file's attached files left out, by their place among its streams. */
+  leftOutAttachments: number[];
+  /** Fonts to attach. */
+  fonts: PickedFile[];
 }
 
 /** Each file added from gets indexes of its own in a draft: far past any file's streams. */
@@ -71,7 +79,16 @@ export function mineOf(draft: Draft, edit: TrackEdit): Draft {
 
 /** Everything, as the file has it, and whatever was added. */
 export function asItIs(draft: Draft): Draft {
-  return { ...draft, tracks: withAdded(draft, draft.before), chapters: true, attachments: true, mine: false };
+  return {
+    ...draft,
+    tracks: withAdded(draft, draft.before),
+    chapters: true,
+    attachments: true,
+    chapterList: null,
+    chaptersFrom: null,
+    leftOutAttachments: [],
+    mine: false,
+  };
 }
 
 function asTheFileIs(contents: MkvContents, key: string, version: string, languages: string): Draft {
@@ -100,7 +117,28 @@ function asTheFileIs(contents: MkvContents, key: string, version: string, langua
     attachments: true,
     mine: false,
     added: [],
+    chapterList: null,
+    chaptersFrom: null,
+    leftOutAttachments: [],
+    fonts: [],
   };
+}
+
+/** The chapters the copy gets: as chosen, else the file's own, or none. */
+export function chaptersOf(draft: Draft, contents: MkvContents): Chapter[] {
+  if (draft.chapterList) return draft.chapterList;
+  return draft.chapters ? contents.chapters.list : [];
+}
+
+/** The copy gets these chapters. */
+export function withChapters(draft: Draft, chapters: Chapter[], from: string | null = draft.chaptersFrom): Draft {
+  return { ...draft, chapters: true, chapterList: chapters, chaptersFrom: from };
+}
+
+/** Fonts to attach, each once. */
+export function withFonts(draft: Draft, fonts: PickedFile[]): Draft {
+  const more = fonts.filter((font) => !draft.fonts.some((known) => known.key === font.key));
+  return { ...draft, fonts: [...draft.fonts, ...more] };
 }
 
 /**
@@ -176,6 +214,9 @@ export function editOf(draft: Draft): TrackEdit {
       .map(({ kind: _kind, keep: _keep, stream, ...kept }) => ({ ...kept, index: stream ?? kept.index })),
     chapters: draft.chapters,
     attachments: draft.attachments,
+    chapter_list: draft.chapterList,
+    left_out_attachments: draft.leftOutAttachments,
+    fonts: draft.fonts.map((font) => font.key),
   };
 }
 
@@ -195,7 +236,15 @@ export function changesOf(draft: Draft): { removed: number; kept: number; added:
     removed,
     kept: own.length,
     added,
-    changed: removed > 0 || added > 0 || moved || !draft.chapters || !draft.attachments,
+    changed:
+      removed > 0 ||
+      added > 0 ||
+      moved ||
+      !draft.chapters ||
+      !draft.attachments ||
+      draft.chapterList !== null ||
+      draft.leftOutAttachments.length > 0 ||
+      draft.fonts.length > 0,
   };
 }
 

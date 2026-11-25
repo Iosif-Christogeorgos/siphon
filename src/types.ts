@@ -195,6 +195,14 @@ export interface LocalFile {
   overview: TrackOverview;
 }
 
+/** A file carried in an MKV: a font for its ASS subtitles, a cover. */
+export interface Attachment {
+  /** Its place among the file's streams. */
+  index: number;
+  name: string;
+  mime: string | null;
+}
+
 /** What a file holds, track by track, as its tags say (`local/mod.rs`). */
 export interface TrackOverview {
   video: number;
@@ -212,7 +220,7 @@ export interface MkvContents {
   tracks: MkvTrack[];
   chapters: MkvChapters;
   /** Files carried in it: fonts for its ASS subtitles, a cover. */
-  attachments: { index: number; name: string; mime: string | null }[];
+  attachments: Attachment[];
   /** What casts doubt on the file as a whole. */
   doubts: string[];
   /** What it keeps when the user's languages choose: applied as soon as it opens. */
@@ -273,6 +281,19 @@ export interface TrackEdit {
   tracks: KeptTrack[];
   chapters: boolean;
   attachments: boolean;
+  /** The chapters the copy gets, as chosen; none: as the MKV has them. */
+  chapter_list?: Chapter[] | null;
+  /** The MKV's attached files left out, by their place among its streams. */
+  left_out_attachments?: number[];
+  /** Font files to attach, by key. */
+  fonts?: string[];
+}
+
+/** A chapter: where it starts, and its name. It runs until the next starts. */
+export interface Chapter {
+  /** Seconds. */
+  start: number;
+  title: string;
 }
 
 export interface KeptTrack {
@@ -317,6 +338,8 @@ export interface PickedFile {
 export interface MkvChapters {
   /** The chapters a player lists. */
   count: number;
+  /** Those chapters. */
+  list: Chapter[];
   /** Said when a copy would flatten them: other versions, hidden ones… */
   note: string | null;
 }

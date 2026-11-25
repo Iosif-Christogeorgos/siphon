@@ -190,9 +190,10 @@ pub fn suggest(contents: &Contents, languages: &[String]) -> Suggestion {
     Suggestion {
         languages: languages.to_vec(),
         edit: TrackEdit {
-            tracks,
             chapters: true,
             attachments: true,
+            tracks,
+            ..TrackEdit::default()
         },
         left_out,
         notes,

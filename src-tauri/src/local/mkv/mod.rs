@@ -7,6 +7,7 @@
 //! (see `doubts`): what is uncertain is kept, never guessed at.
 
 pub mod added;
+pub mod chapter_files;
 mod chapters;
 mod doubts;
 pub mod edit;
@@ -108,6 +109,8 @@ pub struct Track {
 pub struct Chapters {
     /// The chapters ffprobe lists: the first edition's, one level deep.
     pub count: usize,
+    /// Those chapters: where each starts, and its name.
+    pub list: Vec<Chapter>,
     /// What they are beyond that, read from the file itself.
     pub shape: Option<Shape>,
     /// Said before a copy flattens chapters that are more than a plain list.
@@ -138,6 +141,15 @@ impl Chapters {
             join(&has)
         ))
     }
+}
+
+/// A chapter: where it starts, and its name. It runs until the next one starts.
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
+pub struct Chapter {
+    /// Seconds.
+    pub start: f64,
+    /// Empty for none.
+    pub title: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -373,6 +385,7 @@ mod tests {
     fn says_what_a_copy_flattens_of_the_chapters() {
         let mut chapters = Chapters {
             count: 4,
+            list: Vec::new(),
             shape: Some(Shape {
                 editions: 1,
                 ..Shape::default()
