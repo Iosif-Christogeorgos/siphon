@@ -10,6 +10,7 @@ export const SECTIONS = [
   { id: "languages", tab: "Languages" },
   { id: "sites", tab: "Sites" },
   { id: "appearance", tab: "Appearance" },
+  { id: "sync", tab: "Sync" },
   { id: "updates", tab: "Updates" },
 ] as const;
 

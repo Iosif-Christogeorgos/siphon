@@ -109,6 +109,44 @@ export interface ToolStatus {
   available: { version: string; summary: string } | null;
 }
 
+/** Subtitle sync's download (`subsync/mod.rs`): optional, made only when asked for in Settings. */
+export interface SubSyncStatus {
+  state: "no_gpu" | "absent" | "installing" | "ready" | "failed";
+  step: "tools" | "python" | "libraries" | "models" | null;
+  /** 0–1 over the whole download, while installing. */
+  progress: number | null;
+  error: string | null;
+  /** "NVIDIA GeForce RTX 5080 (16 GB)", or why none can be used. */
+  gpu: string | null;
+  download_bytes: number;
+  disk_bytes: number;
+}
+
+/** How far a sync has got (`subsync://progress`); `key` is the subtitle file's. */
+export interface SyncProgress {
+  key: string;
+  stage: "audio" | "speech" | "words" | "pairing" | string;
+  fraction: number;
+}
+
+/** What a sync found. */
+export interface SyncSummary {
+  lines: number;
+  /** Lines given the time of their own words. */
+  by_words: number;
+  /** Lines no speech could be found for, placed by the lines around them. */
+  placed: number;
+  /** Where the first of those now start, in seconds. */
+  placed_at: number[];
+  seconds: number;
+}
+
+/** A subtitle file synced to the speech: its synced copy, read as a file to add. */
+export interface Synced {
+  added: AddedFile;
+  summary: SyncSummary;
+}
+
 /** Sent after a tool was updated (`binaries://updated`). */
 export interface UpdateNotice {
   tool: Tool;

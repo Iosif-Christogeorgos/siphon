@@ -9,7 +9,7 @@ import { Home } from "@/features/home/Home";
 import { QueueSheet } from "@/features/queue/QueueSheet";
 import { SettingsSheet } from "@/features/settings/SettingsSheet";
 import { SetupScreen } from "@/features/setup/SetupScreen";
-import { ipc, onDownloadEvent, onSpeed, onToolStatus, onToolUpdated } from "@/lib/ipc";
+import { ipc, onDownloadEvent, onSpeed, onSubSyncStatus, onSyncProgress, onToolStatus, onToolUpdated } from "@/lib/ipc";
 import { announce } from "@/lib/notices";
 import { TOOL_NAMES } from "@/lib/tools";
 import { useAppUpdate } from "@/stores/appUpdate";
@@ -17,6 +17,7 @@ import { selectAllUsable, useBinaries } from "@/stores/binaries";
 import { useChoices } from "@/stores/choices";
 import { useDownloads } from "@/stores/downloads";
 import { useSpeed } from "@/stores/speed";
+import { useSubSync } from "@/stores/subsync";
 import { useToasts } from "@/stores/toasts";
 
 export function App() {
@@ -32,6 +33,8 @@ export function App() {
         announce(event);
       }),
       onSpeed(useSpeed.getState().apply),
+      onSubSyncStatus(useSubSync.getState().apply),
+      onSyncProgress(useSubSync.getState().onProgress),
       // A subtle note when a tool was updated in the background.
       onToolUpdated((notice) =>
         useToasts.getState().show({
@@ -43,6 +46,7 @@ export function App() {
     ];
     // What was chosen last time (and, once, what an older version remembered).
     void useChoices.getState().load();
+    void useSubSync.getState().load();
     // The list came back from the last session; files of downloads it no longer has can go,
     // and recordings Siphon's closing cut short are finished now.
     void ipc.forgetOtherDownloads(useDownloads.getState().order).catch(() => {});

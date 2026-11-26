@@ -27,6 +27,9 @@ import type {
   SignInStatus,
   SiteSession,
   Speed,
+  SubSyncStatus,
+  Synced,
+  SyncProgress,
   ToolStatus,
   Trim,
   UpdateNotice,
@@ -50,6 +53,15 @@ export const ipc = {
   pickTrackFiles: () => invoke<PickedFile[] | null>("pick_track_files"),
   /** A file to add tracks from, read; a text subtitle file in `charset`, if chosen. */
   readAdded: (key: string, charset: string | null = null) => invoke<AddedFile>("read_added", { key, charset }),
+  /** Subtitle sync's download, and whether this PC can use it. */
+  subsyncStatus: () => invoke<SubSyncStatus>("subsync_status"),
+  /** Downloads subtitle sync; progress comes as `subsync://status` events. */
+  subsyncInstall: () => invoke<void>("subsync_install"),
+  subsyncRemove: () => invoke<void>("subsync_remove"),
+  /** Syncs `subs`, a subtitle file added to `file`'s copy, to the speech in stream `stream`. */
+  syncSubtitles: (file: string, subs: string, stream: number, language: string | null, charset: string | null) =>
+    invoke<Synced>("sync_subtitles", { file, subs, stream, language, charset }),
+  syncCancel: () => invoke<void>("sync_cancel"),
   /** The chapters in a chapters file (XML, text) or a video the user gave. */
   readChapters: (key: string) => invoke<Chapter[]>("read_chapters", { key }),
   /** Which episode each file to add goes with, by name: its place in `episodes`, or null. */
@@ -118,7 +130,13 @@ export const onToolStatus = (handler: (status: ToolStatus) => void): Promise<Unl
 export const onToolUpdated = (handler: (notice: UpdateNotice) => void): Promise<UnlistenFn> =>
   listen<UpdateNotice>("binaries://updated", (event) => handler(event.payload));
 
-export const onDownloadEvent = (handler: (event: DownloadEvent) => void): Promise<UnlistenFn> =>
+export const onSubSyncStatus = (handler: (status: SubSyncStatus) => void): Promise<UnlistenFn> =>
+  listen<SubSyncStatus>("subsync://status", (event) => handler(event.payload));
+
+export const onSyncProgress = (handler: (progress: SyncProgress) => void): Promise<UnlistenFn> =>
+  listen<SyncProgress>("subsync://progress", (event) => handler(event.payload));
+
+export const onDownloadEvent =(handler: (event: DownloadEvent) => void): Promise<UnlistenFn> =>
   listen<DownloadEvent>("download://event", (event) => handler(event.payload));
 
 /** The total speed of all downloads, twice a second while anything downloads, then one zero. */

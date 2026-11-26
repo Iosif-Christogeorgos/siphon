@@ -1,4 +1,4 @@
-import { ArrowDownToLine, CircleAlert, KeyRound, Languages, Palette, RefreshCw } from "lucide-react";
+import { ArrowDownToLine, Captions, CircleAlert, KeyRound, Languages, Palette, RefreshCw } from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
 import { Segmented } from "@/components/ui/segmented";
@@ -14,6 +14,7 @@ import { FileNames, FolderTile, Lanes, SpeedLimit, ThemePicker } from "./control
 import { Card, Reveal, Row, Section, type SectionId, SECTIONS } from "./parts";
 import { MyLanguages } from "./MyLanguages";
 import { SignedInSites } from "./SignedInSites";
+import { SubtitleSync } from "./SubtitleSync";
 import { Versions } from "./Versions";
 
 /** Mirrors `MAX_CONCURRENT_LIMIT` in settings.rs. */
@@ -140,7 +141,11 @@ function SettingsForm({
         </Card>
       </Section>
 
-      <Section id="updates" index={4} icon={RefreshCw} title="Updates">
+      <Section id="sync" index={4} icon={Captions} title="Subtitle sync">
+        <SubtitleSync />
+      </Section>
+
+      <Section id="updates" index={5} icon={RefreshCw} title="Updates">
         <Card>
           <Row
             title="yt-dlp releases"
