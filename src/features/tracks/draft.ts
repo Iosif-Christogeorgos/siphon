@@ -87,6 +87,32 @@ export function syncedIn(draft: Draft): string[] {
   ];
 }
 
+/** Subtitles in text a film may hold, which a sync can take out of it (`SubSync::take_out`). */
+const SYNCABLE = new Set(["subrip", "mov_text", "webvtt", "text", "ass", "ssa"]);
+/** Subtitle files a sync reads as they are given. */
+const SYNCABLE_FILES = new Set(["subrip", "ass", "ssa"]);
+
+/**
+ * Whether a subtitle track can be synced to the speech: one of the film's own
+ * in text, or a file added that holds subtitles in text alone.
+ */
+export function canSync(draft: Draft, contents: MkvContents, track: DraftTrack): boolean {
+  const read = readOf(draft, contents, track);
+  if (track.kind !== "subtitles" || !read) return false;
+  const added = addedOf(draft, track);
+  return added ? added.contents.tracks.length === 1 && SYNCABLE_FILES.has(read.codec) : SYNCABLE.has(read.codec);
+}
+
+/** What names a track's sync while it waits or runs: the added file's key, or `<film>#<track>`. */
+export function syncIdOf(film: string, draft: Draft, track: DraftTrack): string {
+  return addedOf(draft, track)?.key ?? ownSyncId(film, track.index);
+}
+
+/** Whether a track has been synced to the speech. */
+export function isSynced(draft: Draft, track: DraftTrack): boolean {
+  return Boolean(addedOf(draft, track)?.synced ?? syncOf(draft, track));
+}
+
 /** The film's own track `index` back to its own timing. */
 export function withoutTrackSync(draft: Draft, index: number): Draft {
   const { [index]: _gone, ...syncs } = draft.syncs;

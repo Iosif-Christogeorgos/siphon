@@ -1,6 +1,19 @@
 import { primary } from "@/lib/languages";
 import type { MkvContents, MkvTrack } from "@/types";
-import { asItIs, changesOf, type Draft, type DraftTrack, mineOf, readOf, sizeOf } from "./draft";
+import {
+  addedOf,
+  asItIs,
+  canSync,
+  changesOf,
+  type Draft,
+  type DraftTrack,
+  isSynced,
+  mineOf,
+  readOf,
+  sizeOf,
+  syncIdOf,
+} from "./draft";
+import type { SyncTarget } from "./SyncToSpeech";
 
 /**
  * A season: several MKVs whose tracks are chosen together (docs/mkv-editor.md).
@@ -150,6 +163,36 @@ export function firstRow(files: SeasonFile[], key: string, on: boolean): Map<str
     });
   }
   return drafts;
+}
+
+/** A track of a row, in one file, that can be synced to the speech. */
+export interface RowSync {
+  file: SeasonFile;
+  /** What names its sync while it waits or runs (`syncIdOf`). */
+  id: string;
+  target: SyncTarget;
+  synced: boolean;
+}
+
+/**
+ * The row's subtitles that can be synced to the speech, file by file, in the
+ * season's order: those the copies keep, in text (see `canSync`).
+ */
+export function rowSyncs(files: SeasonFile[], key: string): RowSync[] {
+  return files.flatMap((file) =>
+    file.draft.tracks.flatMap((track): RowSync[] => {
+      if (!track.keep || rowKey(file, track) !== key || !canSync(file.draft, file.contents, track)) return [];
+      const added = addedOf(file.draft, track);
+      return [
+        {
+          file,
+          id: syncIdOf(file.key, file.draft, track),
+          target: added ? { added } : { track: track.index },
+          synced: isSynced(file.draft, track),
+        },
+      ];
+    }),
+  );
 }
 
 /** Every file as it is, or as the user's languages have it. */

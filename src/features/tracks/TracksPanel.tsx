@@ -35,6 +35,7 @@ import {
   addedOf,
   addTracks,
   asItIs,
+  canSync,
   chaptersOf,
   changesOf,
   type Draft,
@@ -43,12 +44,12 @@ import {
   type DraftTrack,
   draftOf,
   fitsMp4,
+  isSynced,
   mineOf,
   moved,
   readOf,
   savedAsMkv,
   sizeOf,
-  syncOf,
   withChapters,
   withFonts,
   withTrack,
@@ -98,9 +99,6 @@ const PICTURES = new Set(["hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle"]);
  * signs and songs moved with the dialogue (docs/subtitle-sync.md). A file
  * added is synced as SRT, ASS or SSA.
  */
-const SYNCABLE = new Set(["subrip", "mov_text", "webvtt", "text", "ass", "ssa"]);
-const SYNCABLE_FILES = new Set(["subrip", "ass", "ssa"]);
-
 /** The encodings a text subtitle file not in UTF-8 may be read in (`local/mkv/added.rs`), as people know them. */
 const CHARSETS: { id: string; label: string }[] = [
   { id: "CP1253", label: "Greek (Windows-1253)" },
@@ -212,29 +210,17 @@ export function TracksPanel({
                     last={place === ofKind.length - 1}
                     onChange={(change) => onDraft(withTrack(draft, track.index, change))}
                     onMove={(by) => onDraft(moved(draft, track.index, by))}
-                    synced={Boolean(added ? added.synced : syncOf(draft, track))}
+                    synced={isSynced(draft, track)}
                     sync={
                       // A subtitle file added to the film, or a text subtitle track of its own:
                       // its timing can be synced to the speech.
-                      track.kind !== "subtitles" ? undefined : added ? (
-                        added.contents.tracks.length === 1 &&
-                        SYNCABLE_FILES.has(read.codec) && (
-                          <SyncToSpeech
-                            fileKey={fileKey}
-                            draft={draft}
-                            target={{ added }}
-                            apply={later}
-                          />
-                        )
-                      ) : (
-                        SYNCABLE.has(read.codec) && (
-                          <SyncToSpeech
-                            fileKey={fileKey}
-                            draft={draft}
-                            target={{ track: track.index }}
-                            apply={later}
-                          />
-                        )
+                      canSync(draft, data, track) && (
+                        <SyncToSpeech
+                          fileKey={fileKey}
+                          draft={draft}
+                          target={added ? { added } : { track: track.index }}
+                          apply={later}
+                        />
                       )
                     }
                   />

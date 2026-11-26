@@ -19,6 +19,7 @@ import { languageName, subtitleLanguages } from "@/lib/languages";
 import { spring } from "@/lib/motion";
 import { useChoice, useChoices } from "@/stores/choices";
 import { isActive, useDownloadGroup, useDownloads } from "@/stores/downloads";
+import { syncsOf, useSubSync, useSyncsLeaveWith } from "@/stores/subsync";
 import { useTrim } from "@/stores/trim";
 import type { GroupId, PlanSummary, SubtitleDelivery, Trim, VideoInfo } from "@/types";
 import { AlreadyDownloaded } from "./AlreadyDownloaded";
@@ -84,6 +85,11 @@ export function VideoPane({ video }: { video: VideoInfo }) {
   // What has been chosen of its tracks so far.
   const [draft, setDraft] = useState<Draft | null>(null);
   useSyncedInUse([draft]);
+  // Its subtitles synced to the speech land in the draft: closing the film stops the sync,
+  // and while one waits or runs, no copy is saved without it.
+  const filmKeys = useMemo(() => (video.file ? [video.file.key] : []), [video.file]);
+  useSyncsLeaveWith(filmKeys);
+  const syncing = useSubSync((state) => syncsOf(state, filmKeys)) > 0;
   const trackChanges = draft ? changesOf(draft) : null;
   const customizing = useChoices((state) => state.choices !== null && state.choices.active.kind !== "preset");
   // A Twitch video's or stream's chat can be drawn into the picture, with the presets that keep it as it is.
@@ -381,12 +387,14 @@ export function VideoPane({ video }: { video: VideoInfo }) {
             const source = { ...video, title: video.file.name };
             setDownloadIds([start(source, choice, null, null, null, editOf(draft))]);
           }}
-          disabled={!choice || !trackChanges?.changed || trackChanges.kept + trackChanges.added === 0}
+          disabled={!choice || !trackChanges?.changed || trackChanges.kept + trackChanges.added === 0 || syncing}
           convert
           nothing={trackChanges !== null && !trackChanges.changed}
           label={
-            !trackChanges || !trackChanges.changed
-              ? "Nothing to change"
+            syncing
+              ? "Syncing its subtitles…"
+              : !trackChanges || !trackChanges.changed
+                ? "Nothing to change"
               : trackChanges.kept + trackChanges.added === 0
                 ? "Keep at least one track"
                 : trackChanges.removed > 0 && trackChanges.added === 0

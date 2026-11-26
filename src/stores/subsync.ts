@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { create } from "zustand";
 import { ipc, toAppError } from "@/lib/ipc";
 import { useDownloads } from "@/stores/downloads";
@@ -18,64 +19,62 @@ interface SyncRequest {
   charset: string | null;
 }
 
+/** A sync asked for: what to sync, and what to do with the synced copy. */
+interface SyncJob extends SyncRequest {
+  done: (synced: Synced) => void;
+}
+
 interface SubSyncState {
   /** Null until the backend has said. */
   status: SubSyncStatus | null;
-  /** The subtitles being synced now, by their `syncId`, and how far they have got. */
-  running: string | null;
+  /** The sync running now, and how far it has got. */
+  running: SyncJob | null;
   progress: SyncProgress | null;
-  /** Why the last sync of a file failed. */
-  failure: { key: string; message: string } | null;
+  /** The syncs waiting their turn, the next first. */
+  queue: SyncJob[];
+  /** Why syncs failed, by id; until they are asked for again. */
+  failures: Record<string, string>;
   load: () => Promise<void>;
   apply: (status: SubSyncStatus) => void;
   onProgress: (progress: SyncProgress) => void;
   install: () => Promise<void>;
   remove: () => Promise<string | null>;
-  /** Syncs a file; `done` gets the synced copy (it goes on even if the tracks card closes). */
-  sync: (request: SyncRequest, done: (synced: Synced) => void) => Promise<void>;
-  cancel: () => void;
+  /**
+   * Syncs subtitles, now or once those asked for before have been: one at a
+   * time, as the models fill most of the graphics card. `done` gets the synced
+   * copy (it goes on even if the tracks card closes). Asked for again while
+   * waiting or running, nothing more happens.
+   */
+  sync: (request: SyncRequest, done: (synced: Synced) => void) => void;
+  /** Takes these syncs out of the queue, and stops the one running if it is one of them: nothing is applied of it. */
+  stop: (ids: string[]) => void;
+  /** Stops every sync of these films: they have left the window, and their choices of tracks with them. */
+  leave: (files: string[]) => void;
 }
 
-/** Subtitle sync's optional download (docs/subtitle-sync.md), and the sync running now. */
-export const useSubSync = create<SubSyncState>((set, get) => ({
-  status: null,
-  running: null,
-  progress: null,
-  failure: null,
-  load: async () => set({ status: await ipc.subsyncStatus() }),
-  apply: (status) => set({ status }),
-  onProgress: (progress) => set({ progress }),
-  install: async () => {
-    // Failures arrive as a status of their own; this only waits for the end.
-    await ipc.subsyncInstall().catch(() => {});
-    set({ status: await ipc.subsyncStatus() });
-  },
-  remove: async () => {
+/** The id of the sync running now that was stopped: whatever it returns isn't applied. */
+let stopped: string | null = null;
+
+/**
+ * Subtitle sync's optional download (docs/subtitle-sync.md), and the syncs
+ * asked for: one runs at a time, the rest wait their turn in the order asked.
+ */
+export const useSubSync = create<SubSyncState>((set, get) => {
+  /** Starts the next sync waiting, if none runs. */
+  const next = async () => {
+    const { running, queue } = get();
+    const [job, ...rest] = queue;
+    if (running || !job) return;
+    stopped = null;
+    set({ running: job, queue: rest, progress: null });
     try {
-      await ipc.subsyncRemove();
-      set({ status: await ipc.subsyncStatus() });
-      return null;
-    } catch (error) {
-      return toAppError(error).message;
-    }
-  },
-  sync: async (request, done) => {
-    if (get().running) return;
-    set({ running: request.id, progress: null, failure: null });
-    try {
-      done(
-        await ipc.syncSubtitles(
-          request.file,
-          request.subs,
-          request.track,
-          request.stream,
-          request.language,
-          request.charset,
-        ),
-      );
+      const synced = await ipc.syncSubtitles(job.file, job.subs, job.track, job.stream, job.language, job.charset);
+      if (stopped !== job.id) job.done(synced);
     } catch (error) {
       const failed = toAppError(error);
-      if (failed.kind !== "cancelled") set({ failure: { key: request.id, message: failed.message } });
+      if (failed.kind !== "cancelled" && stopped !== job.id) {
+        set((state) => ({ failures: { ...state.failures, [job.id]: failed.message } }));
+      }
     } finally {
       set({ running: null, progress: null });
       // A new synced copy is on the disk: whether anything uses it is told even
@@ -83,10 +82,76 @@ export const useSubSync = create<SubSyncState>((set, get) => ({
       // while it synced). It is in its draft, if it has one, by the time this looks.
       told = null;
       review();
+      void next();
     }
-  },
-  cancel: () => void ipc.syncCancel(),
-}));
+  };
+
+  return {
+    status: null,
+    running: null,
+    progress: null,
+    queue: [],
+    failures: {},
+    load: async () => set({ status: await ipc.subsyncStatus() }),
+    apply: (status) => set({ status }),
+    onProgress: (progress) => {
+      // Only the sync running now is shown; a stopped one may still report as it ends.
+      if (progress.key === get().running?.id && stopped !== progress.key) set({ progress });
+    },
+    install: async () => {
+      // Failures arrive as a status of their own; this only waits for the end.
+      await ipc.subsyncInstall().catch(() => {});
+      set({ status: await ipc.subsyncStatus() });
+    },
+    remove: async () => {
+      try {
+        await ipc.subsyncRemove();
+        // Nothing waiting can run without it.
+        set({ status: await ipc.subsyncStatus(), queue: [] });
+        return null;
+      } catch (error) {
+        return toAppError(error).message;
+      }
+    },
+    sync: (request, done) => {
+      const { running, queue, failures } = get();
+      // Asked again just after it was stopped, it waits for the stopped one to end.
+      if ((running?.id === request.id && stopped !== request.id) || queue.some((job) => job.id === request.id)) return;
+      const { [request.id]: _tried, ...others } = failures;
+      set({ queue: [...queue, { ...request, done }], failures: others });
+      void next();
+    },
+    stop: (ids) => {
+      const { running, queue } = get();
+      set({ queue: queue.filter((job) => !ids.includes(job.id)) });
+      if (running && ids.includes(running.id)) {
+        stopped = running.id;
+        set({ progress: null });
+        void ipc.syncCancel();
+      }
+    },
+    leave: (files) => {
+      const { running, queue } = get();
+      get().stop([...queue, ...(running ? [running] : [])].filter((job) => files.includes(job.file)).map((job) => job.id));
+    },
+  };
+});
+
+/** How many syncs of these films are waiting or running. */
+export function syncsOf(state: SubSyncState, files: string[]): number {
+  const jobs = state.running ? [state.running, ...state.queue] : state.queue;
+  return jobs.filter((job) => files.includes(job.file)).length;
+}
+
+/**
+ * Stops the syncs of these films when they leave the window (the pane that
+ * holds their choices of tracks is closed): nothing would take what they make.
+ */
+export function useSyncsLeaveWith(files: string[]) {
+  const latest = useRef(files);
+  latest.current = files;
+  useEffect(() => () => useSubSync.getState().leave(latest.current), []);
+}
 
 // ── Only what is used is kept ─────────────────────────────────────────
 

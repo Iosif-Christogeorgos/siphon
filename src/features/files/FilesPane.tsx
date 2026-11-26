@@ -1,5 +1,16 @@
 import { useQueries } from "@tanstack/react-query";
-import { AudioLines, Check, ChevronDown, Download, Files, RefreshCw, Search, TriangleAlert, X } from "lucide-react";
+import {
+  AudioLines,
+  Check,
+  ChevronDown,
+  Download,
+  Files,
+  LoaderCircle,
+  RefreshCw,
+  Search,
+  TriangleAlert,
+  X,
+} from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { type MouseEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -13,6 +24,7 @@ import { useSyncedInUse } from "@/features/tracks/useSyncedInUse";
 import { tracksQuery, useLanguagesKey } from "@/features/tracks/reading";
 import { type SeasonFile, toCheck } from "@/features/tracks/season";
 import { SeasonTracks, UnsureMark } from "@/features/tracks/SeasonTracks";
+import { overall } from "@/features/tracks/SyncToSpeech";
 import { hasTracksToChoose, languagesLine, TracksDeck } from "@/features/tracks/TracksCard";
 import { TracksPanel } from "@/features/tracks/TracksPanel";
 import { formatBytes, formatDuration } from "@/lib/format";
@@ -21,6 +33,7 @@ import { spring } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import { useChoice, useChoices } from "@/stores/choices";
 import { isActive, useDownloads } from "@/stores/downloads";
+import { syncsOf, useSubSync, useSyncsLeaveWith } from "@/stores/subsync";
 import { useTrim } from "@/stores/trim";
 import { useUi } from "@/stores/ui";
 import type { Intake, LocalFile, MkvContents, PlanSummary, VideoInfo } from "@/types";
@@ -115,6 +128,11 @@ export function FilesPane({ intake }: { intake: Intake }) {
   });
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
   useSyncedInUse(Object.values(drafts));
+  // Subtitles synced to the speech land in the drafts: closing the list stops what is left of them,
+  // and until they are done, no copy is saved without them.
+  const fileKeys = useMemo(() => files.map((file) => file.key), [files]);
+  useSyncsLeaveWith(fileKeys);
+  const syncing = useSubSync((state) => syncsOf(state, fileKeys));
   const current = (key: string, version: string) => {
     const draft = drafts[key];
     return draft && draft.version === version && draft.languages === languages ? draft : null;
@@ -317,6 +335,7 @@ export function FilesPane({ intake }: { intake: Intake }) {
               total={mkvs.length}
               reading={tracksReading}
               onDrafts={(changed) => setDrafts((now) => ({ ...now, ...Object.fromEntries(changed) }))}
+              onDraft={setDraft}
               disabled={false}
             />
           </TracksDeck>
@@ -402,7 +421,16 @@ export function FilesPane({ intake }: { intake: Intake }) {
                   reading={status.kind === "reading"}
                   checked={selected.has(file.key) && selectable(index)}
                   off={!selectable(index)}
-                  badge={tracksOn ? <TracksBadge status={trackStatus} queued={busy.has(file.key)} /> : <Badge status={status} />}
+                  badge={
+                    tracksOn ? (
+                      <>
+                        <SyncBadge file={file.key} />
+                        <TracksBadge status={trackStatus} queued={busy.has(file.key)} />
+                      </>
+                    ) : (
+                      <Badge status={status} />
+                    )
+                  }
                   onClick={(event) => onRow(index, event)}
                   expand={
                     tracksOn && trackStatus.kind === "ready"
@@ -480,12 +508,14 @@ export function FilesPane({ intake }: { intake: Intake }) {
       <Button
         size="lg"
         className="h-13 w-full rounded-2xl"
-        disabled={chosen.length === 0 || waiting > 0 || !choice}
+        disabled={chosen.length === 0 || waiting > 0 || !choice || (tracksOn && syncing > 0)}
         onClick={convert}
       >
         {tracksOn ? <Download className="size-4.5" /> : <RefreshCw className="size-4.5" />}
         {tracksOn
-          ? chosen.length === 0
+          ? syncing > 0
+            ? `Syncing their subtitles… ${syncing} to go`
+            : chosen.length === 0
             ? tracksReading > 0
               ? "Reading their tracks…"
               : "Nothing to change"
@@ -595,6 +625,33 @@ function FileRow({
         </Hint>
       )}
     </div>
+  );
+}
+
+/**
+ * A file whose subtitles are being synced to the speech, or wait their turn
+ * (or for room on the graphics card, which the season's row says).
+ */
+function SyncBadge({ file }: { file: string }) {
+  const percent = useSubSync((state) => {
+    if (state.running?.file === file) {
+      const progress = state.progress?.key === state.running.id ? state.progress : null;
+      return progress?.stage === "card" ? null : Math.round(overall(progress) * 100);
+    }
+    return state.queue.some((job) => job.file === file) ? null : undefined;
+  });
+  if (percent === undefined) return null;
+  return (
+    <span className="flex shrink-0 items-center gap-1 rounded-md bg-primary-soft px-1.5 py-0.5 text-[11px] font-medium text-primary tabular-nums">
+      {percent === null ? (
+        "Waits to sync"
+      ) : (
+        <>
+          <LoaderCircle className="size-3 animate-spin" />
+          Syncing {percent}%
+        </>
+      )}
+    </span>
   );
 }
 

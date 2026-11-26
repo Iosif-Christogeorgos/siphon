@@ -1,17 +1,36 @@
-import { BookOpen, Captions, Check, Minus, Paperclip, Plus, TriangleAlert, Volume2, X, Zap } from "lucide-react";
+import {
+  AudioLines,
+  BookOpen,
+  Captions,
+  Check,
+  LoaderCircle,
+  Lock,
+  Minus,
+  Paperclip,
+  Plus,
+  TriangleAlert,
+  Undo2,
+  Volume2,
+  X,
+  Zap,
+} from "lucide-react";
 import { AnimatePresence } from "motion/react";
-import { useRef, useState } from "react";
+import { type ReactNode, useRef, useState } from "react";
+import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Hint } from "@/components/ui/tooltip";
 import { Note } from "@/features/options/PlanCard";
 import { formatBytes } from "@/lib/format";
 import { ipc, toAppError } from "@/lib/ipc";
 import { languageName } from "@/lib/languages";
 import { cn } from "@/lib/utils";
+import { useSubSync } from "@/stores/subsync";
 import { useUi } from "@/stores/ui";
 import type { PickedFile } from "@/types";
-import { type Draft, withFonts } from "./draft";
+import { type Draft, type DraftChange, withFonts, withoutSync, withoutTrackSync } from "./draft";
 import { FlagToggle, FlagTray } from "./FlagToggle";
 import { kindOfPicked, readPicked } from "./reading";
+import { askSync, overall, STAGES } from "./SyncToSpeech";
 import { applyPicked } from "./TracksPanel";
 import {
   allAsItIs,
@@ -19,6 +38,8 @@ import {
   firstRow,
   keepRow,
   type Role,
+  type RowSync,
+  rowSyncs,
   rowsOf,
   type SeasonFile,
   type SeasonRow,
@@ -50,6 +71,7 @@ export function SeasonTracks({
   total,
   reading,
   onDrafts,
+  onDraft,
   disabled,
 }: {
   /** The files read so far, each with its draft. */
@@ -59,6 +81,8 @@ export function SeasonTracks({
   /** How many are still being read. */
   reading: number;
   onDrafts: (drafts: Map<string, Draft>) => void;
+  /** Changes one file's draft; what arrives later (a sync) changes it as it is then. */
+  onDraft: (key: string, change: DraftChange) => void;
   disabled: boolean;
 }) {
   const openPanel = useUi((state) => state.openPanel);
@@ -127,6 +151,8 @@ export function SeasonTracks({
                   total={total}
                   onKeep={(keep) => onDrafts(keepRow(files, row.key, keep))}
                   onFirst={(on) => onDrafts(firstRow(files, row.key, on))}
+                  syncs={kind === "subtitles" ? rowSyncs(files, row.key) : []}
+                  onDraft={onDraft}
                 />
               ))}
             </ul>
@@ -182,58 +208,239 @@ function Row({
   total,
   onKeep,
   onFirst,
+  syncs,
+  onDraft,
 }: {
   row: SeasonRow;
-  icon: React.ReactNode;
+  icon: ReactNode;
   total: number;
   onKeep: (keep: boolean) => void;
   onFirst: (on: boolean) => void;
+  /** Its subtitles that can be synced to the speech, file by file. */
+  syncs: RowSync[];
+  onDraft: (key: string, change: DraftChange) => void;
 }) {
   const role = ROLE_LABELS[row.role];
   const name = languageName(row.language);
   const kept = row.keep !== "none";
+  const sync = useRowSync(syncs, onDraft);
   return (
-    <li className={cn("flex items-center gap-3 px-3 py-2 transition-opacity", !kept && "opacity-55")}>
-      <button
-        type="button"
-        role="checkbox"
-        aria-checked={row.keep === "all" ? true : row.keep === "none" ? false : "mixed"}
-        aria-label={`Keep ${name}${role ? ` ${role.toLowerCase()}` : ""} ${row.kind}`}
-        onClick={() => onKeep(row.keep !== "all")}
-        className={cn(
-          "grid size-5 shrink-0 place-items-center rounded-md border transition-colors focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-none",
-          kept
-            ? "border-primary bg-primary text-primary-foreground"
-            : "border-border-strong bg-card text-transparent hover:border-primary",
+    <li className={cn("transition-opacity", !kept && "opacity-55")}>
+      <div className="flex items-center gap-3 px-3 py-2">
+        <button
+          type="button"
+          role="checkbox"
+          aria-checked={row.keep === "all" ? true : row.keep === "none" ? false : "mixed"}
+          aria-label={`Keep ${name}${role ? ` ${role.toLowerCase()}` : ""} ${row.kind}`}
+          onClick={() => onKeep(row.keep !== "all")}
+          className={cn(
+            "grid size-5 shrink-0 place-items-center rounded-md border transition-colors focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-none",
+            kept
+              ? "border-primary bg-primary text-primary-foreground"
+              : "border-border-strong bg-card text-transparent hover:border-primary",
+          )}
+        >
+          {row.keep === "some" ? <Minus className="size-3.5" strokeWidth={3} /> : <Check className="size-3.5" strokeWidth={3} />}
+        </button>
+        {icon}
+        <div className="min-w-0 flex-1">
+          <p className={cn("truncate text-sm font-medium", !kept && "line-through")}>
+            {name}
+            {role && <span className="font-normal text-muted-foreground"> · {role}</span>}
+            {row.added && <span className="font-normal text-muted-foreground"> · Added</span>}
+          </p>
+          <p className="truncate text-xs text-muted-foreground tabular-nums">
+            {row.files === total ? `In every file (${total})` : `In ${row.files} of ${total} files`}
+            {row.keep === "some" && " · kept in some"}
+            {sync?.said && <span className={cn(sync.said.done && "text-primary")}> · {sync.said.text}</span>}
+          </p>
+        </div>
+        {kept && (
+          <FlagTray className="shrink-0">
+            <FlagToggle
+              on={row.first === "all" ? true : row.first === "some" ? "some" : false}
+              onClick={() => onFirst(row.first !== "all")}
+              className="h-[26px]"
+            >
+              {row.first === "some" ? "Plays first in some" : "Plays first"}
+            </FlagToggle>
+          </FlagTray>
         )}
-      >
-        {row.keep === "some" ? <Minus className="size-3.5" strokeWidth={3} /> : <Check className="size-3.5" strokeWidth={3} />}
-      </button>
-      {icon}
-      <div className="min-w-0 flex-1">
-        <p className={cn("truncate text-sm font-medium", !kept && "line-through")}>
-          {name}
-          {role && <span className="font-normal text-muted-foreground"> · {role}</span>}
-          {row.added && <span className="font-normal text-muted-foreground"> · Added</span>}
-        </p>
-        <p className="truncate text-xs text-muted-foreground tabular-nums">
-          {row.files === total ? `In every file (${total})` : `In ${row.files} of ${total} files`}
-          {row.keep === "some" && " · kept in some"}
-        </p>
+        {kept && sync?.control}
       </div>
-      {kept && (
-        <FlagTray className="shrink-0">
-          <FlagToggle
-            on={row.first === "all" ? true : row.first === "some" ? "some" : false}
-            onClick={() => onFirst(row.first !== "all")}
-            className="h-[26px]"
-          >
-            {row.first === "some" ? "Plays first in some" : "Plays first"}
-          </FlagToggle>
-        </FlagTray>
-      )}
+      {sync?.below}
     </li>
   );
+}
+
+/** "S01E03" from an episode's file name, else the name without its extension. */
+function shortName(name: string): string {
+  return (
+    /S\d{1,2}E\d{1,3}/i.exec(name)?.[0].toUpperCase() ?? /\d{1,2}x\d{2,3}/.exec(name)?.[0] ?? name.replace(/\.[^.]+$/, "")
+  );
+}
+
+/**
+ * Syncing a row's subtitles to the speech in every file (docs/subtitle-sync.md):
+ * every file's are asked for at once, and the syncs take turns, one file after
+ * another in the season's order (`useSubSync`). What the row shows of it: a
+ * button to sync them (or those still to sync), to stop, or to undo; how many
+ * are synced; while they run, which file and how far; and why any failed.
+ */
+function useRowSync(syncs: RowSync[], onDraft: (key: string, change: DraftChange) => void) {
+  const status = useSubSync((state) => state.status);
+  const running = useSubSync((state) => state.running);
+  const progress = useSubSync((state) => state.progress);
+  const queue = useSubSync((state) => state.queue);
+  const failures = useSubSync((state) => state.failures);
+  const stop = useSubSync((state) => state.stop);
+  const openPanel = useUi((state) => state.openPanel);
+  if (syncs.length === 0 || !status) return null;
+
+  const waiting = new Set(queue.map((job) => job.id));
+  const now = syncs.find((sync) => sync.id === running?.id);
+  const pending = syncs.filter((sync) => sync === now || waiting.has(sync.id));
+  const synced = syncs.filter((sync) => sync.synced).length;
+  const todo = syncs.filter((sync) => !sync.synced && !pending.includes(sync));
+  const failed = todo.filter((sync) => failures[sync.id]);
+  // A sync lands in its file's draft as it is then, and only while it is that file's.
+  const later = (sync: RowSync) => (change: (draft: Draft) => Draft) =>
+    onDraft(sync.file.key, (draft) =>
+      draft.key === sync.file.key && draft.version === sync.file.draft.version ? change(draft) : draft,
+    );
+
+  let control: ReactNode;
+  if (status.state !== "ready") {
+    const locked = status.state === "no_gpu" || status.state === "installing";
+    const why =
+      status.state === "no_gpu"
+        ? "Syncing to the speech needs an NVIDIA graphics card with 8 GB of memory."
+        : status.state === "installing"
+          ? `Subtitle sync is downloading: ${Math.round((status.progress ?? 0) * 100)}%.`
+          : "Download subtitle sync in Settings to sync these to the speech.";
+    control = (
+      <Hint label={why} className="max-w-64 text-pretty">
+        <span className="shrink-0">
+          <Button size="sm" variant="outline" className="h-8" disabled={locked} onClick={() => openPanel("settings")}>
+            <Lock />
+            Sync to speech
+          </Button>
+        </span>
+      </Hint>
+    );
+  } else if (pending.length > 0) {
+    control = (
+      <Hint label="Stop syncing them">
+        <button
+          type="button"
+          aria-label="Stop syncing them"
+          onClick={() => stop(pending.map((sync) => sync.id))}
+          className="grid size-8 shrink-0 place-items-center rounded-lg text-subtle-foreground transition-colors hover:bg-accent hover:text-foreground"
+        >
+          <X className="size-4" />
+        </button>
+      </Hint>
+    );
+  } else if (todo.length > 0) {
+    control = (
+      <Hint
+        label="Gives every line the moment its words are spoken, in each file, listening to its own sound. One file at a time, on the graphics card."
+        className="max-w-72 text-pretty"
+      >
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-8 shrink-0"
+          onClick={() => {
+            for (const sync of todo) askSync(sync.file.key, sync.file.draft, sync.target, later(sync));
+          }}
+        >
+          <AudioLines className="text-primary" />
+          {synced > 0 ? `Sync ${todo.length} more` : "Sync to speech"}
+        </Button>
+      </Hint>
+    );
+  } else {
+    control = (
+      <Hint label="Use their own timing, in every file">
+        <button
+          type="button"
+          aria-label="Use their own timing, in every file"
+          onClick={() => {
+            for (const sync of syncs) {
+              const target = sync.target;
+              if (sync.synced) {
+                later(sync)((draft) =>
+                  "added" in target ? withoutSync(draft, target.added.key) : withoutTrackSync(draft, target.track),
+                );
+              }
+            }
+          }}
+          className="grid size-8 shrink-0 place-items-center rounded-lg text-subtle-foreground transition-colors hover:bg-accent hover:text-foreground"
+        >
+          <Undo2 className="size-4" />
+        </button>
+      </Hint>
+    );
+  }
+
+  const said =
+    pending.length > 0 || synced === 0
+      ? null
+      : synced === syncs.length
+        ? { text: "Synced to the speech", done: true }
+        : { text: `${synced} of ${syncs.length} synced`, done: false };
+
+  let below: ReactNode = null;
+  if (pending.length > 0) {
+    const mine = now && progress?.key === now.id ? progress : null;
+    const stage = mine ? STAGES[mine.stage] : undefined;
+    const all = synced + pending.length;
+    const share = (synced + overall(mine)) / all;
+    below = (
+      <div className="mx-3 mb-2 space-y-1.5 rounded-xl bg-background/60 px-3 py-2" aria-live="polite">
+        <div className="flex items-center gap-2 text-xs">
+          <LoaderCircle className={cn("size-3.5 shrink-0 text-primary", now && "animate-spin")} />
+          <span className="min-w-0 flex-1 truncate text-muted-foreground">
+            {now ? (
+              <>
+                <span className="text-foreground">{shortName(now.file.name)}</span>: {stage?.label ?? "Starting"}…
+              </>
+            ) : (
+              "Waiting for another file’s sync to finish…"
+            )}
+          </span>
+          <span className="shrink-0 font-medium tabular-nums">
+            {synced} of {all} synced
+          </span>
+        </div>
+        <div className="h-1 overflow-hidden rounded-full bg-secondary">
+          <div
+            className="h-full rounded-full bg-primary transition-[width] duration-500 ease-out"
+            style={{ width: `${Math.max(2, share * 100)}%` }}
+          />
+        </div>
+      </div>
+    );
+  } else if (failed.length > 0) {
+    // A reason is said once, with every file it held up.
+    const reasons = new Map<string, string[]>();
+    for (const sync of failed) {
+      const why = failures[sync.id] ?? "";
+      reasons.set(why, [...(reasons.get(why) ?? []), shortName(sync.file.name)]);
+    }
+    below = (
+      <div className="space-y-0.5 px-3 pb-2 pl-11 text-xs text-pretty text-destructive">
+        {[...reasons].slice(0, 3).map(([why, names]) => (
+          <p key={why}>
+            {names.length > 3 ? `${names.length} files` : names.join(", ")}: {why}
+          </p>
+        ))}
+      </div>
+    );
+  }
+
+  return { control, said, below };
 }
 
 /**
