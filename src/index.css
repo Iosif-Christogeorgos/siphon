@@ -53,6 +53,8 @@
   --shadow-color: light-dark(hsl(220 30% 20%), hsl(230 50% 2%));
   /* A raised card's top edge catching the light; on a white card in light mode there is none to see. */
   --card-edge: inset 0 1px 0 light-dark(transparent, rgb(255 255 255 / 0.045));
+  /* A recessed tray that keys sit in (a track's flags): a shade into the surface. */
+  --well: light-dark(oklch(0.2 0.02 225 / 0.04), oklch(0 0 0 / 0.22));
 }
 
 :root[data-theme="light"] {
@@ -93,6 +95,7 @@
   --color-live-soft: var(--live-soft);
   --color-border: var(--border);
   --color-border-strong: var(--border-strong);
+  --color-well: var(--well);
   --color-input: var(--input);
   --color-ring: var(--ring);
 
@@ -123,6 +126,18 @@
   @keyframes peek {
     45% {
       margin-top: -1.25rem;
+    }
+  }
+  /* A track flag's light coming on: a ring rippling out from it, once. */
+  --animate-ripple: ripple 0.6s cubic-bezier(0.16, 1, 0.3, 1) 1 forwards;
+  @keyframes ripple {
+    from {
+      opacity: 0.9;
+      transform: scale(1);
+    }
+    to {
+      opacity: 0;
+      transform: scale(3.2);
     }
   }
   /* A recording's dot, breathing slowly. */

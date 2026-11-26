@@ -10,7 +10,7 @@ import { cn } from "@/lib/utils";
 import { useUi } from "@/stores/ui";
 import type { PickedFile } from "@/types";
 import { type Draft, withFonts } from "./draft";
-import { FlagToggle } from "./FlagToggle";
+import { FlagToggle, FlagTray } from "./FlagToggle";
 import { kindOfPicked, readPicked } from "./reading";
 import { applyPicked } from "./TracksPanel";
 import {
@@ -222,13 +222,15 @@ function Row({
         </p>
       </div>
       {kept && (
-        <FlagToggle
-          on={row.first === "all" ? true : row.first === "some" ? "some" : false}
-          onClick={() => onFirst(row.first !== "all")}
-          className="h-7"
-        >
-          {row.first === "some" ? "Plays first in some" : "Plays first"}
-        </FlagToggle>
+        <FlagTray className="shrink-0">
+          <FlagToggle
+            on={row.first === "all" ? true : row.first === "some" ? "some" : false}
+            onClick={() => onFirst(row.first !== "all")}
+            className="h-[26px]"
+          >
+            {row.first === "some" ? "Plays first in some" : "Plays first"}
+          </FlagToggle>
+        </FlagTray>
       )}
     </li>
   );

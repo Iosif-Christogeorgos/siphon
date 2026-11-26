@@ -1,10 +1,30 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import { cn } from "@/lib/utils";
 
 /**
- * A flag a track has or hasn't (plays first, forced, SDH…): a chip with a small
- * switch in it, so off reads as off and pointing at it never looks like on.
- * "some" is for a season's row whose files differ: the knob rests in the middle.
+ * A track's flags (plays first, forced, SDH…) are keys in one recessed tray, like
+ * a mixing desk's (2026-11-26, the owner's pick of three prototypes). Grouped, they
+ * read as one set of choices about the track rather than loose buttons.
+ */
+export function FlagTray({ children, className }: { children: ReactNode; className?: string }) {
+  return (
+    <div
+      role="group"
+      aria-label="Flags"
+      className={cn(
+        "inline-flex flex-wrap gap-[3px] rounded-xl border border-border bg-well p-[3px] shadow-[inset_0_1px_2px_rgb(0_0_0/0.12)]",
+        className,
+      )}
+    >
+      {children}
+    </div>
+  );
+}
+
+/**
+ * One flag: a key whose light is on or off. On, it rises out of the tray and its
+ * light comes on with a ring rippling out once; it presses down a touch when clicked.
+ * "some" is for a season's row whose files differ: the light half lit, the key not raised.
  */
 export function FlagToggle({
   on,
@@ -17,35 +37,41 @@ export function FlagToggle({
   children: ReactNode;
   className?: string;
 }) {
+  // Each time a click turns it on, the ring is drawn afresh (a new key restarts it).
+  const [pops, setPops] = useState(0);
   return (
     <button
       type="button"
       role="switch"
       aria-checked={on === "some" ? "mixed" : on}
-      onClick={onClick}
+      onClick={() => {
+        if (on !== true) setPops(pops + 1);
+        onClick();
+      }}
       className={cn(
-        "group inline-flex h-8 shrink-0 items-center gap-2 rounded-lg border px-2.5 text-xs transition-colors focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-none",
+        "inline-flex h-[30px] shrink-0 items-center gap-2 rounded-[9px] pr-3 pl-2.5 text-xs transition-[background-color,color,box-shadow,transform] duration-200 ease-out-expo focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-none active:translate-y-px active:scale-[0.98]",
         on === true
-          ? "border-primary/45 bg-primary-soft text-primary"
+          ? "bg-card text-foreground shadow-[0_1px_2px_rgb(0_0_0/0.18),0_0_0_1px_var(--border)]"
           : on === "some"
-            ? "border-primary/30 text-primary hover:border-primary/50"
-            : "border-border-strong text-muted-foreground hover:border-primary/45 hover:text-foreground",
+            ? "text-primary hover:bg-accent"
+            : "text-muted-foreground hover:bg-accent hover:text-foreground",
         className,
       )}
     >
       <span
         aria-hidden
         className={cn(
-          "relative h-3 w-5 shrink-0 rounded-full transition-colors",
-          on === true ? "bg-primary" : on === "some" ? "bg-primary/40" : "bg-border-strong group-hover:bg-primary/30",
+          "relative size-[7px] shrink-0 rounded-full transition-[background-color,box-shadow] duration-300",
+          on === true
+            ? "bg-primary shadow-[0_0_0_2px_var(--primary-soft),0_0_10px_1px_var(--primary-glow)]"
+            : on === "some"
+              ? "bg-primary/45"
+              : "bg-border-strong",
         )}
       >
-        <span
-          className={cn(
-            "absolute top-0.5 left-0.5 size-2 rounded-full bg-background shadow-sm transition-transform duration-200 ease-out-expo",
-            on === true ? "translate-x-2" : on === "some" ? "translate-x-1" : "translate-x-0",
-          )}
-        />
+        {pops > 0 && on === true && (
+          <span key={pops} className="absolute -inset-px animate-ripple rounded-full border-[1.5px] border-primary" />
+        )}
       </span>
       {children}
     </button>

@@ -50,7 +50,7 @@ import {
   withFonts,
   withTrack,
 } from "./draft";
-import { FlagToggle } from "./FlagToggle";
+import { FlagToggle, FlagTray } from "./FlagToggle";
 import { type PickedRead, readPicked, tracksQuery, useLanguagesKey } from "./reading";
 
 const KINDS: { kind: MkvKind; label: string; icon: typeof Film }[] = [
@@ -815,69 +815,79 @@ function TrackDetails({
         : [];
 
   return (
-    <div className="flex flex-wrap items-center gap-2 px-3 pb-3 pl-[4.25rem]">
+    <div className="grid gap-2.5 px-3 pb-3 pl-[4.25rem]">
       {added && added.sample.length > 0 && (
-        <p className="w-full truncate text-xs text-muted-foreground italic" title={added.sample.join("\n")}>
+        <p className="truncate text-xs text-muted-foreground italic" title={added.sample.join("\n")}>
           “{added.sample[0]?.replace(/\n/g, " ")}”
         </p>
       )}
-      {added?.charset && onCharset && (
-        <Select value={added.charset} onValueChange={onCharset}>
-          <SelectTrigger aria-label="Read as" className="h-8 w-72">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent className="max-h-72">
-            {CHARSETS.map((charset) => (
-              <SelectItem key={charset.id} value={charset.id}>
-                Read as {charset.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      )}
-      {!video && (
-        <Select
-          value={track.language ?? UNKNOWN}
-          onValueChange={(value) => onChange({ language: value === UNKNOWN ? null : value })}
-        >
-          <SelectTrigger aria-label="Language" className="h-8 w-40">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent className="max-h-72">
-            {!track.language && <SelectItem value={UNKNOWN}>Language unknown</SelectItem>}
-            {languages.map((language) => (
-              <SelectItem key={language} value={language}>
-                {languageName(language)}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      )}
-      <input
-        aria-label="Name"
-        placeholder="Name (optional)"
-        value={track.name}
-        onChange={(event) => onChange({ name: event.target.value })}
-        className={cn(fieldClass, "h-8 w-44 min-w-0 bg-card caret-primary")}
-      />
-      {toggles.map((toggle) => (
-        <FlagToggle key={toggle.label} on={toggle.on} onClick={() => onChange(toggle.change)}>
-          {toggle.label}
-        </FlagToggle>
-      ))}
-      {!(first && last) && (
-        <span className="ml-auto flex gap-1">
-          <Hint label="Move up">
-            <button type="button" aria-label="Move up" disabled={first} onClick={() => onMove(-1)} className={MOVE}>
-              <ArrowUp className="size-3.5" />
-            </button>
-          </Hint>
-          <Hint label="Move down">
-            <button type="button" aria-label="Move down" disabled={last} onClick={() => onMove(1)} className={MOVE}>
-              <ArrowDown className="size-3.5" />
-            </button>
-          </Hint>
-        </span>
+      <div className="flex flex-wrap items-center gap-2">
+        {added?.charset && onCharset && (
+          <Select value={added.charset} onValueChange={onCharset}>
+            <SelectTrigger aria-label="Read as" className="h-8 w-72">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="max-h-72">
+              {CHARSETS.map((charset) => (
+                <SelectItem key={charset.id} value={charset.id}>
+                  Read as {charset.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
+        {!video && (
+          <Select
+            value={track.language ?? UNKNOWN}
+            onValueChange={(value) => onChange({ language: value === UNKNOWN ? null : value })}
+          >
+            <SelectTrigger aria-label="Language" className="h-8 w-40">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="max-h-72">
+              {!track.language && <SelectItem value={UNKNOWN}>Language unknown</SelectItem>}
+              {languages.map((language) => (
+                <SelectItem key={language} value={language}>
+                  {languageName(language)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
+        <input
+          aria-label="Name"
+          placeholder="Name (optional)"
+          value={track.name}
+          onChange={(event) => onChange({ name: event.target.value })}
+          className={cn(fieldClass, "h-8 w-48 min-w-0 bg-card caret-primary")}
+        />
+      </div>
+      {(toggles.length > 0 || !(first && last)) && (
+        <div className="flex flex-wrap items-center gap-2">
+          {toggles.length > 0 && (
+            <FlagTray>
+              {toggles.map((toggle) => (
+                <FlagToggle key={toggle.label} on={toggle.on} onClick={() => onChange(toggle.change)}>
+                  {toggle.label}
+                </FlagToggle>
+              ))}
+            </FlagTray>
+          )}
+          {!(first && last) && (
+            <span className="ml-auto flex gap-1">
+              <Hint label="Move up">
+                <button type="button" aria-label="Move up" disabled={first} onClick={() => onMove(-1)} className={MOVE}>
+                  <ArrowUp className="size-3.5" />
+                </button>
+              </Hint>
+              <Hint label="Move down">
+                <button type="button" aria-label="Move down" disabled={last} onClick={() => onMove(1)} className={MOVE}>
+                  <ArrowDown className="size-3.5" />
+                </button>
+              </Hint>
+            </span>
+          )}
+        </div>
       )}
     </div>
   );
