@@ -110,6 +110,14 @@ pub struct SyncSummary {
     pub seconds: f64,
 }
 
+/// The subtitles a sync gives new times to.
+pub enum Subtitles<'a> {
+    /// A subtitle file, read in `charset` when it isn't UTF-8.
+    File { path: &'a Path, charset: Option<&'a str> },
+    /// A text subtitle track of the film itself, by its place among its streams.
+    Track(usize),
+}
+
 pub struct SubSync {
     app: AppHandle,
     root: PathBuf,
@@ -540,17 +548,16 @@ impl SubSync {
 
     // ── A sync ──────────────────────────────────────────────────────────
 
-    /// Syncs `subs` (an SRT file read in `charset`) to the speech in stream
-    /// `stream` of `video`, and returns the synced copy's path and what was found.
-    /// `key` names the file in the progress events.
+    /// Syncs `subs` to the speech in stream `stream` of `video`, and returns
+    /// the synced copy's path and what was found. `key` names the sync in the
+    /// progress events.
     pub async fn sync(
         &self,
         key: &str,
         video: &Path,
         stream: usize,
         language: Option<&str>,
-        subs: &Path,
-        charset: Option<&str>,
+        subs: Subtitles<'_>,
     ) -> Result<(PathBuf, SyncSummary)> {
         if !self.is_installed() {
             return Err(AppError::setup("Subtitle sync isn't downloaded. It's in Settings."));
@@ -561,14 +568,44 @@ impl SubSync {
                 "Another subtitle file is being synced. Try again when it's done.",
             ));
         };
+        // FFmpeg reads the film all through the sync: it isn't swapped for a new version meanwhile.
+        let bins = self.app.state::<Arc<BinaryManager>>().inner().clone();
+        let _tools = bins.in_use().await;
         self.cancelled.store(false, Ordering::SeqCst);
         self.write_script().await?;
         let work = self.root.join("work").join(work_id());
         tokio::fs::create_dir_all(&work).await?;
-        let stem = subs
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "subtitles".into());
+        let (subs, charset, stem) = match subs {
+            Subtitles::File { path, charset } => {
+                let stem = path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "subtitles".into());
+                (path.to_path_buf(), charset, stem)
+            }
+            Subtitles::Track(index) => {
+                let film = video
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "film".into());
+                let stem = format!("{film} (track {index})");
+                let path = work.join(format!("{stem}.srt"));
+                let _ = self.app.emit(
+                    PROGRESS_EVENT,
+                    SyncProgress {
+                        key: key.to_string(),
+                        stage: "subtitles".into(),
+                        fraction: 0.0,
+                    },
+                );
+                if let Err(err) = self.take_out(&bins.ffmpeg(), video, index, &path).await {
+                    let _ = tokio::fs::remove_dir_all(&work).await;
+                    return Err(err);
+                }
+                (path, None, stem)
+            }
+        };
+        let subs = subs.as_path();
         let out = work.join(format!("{stem}.synced.srt"));
 
         let mut cmd = self.python_command();
@@ -628,6 +665,38 @@ impl SubSync {
             ),
         );
         Ok((out, summary))
+    }
+
+    /// Writes text subtitle track `index` of `video` out as an SRT file, for a
+    /// sync of subtitles the film already has. FFmpeg reads the whole film for
+    /// it (a track's packets are spread all through it): seconds on an SSD.
+    async fn take_out(&self, ffmpeg: &Path, video: &Path, index: usize, srt: &Path) -> Result<()> {
+        let mut cmd = process::command(ffmpeg);
+        cmd.args(["-v", "error", "-nostdin", "-y", "-i"])
+            .arg(video)
+            .args(["-map", &format!("0:{index}"), "-c:s", "srt", "-f", "srt"])
+            .arg(srt)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        process::below_others(&mut cmd);
+        let child = cmd.spawn()?;
+        process::end_with_siphon(&child);
+        self.running.store(child.id().unwrap_or(0), Ordering::SeqCst);
+        let output = child.wait_with_output().await;
+        self.running.store(0, Ordering::SeqCst);
+        if self.cancelled.load(Ordering::SeqCst) {
+            return Err(AppError::cancelled());
+        }
+        let output = output?;
+        if !output.status.success() {
+            let details = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            crate::log::line(
+                &self.app,
+                &format!("subtitle sync: taking out track {index} failed: {details}"),
+            );
+            return Err(AppError::internal("Couldn't take the subtitles out of the film.").with_details(details));
+        }
+        Ok(())
     }
 
     /// Stops the sync running now, if any.

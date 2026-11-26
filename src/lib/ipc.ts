@@ -58,9 +58,18 @@ export const ipc = {
   /** Downloads subtitle sync; progress comes as `subsync://status` events. */
   subsyncInstall: () => invoke<void>("subsync_install"),
   subsyncRemove: () => invoke<void>("subsync_remove"),
-  /** Syncs `subs`, a subtitle file added to `file`'s copy, to the speech in stream `stream`. */
-  syncSubtitles: (file: string, subs: string, stream: number, language: string | null, charset: string | null) =>
-    invoke<Synced>("sync_subtitles", { file, subs, stream, language, charset }),
+  /**
+   * Syncs subtitles to the speech in `file`'s stream `stream`: `subs`, a
+   * subtitle file added to `file`'s copy, or else `file`'s own text subtitle track `track`.
+   */
+  syncSubtitles: (
+    file: string,
+    subs: string | null,
+    track: number | null,
+    stream: number,
+    language: string | null,
+    charset: string | null,
+  ) => invoke<Synced>("sync_subtitles", { file, subs, track, stream, language, charset }),
   syncCancel: () => invoke<void>("sync_cancel"),
   /** The chapters in a chapters file (XML, text) or a video the user gave. */
   readChapters: (key: string) => invoke<Chapter[]>("read_chapters", { key }),

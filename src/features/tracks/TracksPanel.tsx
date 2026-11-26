@@ -47,6 +47,7 @@ import {
   readOf,
   savedAsMkv,
   sizeOf,
+  syncOf,
   withChapters,
   withFonts,
   withTrack,
@@ -89,6 +90,12 @@ const CODECS: Record<string, string> = {
 
 /** Subtitles made of pictures, read with Windows' OCR rather than as text. */
 const PICTURES = new Set(["hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle"]);
+
+/**
+ * A film's own subtitle tracks that can be synced to the speech: plain text,
+ * taken out as SRT with nothing lost. ASS keeps styling SRT can't.
+ */
+const SYNCABLE = new Set(["subrip", "mov_text", "webvtt", "text"]);
 
 /** The encodings a text subtitle file not in UTF-8 may be read in (`local/mkv/added.rs`), as people know them. */
 const CHARSETS: { id: string; label: string }[] = [
@@ -199,16 +206,30 @@ export function TracksPanel({
                     last={place === ofKind.length - 1}
                     onChange={(change) => onDraft(withTrack(draft, track.index, change))}
                     onMove={(by) => onDraft(moved(draft, track.index, by))}
+                    synced={Boolean(added ? added.synced : syncOf(draft, track))}
                     sync={
-                      // An SRT file added to the film: its timing can be synced to the speech.
-                      added && track.kind === "subtitles" && added.contents.tracks.length === 1 && read.codec === "subrip" ? (
-                        <SyncToSpeech
-                          fileKey={fileKey}
-                          draft={draft}
-                          added={added}
-                          apply={(change) => latest.current && onDraft(change(latest.current))}
-                        />
-                      ) : undefined
+                      // An SRT file added to the film, or a text subtitle track of its own:
+                      // its timing can be synced to the speech.
+                      track.kind !== "subtitles" ? undefined : added ? (
+                        added.contents.tracks.length === 1 &&
+                        read.codec === "subrip" && (
+                          <SyncToSpeech
+                            fileKey={fileKey}
+                            draft={draft}
+                            target={{ added }}
+                            apply={(change) => latest.current && onDraft(change(latest.current))}
+                          />
+                        )
+                      ) : (
+                        SYNCABLE.has(read.codec) && (
+                          <SyncToSpeech
+                            fileKey={fileKey}
+                            draft={draft}
+                            target={{ track: track.index }}
+                            apply={(change) => latest.current && onDraft(change(latest.current))}
+                          />
+                        )
+                      )
                     }
                   />
                 ) : null;
@@ -663,6 +684,7 @@ function TrackRow({
   last,
   onChange,
   onMove,
+  synced,
   sync,
 }: {
   track: DraftTrack;
@@ -677,7 +699,9 @@ function TrackRow({
   last: boolean;
   onChange: (change: Partial<DraftTrack>) => void;
   onMove: (by: -1 | 1) => void;
-  /** Sync to speech, for an SRT file added to the film. */
+  /** Its timing was synced to the speech. */
+  synced: boolean;
+  /** Sync to speech, for subtitles in text. */
   sync?: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
@@ -711,7 +735,7 @@ function TrackRow({
     track.described && "Described",
     track.original && "Original",
     added ? "Added" : false,
-    added?.synced ? "Synced" : false,
+    synced ? "Synced" : false,
   ].filter((flag): flag is string => typeof flag === "string");
 
   return (

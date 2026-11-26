@@ -29,7 +29,7 @@ use crate::sessions::{Account, Method, Mode, Sessions, SiteSession};
 use crate::settings::{Settings, SettingsStore};
 use crate::sizing::{Measure, Sizing};
 use crate::state::{CapabilityCache, MediaCache};
-use crate::subsync::{SubSync, SubSyncStatus, SyncSummary};
+use crate::subsync::{SubSync, SubSyncStatus, Subtitles, SyncSummary};
 use crate::throttle::Throttle;
 use crate::ytdlp::metadata::{self, LiveStatus, Media, VideoInfo};
 
@@ -206,8 +206,10 @@ pub struct Synced {
     pub summary: SyncSummary,
 }
 
-/// Syncs `subs`, a subtitle file added to `file`'s copy, to the speech in
-/// `file`'s stream `stream`; progress comes as `subsync://progress` events.
+/// Syncs subtitles to the speech in `file`'s stream `stream`: `subs`, a
+/// subtitle file added to `file`'s copy, or else `file`'s own text subtitle
+/// track `track`. Progress comes as `subsync://progress` events, under the
+/// added file's key or `<file>#<track>`.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn sync_subtitles(
@@ -216,26 +218,40 @@ pub async fn sync_subtitles(
     grants: State<'_, Grants>,
     sync: SubSyncs<'_>,
     file: String,
-    subs: String,
+    subs: Option<String>,
+    track: Option<usize>,
     stream: usize,
     language: Option<String>,
     charset: Option<String>,
 ) -> Result<Synced> {
     ensure_ready(&bins)?;
     let video = grants.get(&file).ok_or_else(local::lost_track)?;
-    let subtitles = grants.get(&subs).ok_or_else(local::lost_track)?;
-    if !video.path().is_file() || !subtitles.path().is_file() {
+    if !video.path().is_file() {
         return Err(local::gone());
     }
+    let given = match &subs {
+        Some(subs) => {
+            let given = grants.get(subs).ok_or_else(local::lost_track)?;
+            if !given.path().is_file() {
+                return Err(local::gone());
+            }
+            Some((subs.clone(), given))
+        }
+        None => None,
+    };
+    let (key, subtitles) = match (&given, track) {
+        (Some((key, given)), _) => (
+            key.clone(),
+            Subtitles::File {
+                path: given.path(),
+                charset: charset.as_deref(),
+            },
+        ),
+        (None, Some(track)) => (format!("{file}#{track}"), Subtitles::Track(track)),
+        (None, None) => return Err(AppError::internal("Nothing was given to sync.")),
+    };
     let (path, summary) = sync
-        .sync(
-            &subs,
-            video.path(),
-            stream,
-            language.as_deref(),
-            subtitles.path(),
-            charset.as_deref(),
-        )
+        .sync(&key, video.path(), stream, language.as_deref(), subtitles)
         .await?;
     let synced = grants
         .grant(&path)

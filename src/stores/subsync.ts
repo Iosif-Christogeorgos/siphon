@@ -3,10 +3,14 @@ import { ipc, toAppError } from "@/lib/ipc";
 import type { SubSyncStatus, Synced, SyncProgress } from "@/types";
 
 interface SyncRequest {
+  /** What names this sync while it runs: the added file's key, or `<film>#<track>` (`syncId`). */
+  id: string;
   /** The film's key. */
   file: string;
-  /** The added subtitle file's key. */
-  subs: string;
+  /** The added subtitle file's key; or else */
+  subs: string | null;
+  /** the film's own text subtitle track, by its place among its streams. */
+  track: number | null;
   /** The film's sound stream to listen to, and its language tag. */
   stream: number;
   language: string | null;
@@ -16,7 +20,7 @@ interface SyncRequest {
 interface SubSyncState {
   /** Null until the backend has said. */
   status: SubSyncStatus | null;
-  /** The subtitle file being synced now, by its key, and how far it has got. */
+  /** The subtitles being synced now, by their `syncId`, and how far they have got. */
   running: string | null;
   progress: SyncProgress | null;
   /** Why the last sync of a file failed. */
@@ -56,12 +60,21 @@ export const useSubSync = create<SubSyncState>((set, get) => ({
   },
   sync: async (request, done) => {
     if (get().running) return;
-    set({ running: request.subs, progress: null, failure: null });
+    set({ running: request.id, progress: null, failure: null });
     try {
-      done(await ipc.syncSubtitles(request.file, request.subs, request.stream, request.language, request.charset));
+      done(
+        await ipc.syncSubtitles(
+          request.file,
+          request.subs,
+          request.track,
+          request.stream,
+          request.language,
+          request.charset,
+        ),
+      );
     } catch (error) {
       const failed = toAppError(error);
-      if (failed.kind !== "cancelled") set({ failure: { key: request.subs, message: failed.message } });
+      if (failed.kind !== "cancelled") set({ failure: { key: request.id, message: failed.message } });
     } finally {
       set({ running: null, progress: null });
     }

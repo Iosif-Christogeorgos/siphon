@@ -62,6 +62,29 @@ export function withoutSync(draft: Draft, key: string): Draft {
   };
 }
 
+/**
+ * One of the film's own subtitle tracks synced to the speech: the synced
+ * copy, which the saved file takes in the track's place, and what was found.
+ */
+export interface TrackSync {
+  file: AddedFile;
+  summary: SyncSummary;
+}
+
+/** What names the sync of the film's own track `index` while it runs (`SyncProgress::key`). */
+export const ownSyncId = (film: string, index: number) => `${film}#${index}`;
+
+/** The film's own track `index` synced to the speech: kept where it is, with every choice made of it. */
+export function withTrackSynced(draft: Draft, index: number, file: AddedFile, summary: SyncSummary): Draft {
+  return { ...draft, syncs: { ...draft.syncs, [index]: { file, summary } } };
+}
+
+/** The film's own track `index` back to its own timing. */
+export function withoutTrackSync(draft: Draft, index: number): Draft {
+  const { [index]: _gone, ...syncs } = draft.syncs;
+  return { ...draft, syncs };
+}
+
 /** The languages subtitle sync can time words in: Qwen3-ForcedAligner's (`TIMED` in `src-tauri/sync/siphon_sync.py`). */
 const TIMED = new Set(["en", "zh", "yue", "fr", "de", "it", "ja", "ko", "pt", "ru", "es"]);
 
@@ -101,6 +124,8 @@ export interface Draft {
   mine: boolean;
   /** Files tracks were added from (docs/mkv-editor.md, step 6). */
   added: DraftAdded[];
+  /** The film's own subtitle tracks synced to the speech, by index (docs/subtitle-sync.md). */
+  syncs: Record<number, TrackSync>;
   /** The chapters the copy gets, as chosen; null: as the file has them (or none, `chapters` false). */
   chapterList: Chapter[] | null;
   /** Where a chapter list taken from a file came from: "Film.chapters.xml". */
@@ -206,6 +231,7 @@ function asTheFileIs(contents: MkvContents, key: string, version: string, langua
     attachments: true,
     mine: false,
     added: [],
+    syncs: {},
     chapterList: null,
     chaptersFrom: null,
     leftOutAttachments: [],
@@ -305,12 +331,27 @@ export function addedOf(draft: Draft, track: DraftTrack): DraftAdded | undefined
   return track.from ? draft.added.find((added) => added.key === track.from) : undefined;
 }
 
-/** What the backend is asked to make. */
+/** The sync of a draft's track, if it is one of the film's own and was synced. */
+export function syncOf(draft: Draft, track: DraftTrack): TrackSync | undefined {
+  return track.from ? undefined : draft.syncs[track.index];
+}
+
+/**
+ * What the backend is asked to make. A track of the film's own that was
+ * synced is taken from its synced copy, as a track added from a file is.
+ */
 export function editOf(draft: Draft): TrackEdit {
   return {
     tracks: draft.tracks
       .filter((track) => track.keep)
-      .map(({ kind: _kind, keep: _keep, stream, ...kept }) => ({ ...kept, index: stream ?? kept.index })),
+      .map((track) => {
+        const { kind: _kind, keep: _keep, stream, ...kept } = track;
+        const synced = syncOf(draft, track);
+        const from = synced?.file.contents.tracks[0];
+        return synced && from
+          ? { ...kept, index: from.index, from: synced.file.key, charset: synced.file.charset }
+          : { ...kept, index: stream ?? kept.index };
+      }),
     chapters: draft.chapters,
     attachments: draft.attachments,
     chapter_list: draft.chapterList,
@@ -332,6 +373,7 @@ export function changesOf(draft: Draft): { removed: number; kept: number; added:
   const added = kept.length - own.length;
   const removed = draft.before.length - own.length;
   const moved = kept.some((track, place) => FIELDS.some((field) => track[field] !== draft.before[place]?.[field]));
+  const synced = own.some((track) => syncOf(draft, track));
   return {
     removed,
     kept: own.length,
@@ -340,6 +382,7 @@ export function changesOf(draft: Draft): { removed: number; kept: number; added:
       removed > 0 ||
       added > 0 ||
       moved ||
+      synced ||
       !draft.chapters ||
       !draft.attachments ||
       draft.chapterList !== null ||

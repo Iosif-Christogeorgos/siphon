@@ -4,10 +4,20 @@ import { languageName } from "@/lib/languages";
 import { useSubSync } from "@/stores/subsync";
 import { useUi } from "@/stores/ui";
 import type { SyncProgress } from "@/types";
-import { type Draft, type DraftAdded, speechTrack, withoutSync, withSynced } from "./draft";
+import {
+  type Draft,
+  type DraftAdded,
+  ownSyncId,
+  speechTrack,
+  withoutSync,
+  withoutTrackSync,
+  withSynced,
+  withTrackSynced,
+} from "./draft";
 
 /** What each stage does, and how much of the whole it takes (as measured on a two-hour film). */
 const STAGES: Record<string, { label: string; from: number; share: number }> = {
+  subtitles: { label: "Taking its subtitles out of the film", from: 0, share: 0 },
   audio: { label: "Listening to the film", from: 0, share: 0.08 },
   speech: { label: "Finding where people speak", from: 0.08, share: 0.1 },
   words: { label: "Writing down what is said", from: 0.18, share: 0.62 },
@@ -20,38 +30,45 @@ const overall = (progress: SyncProgress | null) => {
 };
 
 /**
- * **Sync to speech** for a subtitle file added to a film (docs/subtitle-sync.md):
- * every line given the moment its words are spoken. Locked until subtitle
- * sync is downloaded in Settings. The synced copy takes the file's place in
- * the draft, every choice made of its track kept, with a way back.
+ * **Sync to speech** for subtitles in text (docs/subtitle-sync.md): an SRT
+ * file added to a film, or a text subtitle track the film has. Every line is
+ * given the moment its words are spoken. Locked until subtitle sync is
+ * downloaded in Settings. The synced copy takes the subtitles' place in the
+ * draft, every choice made of their track kept, with a way back.
  */
 export function SyncToSpeech({
   fileKey,
   draft,
-  added,
+  target,
   apply,
 }: {
   /** The film's key. */
   fileKey: string;
   draft: Draft;
-  added: DraftAdded;
+  /** A subtitle file added to the film, or one of the film's own text subtitle tracks, by index. */
+  target: { added: DraftAdded } | { track: number };
   /** Changes the draft as it is when the change comes. */
   apply: (change: (draft: Draft) => Draft) => void;
 }) {
+  const added = "added" in target ? target.added : null;
+  const track = "track" in target ? target.track : null;
+  const id = added ? added.key : ownSyncId(fileKey, track ?? 0);
+  const summary = added ? added.synced?.summary : track !== null ? draft.syncs[track]?.summary : undefined;
   const status = useSubSync((state) => state.status);
   const running = useSubSync((state) => state.running);
   const progress = useSubSync((state) => state.progress);
-  const failure = useSubSync((state) => (state.failure?.key === added.key ? state.failure.message : null));
+  const failure = useSubSync((state) => (state.failure?.key === id ? state.failure.message : null));
   const sync = useSubSync((state) => state.sync);
   const cancel = useSubSync((state) => state.cancel);
   const openPanel = useUi((state) => state.openPanel);
   if (!status) return null;
 
   const sound = speechTrack(draft);
-  const mine = running === added.key;
+  const mine = running === id;
+  const undo = () =>
+    apply((current) => (added ? withoutSync(current, added.key) : withoutTrackSync(current, track ?? 0)));
 
-  if (added.synced) {
-    const { summary } = added.synced;
+  if (summary) {
     return (
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-xl bg-primary-soft px-3 py-2 text-xs">
         <Check className="size-3.5 shrink-0 text-primary" strokeWidth={2.5} />
@@ -64,11 +81,11 @@ export function SyncToSpeech({
         </span>
         <button
           type="button"
-          onClick={() => apply((current) => withoutSync(current, added.key))}
+          onClick={undo}
           className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-primary transition-colors hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-none"
         >
           <Undo2 className="size-3" />
-          Use the file’s own timing
+          {added ? "Use the file’s own timing" : "Use the track’s own timing"}
         </button>
       </div>
     );
@@ -123,13 +140,20 @@ export function SyncToSpeech({
             sound &&
             void sync(
               {
+                id,
                 file: fileKey,
-                subs: added.key,
+                subs: added?.key ?? null,
+                track,
                 stream: sound.index,
                 language: sound.language,
-                charset: added.charset,
+                charset: added?.charset ?? null,
               },
-              (synced) => apply((current) => withSynced(current, added.key, synced.added, synced.summary)),
+              (synced) =>
+                apply((current) =>
+                  added
+                    ? withSynced(current, added.key, synced.added, synced.summary)
+                    : withTrackSynced(current, track ?? 0, synced.added, synced.summary),
+                ),
             )
           }
         >

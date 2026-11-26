@@ -92,7 +92,7 @@ Open a film or an episode (MKV, MP4 or TS) and pull out the **tracks** card tuck
 
 ### Subtitles in time with the speech
 
-Got subtitles from another release that come early in one scene and late in the next? Add the SRT to the film and press **Sync to speech**: Siphon listens to the film, writes down what is said word by word, and gives every line the moment its own words are spoken, matched by meaning, so Greek subtitles sync to English speech. It fixes each line on its own, not just the whole file, and needs no other subtitles to compare with. It runs on your NVIDIA graphics card, about a minute and a half for a two-hour film, and is an optional download in Settings (about 11 GB), there only if you want it.
+Got subtitles from another release that come early in one scene and late in the next? Add the SRT to the film, or open the subtitles it already has, and press **Sync to speech**: Siphon listens to the film, writes down what is said word by word, and gives every line the moment its own words are spoken, matched by meaning, so Greek subtitles sync to English speech. It fixes each line on its own, not just the whole file, and needs no other subtitles to compare with. It runs on your NVIDIA graphics card, about a minute and a half for a two-hour film, and is an optional download in Settings (about 11 GB), there only if you want it.
 
 ### Record live streams
 
@@ -143,7 +143,7 @@ To convert a file on your PC instead, drop it on the window or press **Browse**,
 | [Subtitles](docs/subtitles.md) | Which subtitles a download gets, where each preset puts them, and what was tested |
 | [Chat](docs/chat.md) | Twitch chat drawn into the picture: how it is read, timed and drawn, what was measured, and its limits |
 | [Files on your PC](docs/local-files.md) | Converting files on your PC: where what is made goes, how the files themselves are kept safe, what was tested |
-| [Subtitle sync](docs/subtitle-sync.md) | Syncing a subtitle file to a film's speech, line by line: how, the models and the download, what was measured |
+| [Subtitle sync](docs/subtitle-sync.md) | Syncing subtitles to a film's speech, line by line: how, the models and the download, what was measured |
 | [Decisions](docs/decisions.md) | Why things work the way they do, what was measured, and known issues |
 | [Development](docs/development.md) | Running from source, checks, building an installer and releasing |
 

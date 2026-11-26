@@ -122,10 +122,10 @@ export interface SubSyncStatus {
   disk_bytes: number;
 }
 
-/** How far a sync has got (`subsync://progress`); `key` is the subtitle file's. */
+/** How far a sync has got (`subsync://progress`); `key` is the added file's, or `<film>#<track>` for the film's own. */
 export interface SyncProgress {
   key: string;
-  stage: "audio" | "speech" | "words" | "pairing" | string;
+  stage: "subtitles" | "audio" | "speech" | "words" | "pairing" | string;
   fraction: number;
 }
 
@@ -141,7 +141,7 @@ export interface SyncSummary {
   seconds: number;
 }
 
-/** A subtitle file synced to the speech: its synced copy, read as a file to add. */
+/** Subtitles synced to the speech: the synced copy, read as a file to add. */
 export interface Synced {
   added: AddedFile;
   summary: SyncSummary;
