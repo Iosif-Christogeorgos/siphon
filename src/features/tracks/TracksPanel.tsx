@@ -52,6 +52,7 @@ import {
 } from "./draft";
 import { FlagToggle, FlagTray } from "./FlagToggle";
 import { type PickedRead, readPicked, tracksQuery, useLanguagesKey } from "./reading";
+import { SyncToSpeech } from "./SyncToSpeech";
 
 const KINDS: { kind: MkvKind; label: string; icon: typeof Film }[] = [
   { kind: "video", label: "Video", icon: Film },
@@ -197,6 +198,17 @@ export function TracksPanel({
                     last={place === ofKind.length - 1}
                     onChange={(change) => onDraft(withTrack(draft, track.index, change))}
                     onMove={(by) => onDraft(moved(draft, track.index, by))}
+                    sync={
+                      // An SRT file added to the film: its timing can be synced to the speech.
+                      added && track.kind === "subtitles" && added.contents.tracks.length === 1 && read.codec === "subrip" ? (
+                        <SyncToSpeech
+                          fileKey={fileKey}
+                          draft={draft}
+                          added={added}
+                          apply={(change) => latest.current && onDraft(change(latest.current))}
+                        />
+                      ) : undefined
+                    }
                   />
                 ) : null;
               })}
@@ -650,6 +662,7 @@ function TrackRow({
   last,
   onChange,
   onMove,
+  sync,
 }: {
   track: DraftTrack;
   /** What reading the file found of it. */
@@ -663,6 +676,8 @@ function TrackRow({
   last: boolean;
   onChange: (change: Partial<DraftTrack>) => void;
   onMove: (by: -1 | 1) => void;
+  /** Sync to speech, for an SRT file added to the film. */
+  sync?: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
   // The details are clipped only while they grow or shrink: once open, a focused
@@ -695,6 +710,7 @@ function TrackRow({
     track.described && "Described",
     track.original && "Original",
     added ? "Added" : false,
+    added?.synced ? "Synced" : false,
   ].filter((flag): flag is string => typeof flag === "string");
 
   return (
@@ -767,6 +783,7 @@ function TrackRow({
               last={last}
               onChange={onChange}
               onMove={onMove}
+              sync={sync}
             />
           </motion.div>
         )}
@@ -784,6 +801,7 @@ function TrackDetails({
   last,
   onChange,
   onMove,
+  sync,
 }: {
   track: DraftTrack;
   added?: DraftAdded;
@@ -792,6 +810,7 @@ function TrackDetails({
   last: boolean;
   onChange: (change: Partial<DraftTrack>) => void;
   onMove: (by: -1 | 1) => void;
+  sync?: ReactNode;
 }) {
   const video = track.kind === "video";
   const mine = systemLanguage();
@@ -889,6 +908,7 @@ function TrackDetails({
           )}
         </div>
       )}
+      {sync}
     </div>
   );
 }

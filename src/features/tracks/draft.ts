@@ -1,5 +1,15 @@
 import { primary } from "@/lib/languages";
-import type { AddedFile, Chapter, KeptTrack, MkvContents, MkvKind, MkvTrack, PickedFile, TrackEdit } from "@/types";
+import type {
+  AddedFile,
+  Chapter,
+  KeptTrack,
+  MkvContents,
+  MkvKind,
+  MkvTrack,
+  PickedFile,
+  SyncSummary,
+  TrackEdit,
+} from "@/types";
 
 /**
  * A track as the user has it: kept or not, and what the copy says of it.
@@ -16,6 +26,46 @@ export interface DraftTrack extends KeptTrack {
 /** A file tracks were added from, and where its tracks' draft indexes start. */
 export interface DraftAdded extends AddedFile {
   base: number;
+  /** Synced to the speech (docs/subtitle-sync.md): the file as it was given, to go back to, and what was found. */
+  synced?: { original: AddedFile; summary: SyncSummary };
+}
+
+/**
+ * The file added as `from` swapped for its copy synced to the speech, every
+ * choice made of its tracks kept: their language, name, flags and place.
+ */
+export function withSynced(draft: Draft, from: string, synced: AddedFile, summary: SyncSummary): Draft {
+  const old = draft.added.find((added) => added.key === from);
+  if (!old) return draft;
+  const { base, synced: before, ...given } = old;
+  const original = before?.original ?? given;
+  return {
+    ...draft,
+    added: draft.added.map((added) => (added.key === from ? { ...synced, base, synced: { original, summary } } : added)),
+    tracks: draft.tracks.map((track) =>
+      track.from === from ? { ...track, from: synced.key, charset: synced.charset } : track,
+    ),
+  };
+}
+
+/** Back to the file as it was given, before it was synced. */
+export function withoutSync(draft: Draft, key: string): Draft {
+  const added = draft.added.find((candidate) => candidate.key === key);
+  if (!added?.synced) return draft;
+  const { original } = added.synced;
+  return {
+    ...draft,
+    added: draft.added.map((candidate) => (candidate.key === key ? { ...original, base: added.base } : candidate)),
+    tracks: draft.tracks.map((track) =>
+      track.from === key ? { ...track, from: original.key, charset: original.charset } : track,
+    ),
+  };
+}
+
+/** The sound a sync listens to: the file's own sound that plays first, else its first kept, else its first. */
+export function speechTrack(draft: Draft): DraftTrack | undefined {
+  const own = draft.tracks.filter((track) => track.kind === "sound" && !track.from);
+  return own.find((track) => track.keep && track.default) ?? own.find((track) => track.keep) ?? own[0];
 }
 
 /** What the user has chosen of an MKV's tracks, beside the file as it is. */
