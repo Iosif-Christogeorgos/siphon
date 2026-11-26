@@ -1,6 +1,6 @@
 import { ChevronDown, TriangleAlert } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { type FocusEvent, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import type { Hint } from "@/types";
 
@@ -13,15 +13,13 @@ const FOLD = { type: "spring", stiffness: 300, damping: 26 } as const;
 
 /**
  * A plan's warnings, folded into one row with the others peeking out under
- * it: their short titles and a count. Pointed at, or reached with Tab, the
- * cards fan out in place to say each in full; a click keeps them open.
+ * it: their short titles and a count. A click fans the cards out in place to
+ * say each in full, and folds them again. Not on hover: passing the pointer
+ * over it on the way to the button opened it and pushed the button away.
  */
 export function NoticeStack({ notices }: { notices: Hint[] }) {
   const reduce = useReducedMotion();
-  const [hovered, setHovered] = useState(false);
-  const [pinned, setPinned] = useState(false);
-  const [focused, setFocused] = useState(false);
-  const open = hovered || pinned || focused;
+  const [open, setOpen] = useState(false);
 
   // Each card's height when open, measured from its content, which wraps with the window's width.
   // The notices are a new array on every render: what they say is what changes.
@@ -49,12 +47,6 @@ export function NoticeStack({ notices }: { notices: Hint[] }) {
     setShine((count) => count + 1);
   }, [signature]);
 
-  const close = () => {
-    setPinned(false);
-    setHovered(false);
-    setFocused(false);
-  };
-
   // Open, each card under the last (heights include the border); folded, each a little lower and narrower.
   const full = notices.map((_, i) => (heights[i] ?? ROW - 2) + 2);
   const spots = notices.map((_, i) => {
@@ -77,16 +69,8 @@ export function NoticeStack({ notices }: { notices: Hint[] }) {
       exit={{ opacity: 0, height: 0 }}
       transition={reduce ? { duration: 0 } : FOLD}
       className="relative overflow-hidden"
-      onPointerEnter={() => setHovered(true)}
-      onPointerLeave={() => setHovered(false)}
-      onFocus={(event) => {
-        if (event.target.matches(":focus-visible")) setFocused(true);
-      }}
-      onBlur={(event: FocusEvent<HTMLDivElement>) => {
-        if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false);
-      }}
       onKeyDown={(event) => {
-        if (event.key === "Escape" && open) close();
+        if (event.key === "Escape" && open) setOpen(false);
       }}
     >
       <AnimatePresence initial={false}>
@@ -167,7 +151,7 @@ export function NoticeStack({ notices }: { notices: Hint[] }) {
                   <button
                     type="button"
                     aria-expanded={open}
-                    onClick={() => (open && pinned ? close() : setPinned(true))}
+                    onClick={() => setOpen((was) => !was)}
                     className={cn(
                       row,
                       "rounded-xl focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-none focus-visible:ring-inset",
