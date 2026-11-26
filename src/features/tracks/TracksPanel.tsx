@@ -17,7 +17,7 @@ import {
   Zap,
 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { ErrorCard } from "@/components/ErrorCard";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Hint } from "@/components/ui/tooltip";
@@ -39,6 +39,7 @@ import {
   changesOf,
   type Draft,
   type DraftAdded,
+  type DraftChange,
   type DraftTrack,
   draftOf,
   fitsMp4,
@@ -142,7 +143,7 @@ export function TracksPanel({
   version: string;
   /** What has been chosen so far; null until the file is read. */
   draft: Draft | null;
-  onDraft: (draft: Draft) => void;
+  onDraft: (change: DraftChange) => void;
   /** A copy is being made: nothing can change meanwhile. */
   disabled: boolean;
   /** One file of a season, opened in its list: the season says what the languages did, and what saving makes. */
@@ -153,9 +154,11 @@ export function TracksPanel({
   const data = contents.data;
   const current =
     draft !== null && draft.key === fileKey && draft.version === version && draft.languages === languages;
-  // Files added are read a moment after they are picked: their tracks go in the draft as it is then.
-  const latest = useRef(draft);
-  latest.current = draft;
+  // What arrives later (files added and read, a sync) changes the draft as it is
+  // when it lands, and only while it is still this file's: the card may have been
+  // put away and opened again meanwhile, and choices made since.
+  const later = (change: (draft: Draft) => Draft) =>
+    onDraft((now) => (now.key === fileKey && now.version === version ? change(now) : now));
   useEffect(() => {
     if (data && !current && languages !== null) onDraft(draftOf(data, fileKey, version, languages));
   }, [data, current, fileKey, version, languages, onDraft]);
@@ -198,7 +201,7 @@ export function TracksPanel({
                         ? (charset) =>
                             void ipc
                               .readAdded(added.key, charset)
-                              .then((file) => latest.current && onDraft(addTracks(latest.current, file)))
+                              .then((file) => later((now) => addTracks(now, file)))
                         : undefined
                     }
                     icon={icon}
@@ -217,7 +220,7 @@ export function TracksPanel({
                             fileKey={fileKey}
                             draft={draft}
                             target={{ added }}
-                            apply={(change) => latest.current && onDraft(change(latest.current))}
+                            apply={later}
                           />
                         )
                       ) : (
@@ -226,7 +229,7 @@ export function TracksPanel({
                             fileKey={fileKey}
                             draft={draft}
                             target={{ track: track.index }}
-                            apply={(change) => latest.current && onDraft(change(latest.current))}
+                            apply={later}
                           />
                         )
                       )
@@ -242,7 +245,7 @@ export function TracksPanel({
       <ChaptersPart draft={draft} contents={data} onDraft={onDraft} />
       <AttachedPart draft={draft} contents={data} onDraft={onDraft} />
 
-      <AddTracks onAdded={(reads) => latest.current && onDraft(reads.reduce(applyPicked, latest.current))} />
+      <AddTracks onAdded={(reads) => later((now) => reads.reduce(applyPicked, now))} />
 
       <AnimatePresence initial={false}>
         {doubts.map((doubt) => (

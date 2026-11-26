@@ -5,7 +5,7 @@ import { languageName } from "@/lib/languages";
 import { spring } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import type { TrackOverview } from "@/types";
-import { changesOf, type Draft } from "./draft";
+import { changesOf, type Draft, type DraftChange } from "./draft";
 import { TracksPanel } from "./TracksPanel";
 
 /** "Greek and English", "Greek, English and French", or "5 languages" past three; null for none. */
@@ -178,7 +178,7 @@ export function TracksCard({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   draft: Draft | null;
-  onDraft: (draft: Draft) => void;
+  onDraft: (change: DraftChange) => void;
   disabled: boolean;
 }) {
   const total = overview.video + overview.sound + overview.subtitles;

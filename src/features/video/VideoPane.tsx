@@ -10,7 +10,7 @@ import { DownloadPanel } from "@/features/download/DownloadPanel";
 import { ManualPanel } from "@/features/options/ManualPanel";
 import { LiveWaitCard, Note, PlanCard } from "@/features/options/PlanCard";
 import { CHAT_GROUPS, PresetArea } from "@/features/presets/PresetArea";
-import { changesOf, type Draft, editOf } from "@/features/tracks/draft";
+import { changed, changesOf, type Draft, editOf } from "@/features/tracks/draft";
 import { useSyncedInUse } from "@/features/tracks/useSyncedInUse";
 import { hasTracksToChoose, TracksCard } from "@/features/tracks/TracksCard";
 import { TrimPanel } from "@/features/trim/TrimPanel";
@@ -248,7 +248,7 @@ export function VideoPane({ video }: { video: VideoInfo }) {
             open={tracksOn}
             onOpenChange={setTracksOn}
             draft={draft}
-            onDraft={setDraft}
+            onDraft={(change) => setDraft((now) => changed(now, change) ?? null)}
             disabled={running}
           />
         )}

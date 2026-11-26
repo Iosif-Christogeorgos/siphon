@@ -8,7 +8,7 @@ import { Hint } from "@/components/ui/tooltip";
 import { ManualPanel } from "@/features/options/ManualPanel";
 import { Box, fold, Thumb } from "@/features/playlist/rows";
 import { PresetArea } from "@/features/presets/PresetArea";
-import { changesOf, type Draft, draftOf, editOf, sizeOf } from "@/features/tracks/draft";
+import { changed, changesOf, type Draft, type DraftChange, draftOf, editOf, sizeOf } from "@/features/tracks/draft";
 import { useSyncedInUse } from "@/features/tracks/useSyncedInUse";
 import { tracksQuery, useLanguagesKey } from "@/features/tracks/reading";
 import { type SeasonFile, toCheck } from "@/features/tracks/season";
@@ -129,7 +129,11 @@ export function FilesPane({ intake }: { intake: Intake }) {
   useEffect(() => {
     if (fresh.length > 0) setDrafts((now) => ({ ...now, ...Object.fromEntries(fresh.map((draft) => [draft.key, draft])) }));
   }, [fresh]);
-  const setDraft = (draft: Draft) => setDrafts((now) => ({ ...now, [draft.key]: draft }));
+  const setDraft = (key: string, change: DraftChange) =>
+    setDrafts((now) => {
+      const draft = changed(now[key], change);
+      return draft ? { ...now, [key]: draft } : now;
+    });
   const trackStatuses: TrackStatus[] = files.map((file) => {
     const place = mkvs.findIndex((mkv) => mkv.file.key === file.key);
     if (place < 0) return { kind: "none" };
@@ -421,7 +425,7 @@ export function FilesPane({ intake }: { intake: Intake }) {
                           fileKey={file.key}
                           version={file.version}
                           draft={trackStatus.draft}
-                          onDraft={setDraft}
+                          onDraft={(change) => setDraft(file.key, change)}
                           disabled={false}
                           embedded
                         />

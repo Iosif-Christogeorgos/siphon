@@ -117,6 +117,19 @@ export function speechTrack(draft: Draft): DraftTrack | undefined {
   );
 }
 
+/**
+ * A change to a draft: the draft it becomes, or how to change the draft as
+ * it is when the change lands. The second is for what arrives later (a
+ * sync, a file read): it must change the draft as it is then, not as it was
+ * when it was asked for, or what the user chose meanwhile is undone.
+ */
+export type DraftChange = Draft | ((draft: Draft) => Draft);
+
+/** `now` with `change` made to it; a change by function needs a draft to change. */
+export function changed(now: Draft | null | undefined, change: DraftChange): Draft | null | undefined {
+  return typeof change === "function" ? now && change(now) : change;
+}
+
 /** What the user has chosen of an MKV's tracks, beside the file as it is. */
 export interface Draft {
   /** The file, version and languages it was made for: other ones start afresh. */
