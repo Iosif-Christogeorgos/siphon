@@ -211,6 +211,17 @@ Added 2026-11-23 to 25. How it works, what was tested and its limits: [local-fil
 - **A file's preview plays the file itself where WebView2 can**, and a 360p copy made of it otherwise (Matroska, HEVC, MPEG-TS): moments rather than a download's minutes (17 s for twenty minutes of 1080p).
 - **An MKV editor** (planned 2026-11-25, the owner's calls; built 2026-11-25 to 26): choosing an MKV's tracks, adding tracks, fixing their details, chapters and fonts, for a film or a season, applying "my languages" on its own and never leaving out a track whose language isn't certain. The plan: [mkv-editor.md](mkv-editor.md).
 
+### Subtitle sync
+
+Added 2026-11-26. How it works, the download, what was measured and its limits: [subtitle-sync.md](subtitle-sync.md).
+
+- **Line by line, from the sound** (the owner's call): a delay or drift for the whole file was not enough; a Greek SRT from another release was off by up to 2 s in both directions from line to line, and the owner hears it. Most of their films have no other subtitles to compare with, so the reference is speech recognition, and lines are paired with what is said by meaning (BGE-M3), across languages.
+- **Optional, and locked until downloaded** (the owner's call): about 11 GB, so it is a download in Settings and nobody else pays for it. **Sync to speech** stays visible but locked, pointing to Settings, and says why on a PC without an NVIDIA card of 8 GB.
+- **Nothing copied from another project** (the owner's call): sc0ty's subsync and Anchor were studied, then removed; the pipeline is written from scratch, and only models under permissive licences are used (Apache-2.0, MIT; not NLLB, CC-BY-NC).
+- **The best models the card runs easily** (the owner's call): Qwen3-ASR 1.7B and Qwen3-ForcedAligner 0.6B, chosen 2026-11-26 from the Open ASR leaderboard and their published word-timing accuracy.
+- **A private Python**, not the user's: the owner's own Python 3.14 is left alone (uv only uses its own, registers nothing, puts nothing on the PATH), and the private one is 3.14 too. Removing the download removes it.
+- **Faster without changing the result**: the voice detector runs 32 stretches at once, each warmed on the minute before it, and its own rules make the regions; the recogniser keeps its batch of 16, since a different batch pads clips differently and can change the transcript. Checked against the version the owner approved: every line within 0.1 s.
+
 ### Managed binaries
 
 - **FFmpeg uses the `-shared` build** (a 91 MB download rather than 200 MB) and is refreshed at most every 30 days.

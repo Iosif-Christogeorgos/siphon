@@ -28,7 +28,7 @@ A clean, fast video downloader for Windows, built on [yt-dlp](https://github.com
 
 yt-dlp can download from well over a thousand sites, but it's a command-line tool, and the hard part is rarely the download: it's knowing which of a video's dozens of formats will actually play on your phone or your TV, or fit under Discord's limit. Siphon makes that choice for you, from the formats the video really has and what your PC can do, and tells you plainly what it's going to make before it makes it.
 
-No account, no ads, no tracking. Siphon talks only to the sites you download from and to GitHub for its own updates.
+No account, no ads, no tracking. Siphon talks only to the sites you download from and to GitHub for its own updates. Subtitle sync, if you download it, fetches its tools and models once from GitHub, PyPI, PyTorch and Hugging Face, and then runs entirely on your PC.
 
 ## Features
 
@@ -90,6 +90,10 @@ Drop videos or sounds on the window, or press **Browse**, and Siphon makes them 
 
 Open a film or an episode (MKV, MP4 or TS) and pull out the **tracks** card tucked behind it to see every sound and subtitle track, with its language and how Siphon knows it: subtitles are read for what they say, picture subtitles with Windows' own text recognition, so a wrong label is caught. Your languages, set once in Settings, are applied as the file opens, and you can still keep or leave out any track, rename it, choose which plays first and change the order. Nothing is converted: the tracks are copied as they are into a file of the same name in an `Edited` folder beside the original, which is never touched. A track whose language Siphon isn't sure of is kept and marked, never left out unseen. Drop a whole season and choose once: the same choice is made in every episode, and each can still be changed by hand. Add subtitles or sound from other files too, to one film or to every episode at once, matched by name; old subtitle files in Greek, Cyrillic and other encodings come out readable. Rename, remove or replace chapters, and attach the fonts ASS subtitles need.
 
+### Subtitles in time with the speech
+
+Got subtitles from another release that come early in one scene and late in the next? Add the SRT to the film and press **Sync to speech**: Siphon listens to the film, writes down what is said word by word, and gives every line the moment its own words are spoken, matched by meaning, so Greek subtitles sync to English speech. It fixes each line on its own, not just the whole file, and needs no other subtitles to compare with. It runs on your NVIDIA graphics card, about a minute and a half for a two-hour film, and is an optional download in Settings (about 11 GB), there only if you want it.
+
 ### Record live streams
 
 Paste a live stream from Twitch, YouTube, Kick and more, and press **Record**, or **Record when it starts** for a scheduled stream or an offline channel. Siphon records from now or, where the site allows, from the start, keeps going through short dropouts, and makes it into a file that plays everywhere when you press Stop or the stream ends. On Twitch it leaves the ads out, with no account or subscription. A crash or power cut never loses what was recorded: Siphon finishes it the next time it starts.
@@ -139,6 +143,7 @@ To convert a file on your PC instead, drop it on the window or press **Browse**,
 | [Subtitles](docs/subtitles.md) | Which subtitles a download gets, where each preset puts them, and what was tested |
 | [Chat](docs/chat.md) | Twitch chat drawn into the picture: how it is read, timed and drawn, what was measured, and its limits |
 | [Files on your PC](docs/local-files.md) | Converting files on your PC: where what is made goes, how the files themselves are kept safe, what was tested |
+| [Subtitle sync](docs/subtitle-sync.md) | Syncing a subtitle file to a film's speech, line by line: how, the models and the download, what was measured |
 | [Decisions](docs/decisions.md) | Why things work the way they do, what was measured, and known issues |
 | [Development](docs/development.md) | Running from source, checks, building an installer and releasing |
 
