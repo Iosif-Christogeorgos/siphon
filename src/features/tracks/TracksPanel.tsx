@@ -22,6 +22,7 @@ import { ErrorCard } from "@/components/ErrorCard";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Hint } from "@/components/ui/tooltip";
 import { Note } from "@/features/options/PlanCard";
+import { fieldClass } from "@/features/settings/parts";
 import { formatBytes, formatDuration } from "@/lib/format";
 import { ipc, toAppError } from "@/lib/ipc";
 import { useUi } from "@/stores/ui";
@@ -664,6 +665,13 @@ function TrackRow({
   onMove: (by: -1 | 1) => void;
 }) {
   const [open, setOpen] = useState(false);
+  // The details are clipped only while they grow or shrink: once open, a focused
+  // field's glow shows whole rather than cut off at the top.
+  const [settled, setSettled] = useState(false);
+  const toggle = () => {
+    setSettled(false);
+    setOpen(!open);
+  };
   const video = track.kind === "video";
   const title = video
     ? read.height
@@ -710,7 +718,7 @@ function TrackRow({
         <Icon className="size-4 shrink-0 text-muted-foreground" />
         <button
           type="button"
-          onClick={() => setOpen(!open)}
+          onClick={toggle}
           aria-expanded={open}
           className="min-w-0 flex-1 rounded-md text-left focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-none"
         >
@@ -735,7 +743,7 @@ function TrackRow({
           type="button"
           aria-label={open ? "Close its details" : "Its language, name and flags"}
           aria-expanded={open}
-          onClick={() => setOpen(!open)}
+          onClick={toggle}
           className="grid size-6 shrink-0 place-items-center rounded-full text-subtle-foreground transition-colors hover:bg-accent hover:text-foreground"
         >
           <ChevronDown className={cn("size-3.5 transition-transform", open && "rotate-180")} />
@@ -746,9 +754,10 @@ function TrackRow({
           <motion.div
             initial={{ opacity: 0, height: 0 }}
             animate={{ opacity: 1, height: "auto" }}
-            exit={{ opacity: 0, height: 0 }}
+            exit={{ opacity: 0, height: 0, overflow: "hidden" }}
             transition={spring}
-            className="overflow-hidden"
+            onAnimationComplete={() => setSettled(open)}
+            className={settled ? "overflow-visible" : "overflow-hidden"}
           >
             <TrackDetails
               track={track}
@@ -849,7 +858,7 @@ function TrackDetails({
         placeholder="Name (optional)"
         value={track.name}
         onChange={(event) => onChange({ name: event.target.value })}
-        className="h-8 w-44 min-w-0 rounded-lg border border-border-strong bg-card px-3 text-[13px] outline-none transition-shadow placeholder:text-subtle-foreground focus-visible:ring-[3px] focus-visible:ring-ring/40"
+        className={cn(fieldClass, "h-8 w-44 min-w-0 bg-card caret-primary")}
       />
       {toggles.map((toggle) => (
         <FlagToggle key={toggle.label} on={toggle.on} onClick={() => onChange(toggle.change)}>
