@@ -51,7 +51,7 @@ export function FlagToggle({
       className={cn(
         "inline-flex h-[30px] shrink-0 items-center gap-2 rounded-[9px] pr-3 pl-2.5 text-xs transition-[background-color,color,box-shadow,transform] duration-200 ease-out-expo focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-none active:translate-y-px active:scale-[0.98]",
         on === true
-          ? "bg-card text-foreground shadow-[0_1px_2px_rgb(0_0_0/0.18),0_0_0_1px_var(--border)]"
+          ? "bg-card text-foreground shadow-[0_1px_2px_rgb(0_0_0/0.18)]"
           : on === "some"
             ? "text-primary hover:bg-accent"
             : "text-muted-foreground hover:bg-accent hover:text-foreground",
