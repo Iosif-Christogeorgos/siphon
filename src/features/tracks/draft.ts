@@ -62,10 +62,28 @@ export function withoutSync(draft: Draft, key: string): Draft {
   };
 }
 
-/** The sound a sync listens to: the file's own sound that plays first, else its first kept, else its first. */
+/** The languages subtitle sync can time words in: Qwen3-ForcedAligner's (`TIMED` in `src-tauri/sync/siphon_sync.py`). */
+const TIMED = new Set(["en", "zh", "yue", "fr", "de", "it", "ja", "ko", "pt", "ru", "es"]);
+
+/**
+ * The sound a sync listens to, of the film's own: one in a language its words
+ * can be timed in, else one with no language tag, else any (which the sync
+ * refuses, saying why); never commentary while there is other sound. Among
+ * those, the one that plays first, else the first kept, else the first. Kept
+ * or not, every sound track runs on the film's clock: a Greek dub that plays
+ * first doesn't stop the English beside it from being listened to.
+ */
 export function speechTrack(draft: Draft): DraftTrack | undefined {
   const own = draft.tracks.filter((track) => track.kind === "sound" && !track.from);
-  return own.find((track) => track.keep && track.default) ?? own.find((track) => track.keep) ?? own[0];
+  const speech = own.filter((track) => !track.commentary);
+  const pick = (tracks: DraftTrack[]) =>
+    tracks.find((track) => track.keep && track.default) ?? tracks.find((track) => track.keep) ?? tracks[0];
+  return (
+    pick(speech.filter((track) => track.language && TIMED.has(primary(track.language)))) ??
+    pick(speech.filter((track) => !track.language)) ??
+    pick(speech) ??
+    pick(own)
+  );
 }
 
 /** What the user has chosen of an MKV's tracks, beside the file as it is. */

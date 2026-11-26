@@ -1,5 +1,6 @@
 import { AudioLines, Check, Lock, LoaderCircle, Undo2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { languageName } from "@/lib/languages";
 import { useSubSync } from "@/stores/subsync";
 import { useUi } from "@/stores/ui";
 import type { SyncProgress } from "@/types";
@@ -141,6 +142,8 @@ export function SyncToSpeech({
               "Another file is being synced."
             ) : !sound ? (
               "The film has no sound to listen to."
+            ) : sound.language ? (
+              `Gives every line the moment its words are spoken, listening to the ${languageName(sound.language)} sound.`
             ) : (
               "Gives every line the moment its words are spoken in the film."
             )
