@@ -220,6 +220,7 @@ export function TracksPanel({
                           draft={draft}
                           target={added ? { added } : { track: track.index }}
                           apply={later}
+                          className="ml-auto"
                         />
                       )
                     }
@@ -767,7 +768,15 @@ function TrackRow({
           <p className="truncate text-xs text-muted-foreground">{details.join(" · ")}</p>
         </button>
         {flags.map((flag) => (
-          <span key={flag} className="shrink-0 rounded-md bg-background/70 px-1.5 py-0.5 text-[11px] text-muted-foreground">
+          <span
+            key={flag}
+            className={cn(
+              "shrink-0 rounded-md px-1.5 py-0.5 text-[11px]",
+              flag === "Synced"
+                ? "animate-in bg-primary-soft text-primary duration-300 fade-in-0 zoom-in-90"
+                : "bg-background/70 text-muted-foreground",
+            )}
+          >
             {flag}
           </span>
         ))}
@@ -897,8 +906,23 @@ function TrackDetails({
           onChange={(event) => onChange({ name: event.target.value })}
           className={cn(fieldClass, "h-8 w-48 min-w-0 bg-card caret-primary")}
         />
+        {/* The track's place among its kind: at the end of its fields, where there is room. */}
+        {!(first && last) && (
+          <span className="ml-auto flex gap-1">
+            <Hint label="Move up">
+              <button type="button" aria-label="Move up" disabled={first} onClick={() => onMove(-1)} className={MOVE}>
+                <ArrowUp className="size-3.5" />
+              </button>
+            </Hint>
+            <Hint label="Move down">
+              <button type="button" aria-label="Move down" disabled={last} onClick={() => onMove(1)} className={MOVE}>
+                <ArrowDown className="size-3.5" />
+              </button>
+            </Hint>
+          </span>
+        )}
       </div>
-      {(toggles.length > 0 || !(first && last)) && (
+      {(toggles.length > 0 || sync) && (
         <div className="flex flex-wrap items-center gap-2">
           {toggles.length > 0 && (
             <FlagTray>
@@ -909,23 +933,10 @@ function TrackDetails({
               ))}
             </FlagTray>
           )}
-          {!(first && last) && (
-            <span className="ml-auto flex gap-1">
-              <Hint label="Move up">
-                <button type="button" aria-label="Move up" disabled={first} onClick={() => onMove(-1)} className={MOVE}>
-                  <ArrowUp className="size-3.5" />
-                </button>
-              </Hint>
-              <Hint label="Move down">
-                <button type="button" aria-label="Move down" disabled={last} onClick={() => onMove(1)} className={MOVE}>
-                  <ArrowDown className="size-3.5" />
-                </button>
-              </Hint>
-            </span>
-          )}
+          {/* Sync to speech: a key of its own at the row's end. */}
+          {sync}
         </div>
       )}
-      {sync}
     </div>
   );
 }

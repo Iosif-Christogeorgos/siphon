@@ -252,6 +252,79 @@
   }
 }
 
+/*
+ * Sync to speech's key (SyncKey.tsx): its bars ripple once when pointed at,
+ * move as if listening while it syncs, and its check is drawn when done.
+ */
+.sync-bars path {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.sync-bars-live path {
+  animation: sync-listen 0.8s ease-in-out infinite alternate;
+}
+.sync-key:hover .sync-bars:not(.sync-bars-live) path {
+  animation: sync-wave 0.55s ease-in-out 1;
+}
+.sync-bars path:nth-child(2) {
+  animation-delay: -0.35s;
+}
+.sync-bars path:nth-child(3) {
+  animation-delay: -0.1s;
+}
+.sync-bars path:nth-child(4) {
+  animation-delay: -0.55s;
+}
+.sync-bars path:nth-child(5) {
+  animation-delay: -0.25s;
+}
+.sync-bars path:nth-child(6) {
+  animation-delay: -0.65s;
+}
+.sync-key:hover .sync-bars:not(.sync-bars-live) path:first-child {
+  animation-delay: 0s;
+}
+.sync-key:hover .sync-bars:not(.sync-bars-live) path:nth-child(2) {
+  animation-delay: 0.05s;
+}
+.sync-key:hover .sync-bars:not(.sync-bars-live) path:nth-child(3) {
+  animation-delay: 0.1s;
+}
+.sync-key:hover .sync-bars:not(.sync-bars-live) path:nth-child(4) {
+  animation-delay: 0.15s;
+}
+.sync-key:hover .sync-bars:not(.sync-bars-live) path:nth-child(5) {
+  animation-delay: 0.2s;
+}
+.sync-key:hover .sync-bars:not(.sync-bars-live) path:nth-child(6) {
+  animation-delay: 0.25s;
+}
+.sync-check path {
+  stroke-dasharray: 24;
+  animation: sync-draw 0.5s 0.08s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+@keyframes sync-listen {
+  from {
+    transform: scaleY(0.3);
+  }
+  to {
+    transform: scaleY(1);
+  }
+}
+@keyframes sync-wave {
+  50% {
+    transform: scaleY(0.35);
+  }
+}
+@keyframes sync-draw {
+  from {
+    stroke-dashoffset: 24;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
 /* Loading placeholder with a slow sheen. */
 @utility skeleton {
   border-radius: 0.5rem;

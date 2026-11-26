@@ -1,24 +1,18 @@
 import {
-  AudioLines,
   BookOpen,
   Captions,
   Check,
-  LoaderCircle,
-  Lock,
   Minus,
   Paperclip,
   Plus,
   TriangleAlert,
-  Undo2,
   Volume2,
   X,
   Zap,
 } from "lucide-react";
 import { AnimatePresence } from "motion/react";
 import { type ReactNode, useRef, useState } from "react";
-import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Hint } from "@/components/ui/tooltip";
 import { Note } from "@/features/options/PlanCard";
 import { formatBytes } from "@/lib/format";
 import { ipc, toAppError } from "@/lib/ipc";
@@ -29,6 +23,7 @@ import { useUi } from "@/stores/ui";
 import type { PickedFile } from "@/types";
 import { type Draft, type DraftChange, withFonts, withoutSync, withoutTrackSync } from "./draft";
 import { FlagToggle, FlagTray } from "./FlagToggle";
+import { SyncKey } from "./SyncKey";
 import { kindOfPicked, readPicked } from "./reading";
 import { askSync, overall, STAGES } from "./SyncToSpeech";
 import { applyPicked } from "./TracksPanel";
@@ -309,64 +304,64 @@ function useRowSync(syncs: RowSync[], onDraft: (key: string, change: DraftChange
       draft.key === sync.file.key && draft.version === sync.file.draft.version ? change(draft) : draft,
     );
 
+    const all = synced + pending.length;
+  const mine = now && progress?.key === now.id ? progress : null;
+
   let control: ReactNode;
   if (status.state !== "ready") {
     const locked = status.state === "no_gpu" || status.state === "installing";
-    const why =
-      status.state === "no_gpu"
-        ? "Syncing to the speech needs an NVIDIA graphics card with 8 GB of memory."
-        : status.state === "installing"
-          ? `Subtitle sync is downloading: ${Math.round((status.progress ?? 0) * 100)}%.`
-          : "Download subtitle sync in Settings to sync these to the speech.";
     control = (
-      <Hint label={why} className="max-w-64 text-pretty">
-        <span className="shrink-0">
-          <Button size="sm" variant="outline" className="h-8" disabled={locked} onClick={() => openPanel("settings")}>
-            <Lock />
-            Sync to speech
-          </Button>
-        </span>
-      </Hint>
+      <SyncKey
+        small
+        state="locked"
+        label="Sync to speech"
+        disabled={locked}
+        hint={
+          status.state === "no_gpu"
+            ? "Syncing to the speech needs an NVIDIA graphics card with 8 GB of memory."
+            : status.state === "installing"
+              ? `Subtitle sync is downloading: ${Math.round((status.progress ?? 0) * 100)}%.`
+              : "Download subtitle sync in Settings to sync these to the speech."
+        }
+        onPress={() => openPanel("settings")}
+      />
     );
   } else if (pending.length > 0) {
     control = (
-      <Hint label="Stop syncing them">
-        <button
-          type="button"
-          aria-label="Stop syncing them"
-          onClick={() => stop(pending.map((sync) => sync.id))}
-          className="grid size-8 shrink-0 place-items-center rounded-lg text-subtle-foreground transition-colors hover:bg-accent hover:text-foreground"
-        >
-          <X className="size-4" />
-        </button>
-      </Hint>
+      <SyncKey
+        small
+        state={now ? "running" : "waiting"}
+        // Which episode it is on; the line under the row says at what stage.
+        label={now ? shortName(now.file.name) : "Waits its turn"}
+        aside={now ? `${Math.round(((synced + overall(mine)) / all) * 100)}%` : null}
+        share={(synced + overall(mine)) / all}
+        hint={now ? `Syncing them one after another: ${synced} of ${all} synced.` : "Waits for another file’s sync to finish."}
+        side={{ label: "Stop syncing them", icon: "stop", onClick: () => stop(pending.map((sync) => sync.id)) }}
+      />
     );
   } else if (todo.length > 0) {
     control = (
-      <Hint
-        label="Gives every line the moment its words are spoken, in each file, listening to its own sound. One file at a time, on the graphics card."
-        className="max-w-72 text-pretty"
-      >
-        <Button
-          size="sm"
-          variant="outline"
-          className="h-8 shrink-0"
-          onClick={() => {
-            for (const sync of todo) askSync(sync.file.key, sync.file.draft, sync.target, later(sync));
-          }}
-        >
-          <AudioLines className="text-primary" />
-          {synced > 0 ? `Sync ${todo.length} more` : "Sync to speech"}
-        </Button>
-      </Hint>
+      <SyncKey
+        small
+        state="idle"
+        label={synced > 0 ? `Sync ${todo.length} more` : "Sync to speech"}
+        hint="Gives every line the moment its words are spoken, in each file, listening to its own sound. One file at a time, on the graphics card."
+        onPress={() => {
+          for (const sync of todo) askSync(sync.file.key, sync.file.draft, sync.target, later(sync));
+        }}
+      />
     );
   } else {
     control = (
-      <Hint label="Use their own timing, in every file">
-        <button
-          type="button"
-          aria-label="Use their own timing, in every file"
-          onClick={() => {
+      <SyncKey
+        small
+        state="done"
+        label="Synced"
+        hint="Synced to the speech, in every file."
+        side={{
+          label: "Use their own timing, in every file",
+          icon: "undo",
+          onClick: () => {
             for (const sync of syncs) {
               const target = sync.target;
               if (sync.synced) {
@@ -375,12 +370,9 @@ function useRowSync(syncs: RowSync[], onDraft: (key: string, change: DraftChange
                 );
               }
             }
-          }}
-          className="grid size-8 shrink-0 place-items-center rounded-lg text-subtle-foreground transition-colors hover:bg-accent hover:text-foreground"
-        >
-          <Undo2 className="size-4" />
-        </button>
-      </Hint>
+          },
+        }}
+      />
     );
   }
 
@@ -393,34 +385,22 @@ function useRowSync(syncs: RowSync[], onDraft: (key: string, change: DraftChange
 
   let below: ReactNode = null;
   if (pending.length > 0) {
-    const mine = now && progress?.key === now.id ? progress : null;
     const stage = mine ? STAGES[mine.stage] : undefined;
-    const all = synced + pending.length;
-    const share = (synced + overall(mine)) / all;
     below = (
-      <div className="mx-3 mb-2 space-y-1.5 rounded-xl bg-background/60 px-3 py-2" aria-live="polite">
-        <div className="flex items-center gap-2 text-xs">
-          <LoaderCircle className={cn("size-3.5 shrink-0 text-primary", now && "animate-spin")} />
-          <span className="min-w-0 flex-1 truncate text-muted-foreground">
-            {now ? (
-              <>
-                <span className="text-foreground">{shortName(now.file.name)}</span>: {stage?.label ?? "Starting"}…
-              </>
-            ) : (
-              "Waiting for another file’s sync to finish…"
-            )}
-          </span>
-          <span className="shrink-0 font-medium tabular-nums">
-            {synced} of {all} synced
-          </span>
-        </div>
-        <div className="h-1 overflow-hidden rounded-full bg-secondary">
-          <div
-            className="h-full rounded-full bg-primary transition-[width] duration-500 ease-out"
-            style={{ width: `${Math.max(2, share * 100)}%` }}
-          />
-        </div>
-      </div>
+      <p className="flex gap-2 pr-3 pb-2 pl-[4.5rem] text-xs text-muted-foreground" aria-live="polite">
+        <span className="min-w-0 flex-1 truncate">
+          {now ? (
+            <>
+              <span className="text-foreground">{shortName(now.file.name)}</span>: {stage?.label ?? "Starting"}…
+            </>
+          ) : (
+            "Waiting for another file’s sync to finish…"
+          )}
+        </span>
+        <span className="shrink-0 tabular-nums">
+          {synced} of {all} synced
+        </span>
+      </p>
     );
   } else if (failed.length > 0) {
     // A reason is said once, with every file it held up.
@@ -430,7 +410,7 @@ function useRowSync(syncs: RowSync[], onDraft: (key: string, change: DraftChange
       reasons.set(why, [...(reasons.get(why) ?? []), shortName(sync.file.name)]);
     }
     below = (
-      <div className="space-y-0.5 px-3 pb-2 pl-11 text-xs text-pretty text-destructive">
+      <div className="space-y-0.5 pr-3 pb-2 pl-[4.5rem] text-xs text-pretty text-destructive">
         {[...reasons].slice(0, 3).map(([why, names]) => (
           <p key={why}>
             {names.length > 3 ? `${names.length} files` : names.join(", ")}: {why}
