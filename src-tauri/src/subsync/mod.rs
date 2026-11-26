@@ -53,6 +53,14 @@ const MODELS_BYTES: u64 = 8_836_384_618;
 const DISK_BYTES: u64 = 12_300_000_000;
 /// The models and their work need this much of the graphics card's memory.
 const MIN_VRAM_MB: u64 = 8000;
+/// What one sync takes of the graphics card's memory at its peak: measured
+/// 2026-11-26 on a Korra episode, 8.35 GB held by PyTorch, and about half a
+/// gigabyte CUDA takes for itself. Two at once wouldn't fit even a 16 GB card,
+/// so syncs take turns, and each waits until this much is free (`wait_for_card`).
+const SYNC_VRAM_MB: u64 = 9000;
+/// What Windows and the programs on screen keep of a card at the least, which a
+/// sync can never have: on a card of under 10 GB, a sync waits only for the rest.
+const DESKTOP_VRAM_MB: u64 = 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -217,6 +225,68 @@ impl SubSync {
             }
         }
         status.clone()
+    }
+
+    /// How much of the graphics card's memory is free now, and how much it has, in MB.
+    async fn card_memory(&self) -> Option<(u64, u64)> {
+        let mut cmd = process::command("nvidia-smi");
+        cmd.args(["--query-gpu=memory.free,memory.total", "--format=csv,noheader,nounits"]);
+        let output = process::output_within(cmd, Duration::from_secs(10))
+            .await
+            .ok()
+            .flatten()?;
+        parse_memory(&String::from_utf8_lossy(&output.stdout))
+    }
+
+    /// Waits until the graphics card has the memory a sync takes free: a game or
+    /// another program may be using it, and a sync sharing the card with it would
+    /// crawl (on memory the driver lends from the PC) or fail. Says so meanwhile, as
+    /// stage `card` of `key`'s progress (how much of what it needs is free), and
+    /// stops waiting when the sync is stopped. A card that can't be asked is taken
+    /// as free: nothing is gained by refusing.
+    async fn wait_for_card(&self, key: &str) -> Result<()> {
+        let mut said = false;
+        loop {
+            if self.cancelled.load(Ordering::SeqCst) {
+                return Err(AppError::cancelled());
+            }
+            let Some((free, total)) = self.card_memory().await else {
+                return Ok(());
+            };
+            let need = vram_needed(total);
+            if free >= need {
+                if said {
+                    crate::log::line(
+                        &self.app,
+                        &format!("subtitle sync: the graphics card has {free} MB free, going on"),
+                    );
+                }
+                return Ok(());
+            }
+            if !said {
+                said = true;
+                crate::log::line(
+                    &self.app,
+                    &format!(
+                        "subtitle sync: waiting for the graphics card, {free} MB free of {total} MB, needs {need} MB"
+                    ),
+                );
+            }
+            let _ = self.app.emit(
+                PROGRESS_EVENT,
+                SyncProgress {
+                    key: key.to_string(),
+                    stage: "card".into(),
+                    fraction: free as f64 / need as f64,
+                },
+            );
+            for _ in 0..8 {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                if self.cancelled.load(Ordering::SeqCst) {
+                    return Err(AppError::cancelled());
+                }
+            }
+        }
     }
 
     async fn gpu(&self) -> Option<(String, u64)> {
@@ -651,6 +721,10 @@ impl SubSync {
         };
         let out = work.join(format!("{stem}.synced.{kind}"));
 
+        // Only once the card has room (a film's own track was taken out first, which needs none).
+        // Stopped meanwhile, `sync` takes the work folder away, the track taken out with it.
+        self.wait_for_card(key).await?;
+
         let mut cmd = self.python_command();
         cmd.env("HF_HUB_OFFLINE", "1")
             .arg(self.root.join("siphon_sync.py"))
@@ -781,14 +855,30 @@ impl SubSync {
         Ok(())
     }
 
-    /// Stops the sync running now, if any.
+    /// Stops the sync running now, if any: what it runs, or its wait for the graphics card.
     pub async fn cancel(&self) {
+        if self.syncing_in.lock().unwrap().is_none() {
+            return;
+        }
+        self.cancelled.store(true, Ordering::SeqCst);
         let pid = self.running.load(Ordering::SeqCst);
         if pid != 0 {
-            self.cancelled.store(true, Ordering::SeqCst);
             process::kill_tree(pid).await;
         }
     }
+}
+
+/// "14208, 16303" → the first card's free and total memory, in MB.
+fn parse_memory(output: &str) -> Option<(u64, u64)> {
+    let line = output.lines().find(|line| !line.trim().is_empty())?;
+    let (free, total) = line.split_once(',')?;
+    Some((free.trim().parse().ok()?, total.trim().parse().ok()?))
+}
+
+/// What a sync waits to have free on a card of `total` MB: what it takes, or on
+/// a smaller card, all but what Windows keeps of it.
+fn vram_needed(total: u64) -> u64 {
+    SYNC_VRAM_MB.min(total.saturating_sub(DESKTOP_VRAM_MB))
 }
 
 /// "NVIDIA GeForce RTX 5080, 16303" → the first card's name and memory in MB.
@@ -835,6 +925,18 @@ mod tests {
         );
         assert_eq!(parse_gpu(""), None);
         assert_eq!(parse_gpu("No devices were found"), None);
+    }
+
+    #[test]
+    fn reads_how_much_of_the_card_is_free_and_waits_only_for_what_it_can_have() {
+        assert_eq!(parse_memory("14208, 16303\n"), Some((14208, 16303)));
+        assert_eq!(parse_memory("512, 8192\n14000, 16303\n"), Some((512, 8192)));
+        assert_eq!(parse_memory("[N/A], 8192"), None);
+        assert_eq!(parse_memory(""), None);
+        // A 16 GB card: what a sync takes. An 8 GB card: all but what Windows keeps.
+        assert_eq!(vram_needed(16303), SYNC_VRAM_MB);
+        assert_eq!(vram_needed(8192), 8192 - DESKTOP_VRAM_MB);
+        assert_eq!(vram_needed(0), 0);
     }
 
     #[test]
