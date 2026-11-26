@@ -50,7 +50,7 @@ pub fn nothing_to_do(video: &VideoInfo, choice: &Choice, recipe: &Recipe) -> Opt
         }
         _ if recipe.video.is_none() => "This is already the sound alone, as it is.".to_string(),
         (Some(Group::Max), _) => "This already has its streams as they are, in the file type that suits them.".into(),
-        _ => format!("This is already {} like that.", recipe.container.with_article()),
+        _ => format!("This is already {}.", recipe.container.with_article()),
     };
     Some(format!("{said} Nothing to convert."))
 }
