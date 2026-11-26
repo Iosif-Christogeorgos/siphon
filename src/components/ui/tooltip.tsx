@@ -2,11 +2,22 @@ import { Tooltip as TooltipPrimitive } from "radix-ui";
 import * as React from "react";
 import { cn } from "@/lib/utils";
 
+/**
+ * A hint closes as soon as the pointer leaves what it explains, even onto the hint
+ * itself: Radix keeps it open over its own text by default, which made one linger.
+ */
 function TooltipProvider({
   delayDuration = 350,
+  disableHoverableContent = true,
   ...props
 }: React.ComponentProps<typeof TooltipPrimitive.Provider>) {
-  return <TooltipPrimitive.Provider delayDuration={delayDuration} {...props} />;
+  return (
+    <TooltipPrimitive.Provider
+      delayDuration={delayDuration}
+      disableHoverableContent={disableHoverableContent}
+      {...props}
+    />
+  );
 }
 
 function TooltipContent({
