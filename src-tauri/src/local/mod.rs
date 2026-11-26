@@ -416,11 +416,11 @@ pub async fn read(app: &AppHandle, bins: &BinaryManager, key: &str) -> Result<Ar
     Ok(info)
 }
 
-fn lost_track() -> AppError {
+pub(crate) fn lost_track() -> AppError {
     AppError::internal("Siphon lost track of this file. Drop it on the window again.")
 }
 
-fn gone() -> AppError {
+pub(crate) fn gone() -> AppError {
     AppError::new(
         ErrorKind::Unavailable,
         "This file isn't there any more. It may have been moved or deleted.",

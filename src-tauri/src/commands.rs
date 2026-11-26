@@ -29,11 +29,13 @@ use crate::sessions::{Account, Method, Mode, Sessions, SiteSession};
 use crate::settings::{Settings, SettingsStore};
 use crate::sizing::{Measure, Sizing};
 use crate::state::{CapabilityCache, MediaCache};
+use crate::subsync::{SubSync, SubSyncStatus, SyncSummary};
 use crate::throttle::Throttle;
 use crate::ytdlp::metadata::{self, LiveStatus, Media, VideoInfo};
 
 type Binaries<'a> = State<'a, Arc<BinaryManager>>;
 type Downloads<'a> = State<'a, Arc<DownloadManager>>;
+type SubSyncs<'a> = State<'a, Arc<SubSync>>;
 
 /// Current state of the managed binaries, without touching the network.
 #[tauri::command]
@@ -177,6 +179,76 @@ pub async fn read_added(
 ) -> Result<local::mkv::added::Added> {
     ensure_ready(&bins)?;
     local::mkv::added::read(&app, &bins, &key, charset.as_deref()).await
+}
+
+/// Subtitle sync's download: whether it's there, and whether this PC can use it.
+#[tauri::command]
+pub async fn subsync_status(sync: SubSyncs<'_>) -> Result<SubSyncStatus> {
+    Ok(sync.status().await)
+}
+
+/// Downloads subtitle sync (docs/subtitle-sync.md); progress comes as `subsync://status` events.
+#[tauri::command]
+pub async fn subsync_install(sync: SubSyncs<'_>) -> Result<()> {
+    sync.install().await
+}
+
+/// Takes subtitle sync's download away again.
+#[tauri::command]
+pub async fn subsync_remove(sync: SubSyncs<'_>) -> Result<()> {
+    sync.remove().await
+}
+
+/// A subtitle file synced to a film's speech: the synced copy, read as a file to add, and what was found.
+#[derive(Serialize)]
+pub struct Synced {
+    pub added: local::mkv::added::Added,
+    pub summary: SyncSummary,
+}
+
+/// Syncs `subs`, a subtitle file added to `file`'s copy, to the speech in
+/// `file`'s stream `stream`; progress comes as `subsync://progress` events.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn sync_subtitles(
+    app: AppHandle,
+    bins: Binaries<'_>,
+    grants: State<'_, Grants>,
+    sync: SubSyncs<'_>,
+    file: String,
+    subs: String,
+    stream: usize,
+    language: Option<String>,
+    charset: Option<String>,
+) -> Result<Synced> {
+    ensure_ready(&bins)?;
+    let video = grants.get(&file).ok_or_else(local::lost_track)?;
+    let subtitles = grants.get(&subs).ok_or_else(local::lost_track)?;
+    if !video.path().is_file() || !subtitles.path().is_file() {
+        return Err(local::gone());
+    }
+    let (path, summary) = sync
+        .sync(
+            &subs,
+            video.path(),
+            stream,
+            language.as_deref(),
+            subtitles.path(),
+            charset.as_deref(),
+        )
+        .await?;
+    let synced = grants
+        .grant(&path)
+        .ok_or_else(|| AppError::internal("The synced subtitles couldn't be opened."))?;
+    let added = local::mkv::added::read(&app, &bins, &synced.key(), None).await?;
+    Ok(Synced { added, summary })
+}
+
+/// Stops the subtitle sync running now.
+#[tauri::command]
+pub async fn sync_cancel(sync: SubSyncs<'_>) -> Result<()> {
+    sync.cancel().await;
+    Ok(())
 }
 
 /// The chapters in a file the user gave: a chapters file, or a video's (see `local::mkv::chapter_files`).

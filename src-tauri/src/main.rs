@@ -19,6 +19,7 @@ mod settings;
 mod sizing;
 mod srt;
 mod state;
+mod subsync;
 mod throttle;
 mod ytdlp;
 
@@ -89,6 +90,7 @@ fn main() {
             downloads::sweep_work(app.handle(), &downloads.kept_ids());
             let binaries = binaries::BinaryManager::new(app.handle())?;
             app.manage(Arc::new(binaries));
+            app.manage(Arc::new(subsync::SubSync::new(app.handle())?));
             app.manage(sessions::Sessions::load(app.handle()));
             app.manage(sessions::sign_in::SignInWindow::default());
             app.manage(Arc::new(downloads));
@@ -138,6 +140,11 @@ fn main() {
             commands::pick_track_files,
             commands::read_added,
             commands::read_chapters,
+            commands::subsync_status,
+            commands::subsync_install,
+            commands::subsync_remove,
+            commands::sync_subtitles,
+            commands::sync_cancel,
             commands::match_episodes,
             commands::read_file,
             commands::read_tracks,
