@@ -71,6 +71,8 @@ export const ipc = {
     charset: string | null,
   ) => invoke<Synced>("sync_subtitles", { file, subs, track, stream, language, charset }),
   syncCancel: () => invoke<void>("sync_cancel"),
+  /** Takes away every synced copy of subtitles but those `keys` name. */
+  syncKeep: (keys: string[]) => invoke<void>("sync_keep", { keys }),
   /** The chapters in a chapters file (XML, text) or a video the user gave. */
   readChapters: (key: string) => invoke<Chapter[]>("read_chapters", { key }),
   /** Which episode each file to add goes with, by name: its place in `episodes`, or null. */

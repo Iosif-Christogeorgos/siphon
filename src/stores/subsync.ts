@@ -1,9 +1,10 @@
 import { create } from "zustand";
 import { ipc, toAppError } from "@/lib/ipc";
+import { useDownloads } from "@/stores/downloads";
 import type { SubSyncStatus, Synced, SyncProgress } from "@/types";
 
 interface SyncRequest {
-  /** What names this sync while it runs: the added file's key, or `<film>#<track>` (`syncId`). */
+  /** What names this sync while it runs: the added file's key, or `<film>#<track>` (`ownSyncId`). */
   id: string;
   /** The film's key. */
   file: string;
@@ -77,7 +78,53 @@ export const useSubSync = create<SubSyncState>((set, get) => ({
       if (failed.kind !== "cancelled") set({ failure: { key: request.id, message: failed.message } });
     } finally {
       set({ running: null, progress: null });
+      // The synced copy is in its draft by the time this looks.
+      review();
     }
   },
   cancel: () => void ipc.syncCancel(),
 }));
+
+// ── Only what is used is kept ─────────────────────────────────────────
+
+/** The synced copies each holder of drafts uses (`useSyncedInUse`), by holder. */
+const holders = new Map<string, string[]>();
+/** What the backend was last told to keep. */
+let told: string | null = null;
+let looking: ReturnType<typeof setTimeout> | null = null;
+
+/** A holder of drafts uses these synced copies now: none, once it lets them go. */
+export function holdSynced(holder: string, keys: string[]) {
+  if (keys.length > 0) holders.set(holder, keys);
+  else holders.delete(holder);
+  review();
+}
+
+/**
+ * Tells the backend which synced copies are still used, a moment after
+ * anything may have changed that, so it takes the rest away (`sync_keep`):
+ * those a draft holds, and those an unfinished copy reads again when it is
+ * resumed or tried again. Not while a sync runs: its copy isn't in a draft yet.
+ */
+function review() {
+  if (looking) return;
+  looking = setTimeout(() => {
+    looking = null;
+    if (useSubSync.getState().running) return;
+    const keys = new Set([...holders.values()].flat());
+    for (const download of Object.values(useDownloads.getState().byId)) {
+      if (download.status === "finished") continue;
+      for (const track of download.tracks?.tracks ?? []) if (track.from) keys.add(track.from);
+    }
+    const kept = [...keys].sort();
+    const now = kept.join("\n");
+    if (now === told) return;
+    told = now;
+    ipc.syncKeep(kept).catch(() => {
+      told = null;
+    });
+  }, 500);
+}
+
+// A copy that finished, or was taken out of Activity, may have been the last to use one.
+useDownloads.subscribe(review);

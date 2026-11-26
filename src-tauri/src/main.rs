@@ -145,6 +145,7 @@ fn main() {
             commands::subsync_remove,
             commands::sync_subtitles,
             commands::sync_cancel,
+            commands::sync_keep,
             commands::match_episodes,
             commands::read_file,
             commands::read_tracks,
@@ -192,6 +193,8 @@ fn main() {
                 tauri::async_runtime::block_on(downloads.shut_down());
                 // Every download has stopped: no cookie file may stay behind.
                 app.state::<Arc<sessions::Sessions>>().sweep_temp();
+                // Nor a synced copy of subtitles, which no later session can use.
+                app.state::<Arc<subsync::SubSync>>().clear_work();
             }
         });
 }

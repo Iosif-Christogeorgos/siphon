@@ -79,6 +79,14 @@ export function withTrackSynced(draft: Draft, index: number, file: AddedFile, su
   return { ...draft, syncs: { ...draft.syncs, [index]: { file, summary } } };
 }
 
+/** The synced copies a draft uses: of files added, and of the film's own tracks. */
+export function syncedIn(draft: Draft): string[] {
+  return [
+    ...draft.added.filter((added) => added.synced).map((added) => added.key),
+    ...Object.values(draft.syncs).map((sync) => sync.file.key),
+  ];
+}
+
 /** The film's own track `index` back to its own timing. */
 export function withoutTrackSync(draft: Draft, index: number): Draft {
   const { [index]: _gone, ...syncs } = draft.syncs;

@@ -10,7 +10,7 @@
 //!   env/               its packages: PyTorch with CUDA, Qwen3-ASR, sentence-transformers, Silero VAD
 //!   models/            Qwen3-ASR 1.7B, Qwen3-ForcedAligner 0.6B, BGE-M3 (half size), at pinned revisions
 //!   siphon_sync.py     the sync itself (src-tauri/sync), written out from the app
-//!   work/              synced files, kept for the copy that uses them
+//!   work/              synced copies, kept only while a choice of tracks or an unfinished copy uses them
 //!   ready.json         written last: the install is whole
 //! ```
 
@@ -128,6 +128,8 @@ pub struct SubSync {
     installing: tokio::sync::Mutex<()>,
     /// One sync at a time: the models fill most of the graphics card.
     syncing: tokio::sync::Mutex<()>,
+    /// The folder the sync running now works in.
+    syncing_in: Mutex<Option<PathBuf>>,
     running: AtomicU32,
     cancelled: AtomicBool,
 }
@@ -160,12 +162,15 @@ impl SubSync {
             gpu: tokio::sync::OnceCell::new(),
             installing: tokio::sync::Mutex::new(()),
             syncing: tokio::sync::Mutex::new(()),
+            syncing_in: Mutex::new(None),
             running: AtomicU32::new(0),
             cancelled: AtomicBool::new(false),
         };
         if sync.is_installed() {
             sync.status.lock().unwrap().state = State::Ready;
         }
+        // Gone at launch as well as at closing, in case the last session never closed.
+        sync.clear_work();
         Ok(sync)
     }
 
@@ -575,13 +580,39 @@ impl SubSync {
         self.write_script().await?;
         let work = self.root.join("work").join(work_id());
         tokio::fs::create_dir_all(&work).await?;
-        let (subs, charset, stem) = match subs {
+        *self.syncing_in.lock().unwrap() = Some(work.clone());
+        let made = self
+            .sync_in(&work, key, &bins.ffmpeg(), video, stream, language, subs)
+            .await;
+        *self.syncing_in.lock().unwrap() = None;
+        if made.is_err() {
+            let _ = tokio::fs::remove_dir_all(&work).await;
+        }
+        made
+    }
+
+    /// The sync itself, in a folder of its own, `work`, which holds only the
+    /// synced copy once it has finished; [`Self::sync`] takes the folder away
+    /// if it fails.
+    #[allow(clippy::too_many_arguments)]
+    async fn sync_in(
+        &self,
+        work: &Path,
+        key: &str,
+        ffmpeg: &Path,
+        video: &Path,
+        stream: usize,
+        language: Option<&str>,
+        subs: Subtitles<'_>,
+    ) -> Result<(PathBuf, SyncSummary)> {
+        // A track of the film's own is taken out to a file, needed only while the sync reads it.
+        let (subs, taken_out, charset, stem) = match subs {
             Subtitles::File { path, charset } => {
                 let stem = path
                     .file_stem()
                     .map(|s| s.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "subtitles".into());
-                (path.to_path_buf(), charset, stem)
+                (path.to_path_buf(), false, charset, stem)
             }
             Subtitles::Track(index) => {
                 let film = video
@@ -598,14 +629,10 @@ impl SubSync {
                         fraction: 0.0,
                     },
                 );
-                if let Err(err) = self.take_out(&bins.ffmpeg(), video, index, &path).await {
-                    let _ = tokio::fs::remove_dir_all(&work).await;
-                    return Err(err);
-                }
-                (path, None, stem)
+                self.take_out(ffmpeg, video, index, &path).await?;
+                (path, true, None, stem)
             }
         };
-        let subs = subs.as_path();
         let out = work.join(format!("{stem}.synced.srt"));
 
         let mut cmd = self.python_command();
@@ -619,7 +646,7 @@ impl SubSync {
             .arg("--stream")
             .arg(stream.to_string())
             .arg("--subs")
-            .arg(subs)
+            .arg(&subs)
             .arg("--out")
             .arg(&out);
         if let Some(language) = language {
@@ -639,18 +666,16 @@ impl SubSync {
                 let _ = app.emit(PROGRESS_EVENT, progress);
             })
             .await;
+        if taken_out {
+            let _ = tokio::fs::remove_file(&subs).await;
+        }
         if self.cancelled.swap(false, Ordering::SeqCst) {
-            let _ = tokio::fs::remove_dir_all(&work).await;
             return Err(AppError::cancelled());
         }
         let done = match outcome {
             Ok(Ok(done)) => done,
-            Ok(Err(message)) => {
-                let _ = tokio::fs::remove_dir_all(&work).await;
-                return Err(AppError::new(ErrorKind::Internal, message));
-            }
+            Ok(Err(message)) => return Err(AppError::new(ErrorKind::Internal, message)),
             Err(details) => {
-                let _ = tokio::fs::remove_dir_all(&work).await;
                 crate::log::line(&self.app, &format!("subtitle sync failed: {details}"));
                 return Err(AppError::internal("The sync stopped unexpectedly.").with_details(details));
             }
@@ -665,6 +690,34 @@ impl SubSync {
             ),
         );
         Ok((out, summary))
+    }
+
+    /// Takes away every synced copy but those at `keep`, and the folder of a
+    /// sync running now: a synced copy is kept only while a choice of tracks
+    /// or an unfinished copy uses it (`src/stores/subsync.ts` says which).
+    pub async fn keep_only(&self, keep: &[PathBuf]) {
+        let Ok(mut folders) = tokio::fs::read_dir(self.root.join("work")).await else {
+            return;
+        };
+        let running = self.syncing_in.lock().unwrap().clone();
+        while let Ok(Some(entry)) = folders.next_entry().await {
+            let path = entry.path();
+            let used = keep.iter().any(|kept| kept.parent() == Some(path.as_path()));
+            if used || running.as_ref() == Some(&path) {
+                continue;
+            }
+            if path.is_dir() {
+                let _ = tokio::fs::remove_dir_all(&path).await;
+            } else {
+                let _ = tokio::fs::remove_file(&path).await;
+            }
+        }
+    }
+
+    /// Takes away every synced copy. None is of use once Siphon closes: files
+    /// added to a film, synced copies among them, aren't kept across a restart.
+    pub fn clear_work(&self) {
+        let _ = std::fs::remove_dir_all(self.root.join("work"));
     }
 
     /// Writes text subtitle track `index` of `video` out as an SRT file, for a

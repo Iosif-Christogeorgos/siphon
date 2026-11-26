@@ -8,7 +8,7 @@ It is an optional download (Settings › Subtitle sync), made only when the user
 
 `src-tauri/sync/siphon_sync.py`, run by `src-tauri/src/subsync/` in a private Python:
 
-1. **The subtitles**, when they are a track of the film's own, are taken out of it first as an SRT file in `subsync\work\`, by Siphon's FFmpeg (`SubSync::take_out`). It reads the whole film for them, as a track's packets are spread all through it: seconds on an SSD.
+1. **The subtitles**, when they are a track of the film's own, are taken out of it first as an SRT file in `subsync\work\`, by Siphon's FFmpeg (`SubSync::take_out`). It reads the whole film for them, as a track's packets are spread all through it: seconds on an SSD. The file is deleted as soon as the sync has read it.
 2. **The sound it listens to** (`speechTrack` in `draft.ts`): of the film's own sound, one in a language the aligner times (see Limits), else one with no language tag, else any, which is then refused with the reason; never commentary while there is other sound; among those, the one that plays first, else the first kept, else the first. Every sound track runs on the film's clock, so a Greek dub that plays first doesn't keep the English beside it from being heard, kept or not; the button says which it listens to ("listening to the English sound").
 3. **The dialogue** is pulled out of that sound track by Siphon's FFmpeg: the centre channel of a 5.1 or 7.1 mix, where films put speech, away from most music; both channels of stereo. 16 kHz mono.
 4. **Where someone speaks**: Silero VAD (MIT). It runs over 32 stretches of the film at once, each first hearing the 60 s before it so its memory has settled as if it had heard everything before; its own rules then turn its probabilities into speech regions (from 0.35, silence below 0.20 for 250 ms, 150 ms margins). Measured on Sicario: 1,081 of 1,082 regions the same as one long pass, in 11 s instead of 48.
@@ -21,9 +21,11 @@ It is an optional download (Settings › Subtitle sync), made only when the user
 
 The synced copy is written as UTF-8 SRT in `subsync\work\`. A file added is swapped for it in the draft (`withSynced` in `draft.ts`), and **Use the file's own timing** puts the file back. A track of the film's own stays where it is in the draft (`withTrackSynced`, `Draft.syncs`), and the copy takes that track's lines from the synced file instead of the film (`editOf`), as it takes a file added; **Use the track's own timing** undoes it. Either way every choice made of the track (language, name, flags, place) is kept, and the row says **Synced**.
 
+**Only what is used is kept.** A synced copy is needed only between the sync and the copy that saves it, and for saving again: the copy is made by FFmpeg from files, so the synced lines wait in one. It stays while a choice of tracks holds it (`useSyncedInUse`, in the single file's pane and the files list) or an unfinished copy may read it again on Resume or Try again (one queued, running, paused or failed in Activity), and is deleted as soon as neither does: undone, the film closed, the failed copy taken out of Activity (`sync_keep`, `SubSync::keep_only`, a moment after any of these; never while a sync runs, so a copy just made isn't taken before its draft has it). A sync that fails or is stopped leaves nothing. When Siphon closes, `subsync\work\` is emptied, and again at launch in case it didn't close: files added to a film aren't kept across a restart, so nothing an earlier session synced can be used. Checked in the dev build: the track taken out was gone the moment its sync ended; the synced copy went within a second of **Use the track's own timing**; it stayed through saving while the film was open, and through closing the film while a failed copy of it was in Activity, and went when that copy was taken out; one in use when Siphon closed was gone, and five left from before were gone at launch.
+
 ## The download
 
-`<app-local-data>\subsync\`, nothing outside it:
+`<app-local-data>\subsync\`, nothing outside it (and `work\`, synced copies while they are used, see above):
 
 | Part | Download | On disk |
 |---|---|---|

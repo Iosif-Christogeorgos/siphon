@@ -11,6 +11,7 @@ import { ManualPanel } from "@/features/options/ManualPanel";
 import { LiveWaitCard, Note, PlanCard } from "@/features/options/PlanCard";
 import { CHAT_GROUPS, PresetArea } from "@/features/presets/PresetArea";
 import { changesOf, type Draft, editOf } from "@/features/tracks/draft";
+import { useSyncedInUse } from "@/features/tracks/useSyncedInUse";
 import { hasTracksToChoose, TracksCard } from "@/features/tracks/TracksCard";
 import { TrimPanel } from "@/features/trim/TrimPanel";
 import { ipc, toAppError } from "@/lib/ipc";
@@ -82,6 +83,7 @@ export function VideoPane({ video }: { video: VideoInfo }) {
   const [tracksOn, setTracksOn] = useState(false);
   // What has been chosen of its tracks so far.
   const [draft, setDraft] = useState<Draft | null>(null);
+  useSyncedInUse([draft]);
   const trackChanges = draft ? changesOf(draft) : null;
   const customizing = useChoices((state) => state.choices !== null && state.choices.active.kind !== "preset");
   // A Twitch video's or stream's chat can be drawn into the picture, with the presets that keep it as it is.

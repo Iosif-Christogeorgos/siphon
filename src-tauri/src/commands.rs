@@ -260,6 +260,19 @@ pub async fn sync_subtitles(
     Ok(Synced { added, summary })
 }
 
+/// Takes away every synced copy of subtitles but those `keys` name: the
+/// window says which its choices of tracks and unfinished copies still use.
+#[tauri::command]
+pub async fn sync_keep(grants: State<'_, Grants>, sync: SubSyncs<'_>, keys: Vec<String>) -> Result<()> {
+    let keep: Vec<PathBuf> = keys
+        .iter()
+        .filter_map(|key| grants.get(key))
+        .map(|file| file.path().to_path_buf())
+        .collect();
+    sync.keep_only(&keep).await;
+    Ok(())
+}
+
 /// Stops the subtitle sync running now.
 #[tauri::command]
 pub async fn sync_cancel(sync: SubSyncs<'_>) -> Result<()> {

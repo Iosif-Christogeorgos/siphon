@@ -9,6 +9,7 @@ import { ManualPanel } from "@/features/options/ManualPanel";
 import { Box, fold, Thumb } from "@/features/playlist/rows";
 import { PresetArea } from "@/features/presets/PresetArea";
 import { changesOf, type Draft, draftOf, editOf, sizeOf } from "@/features/tracks/draft";
+import { useSyncedInUse } from "@/features/tracks/useSyncedInUse";
 import { tracksQuery, useLanguagesKey } from "@/features/tracks/reading";
 import { type SeasonFile, toCheck } from "@/features/tracks/season";
 import { SeasonTracks, UnsureMark } from "@/features/tracks/SeasonTracks";
@@ -113,6 +114,7 @@ export function FilesPane({ intake }: { intake: Intake }) {
     queries: mkvs.map(({ file }) => tracksQuery(file.key, file.version, languages, tracksAsked)),
   });
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
+  useSyncedInUse(Object.values(drafts));
   const current = (key: string, version: string) => {
     const draft = drafts[key];
     return draft && draft.version === version && draft.languages === languages ? draft : null;
