@@ -39,9 +39,11 @@ import {
   type DraftAdded,
   type DraftTrack,
   draftOf,
+  fitsMp4,
   mineOf,
   moved,
   readOf,
+  savedAsMkv,
   sizeOf,
   withChapters,
   withFonts,
@@ -219,6 +221,8 @@ export function TracksPanel({
         )}
       </AnimatePresence>
 
+      <KindOfCopy draft={draft} contents={data} onDraft={onDraft} />
+
       {!embedded && <Summary draft={draft} contents={data} />}
     </fieldset>
   );
@@ -378,6 +382,53 @@ function AddTracks({ onAdded }: { onAdded: (reads: PickedRead[]) => void }) {
           </Note>
         ))}
       </AnimatePresence>
+    </div>
+  );
+}
+
+/**
+ * What kind of file the copy is, for a file that isn't an MKV: an MP4's
+ * stays an MP4, unless it is to hold what an MP4 can't (pictures for
+ * subtitles, fonts…) or the user asks; an MPEG-TS's becomes an MKV.
+ */
+function KindOfCopy({
+  draft,
+  contents,
+  onDraft,
+}: {
+  draft: Draft;
+  contents: MkvContents;
+  onDraft: (draft: Draft) => void;
+}) {
+  if (draft.container === "matroska" || draft.container === "other") return null;
+  if (draft.container === "ts") {
+    return <p className="px-1 text-xs text-muted-foreground">The copy is an MKV, which keeps every track as it is.</p>;
+  }
+  const misfits = draft.tracks.flatMap((track) => {
+    if (!track.keep) return [];
+    const read = readOf(draft, contents, track);
+    return read && !fitsMp4(read) ? [read] : [];
+  });
+  const needsMkv = misfits.length > 0 || draft.fonts.length > 0;
+  const why = [
+    misfits.length > 0 && `its ${[...new Set(misfits.map((track) => codec(track.codec)))].join(" and ")} tracks`,
+    draft.fonts.length > 0 && "fonts",
+  ]
+    .filter(Boolean)
+    .join(" or ");
+  return (
+    <div className="flex items-center gap-2 px-1 text-xs text-muted-foreground">
+      <p className="min-w-0 flex-1 text-pretty">
+        {savedAsMkv(draft)
+          ? needsMkv
+            ? `The copy is an MKV: an MP4 can’t hold ${why}.`
+            : "The copy is an MKV."
+          : "The copy stays an MP4. Its subtitles are written as an MP4’s timed text."}
+      </p>
+      {savedAsMkv(draft) && !needsMkv && (
+        <SectionAction onClick={() => onDraft({ ...draft, mkv: false })}>Keep it an MP4</SectionAction>
+      )}
+      {!savedAsMkv(draft) && <SectionAction onClick={() => onDraft({ ...draft, mkv: true })}>Save it as an MKV</SectionAction>}
     </div>
   );
 }

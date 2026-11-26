@@ -213,7 +213,14 @@ impl DownloadManager {
                 ));
             }
         }
-        let output = self.unique_output(folder.join(original.name()), job.id);
+        // The original's name, as an MKV's if it becomes one ("Film.ts" → "Film.mkv").
+        let name = match edit.muxer(contents, original.path()) {
+            mkv::edit::Muxer::Matroska if !original.name().to_lowercase().ends_with(".mkv") => {
+                format!("{}.mkv", original.stem())
+            }
+            _ => original.name(),
+        };
+        let output = self.unique_output(folder.join(name), job.id);
         let partial = local::partial_name(&output, job.id);
         let mut cmd = process::command(job.bins.ffmpeg());
         cmd.args(mkv::edit::args(

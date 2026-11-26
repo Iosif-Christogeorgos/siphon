@@ -41,6 +41,27 @@ export interface Draft {
   leftOutAttachments: number[];
   /** Fonts to attach. */
   fonts: PickedFile[];
+  /** The kind of file it is. */
+  container: MkvContents["container"];
+  /** An MP4 saved as an MKV: the copy holds what an MP4 can't. */
+  mkv: boolean;
+}
+
+/** What an MP4 holds without converting it (`local/mkv/edit.rs`, `fits_mp4`). */
+export function fitsMp4(track: MkvTrack): boolean {
+  switch (track.kind) {
+    case "video":
+      return ["h264", "hevc", "av1", "vp9", "mpeg4", "mpeg2video", "mjpeg", "prores"].includes(track.codec);
+    case "sound":
+      return ["aac", "mp3", "ac3", "eac3", "alac", "flac", "opus"].includes(track.codec);
+    case "subtitles":
+      return ["subrip", "ass", "ssa", "webvtt", "text", "mov_text"].includes(track.codec);
+  }
+}
+
+/** The copy is an MKV: an MKV's and an MPEG-TS's are, and an MP4's when asked. */
+export function savedAsMkv(draft: Draft): boolean {
+  return draft.container !== "mp4" || draft.mkv;
 }
 
 /** Each file added from gets indexes of its own in a draft: far past any file's streams. */
@@ -121,6 +142,8 @@ function asTheFileIs(contents: MkvContents, key: string, version: string, langua
     chaptersFrom: null,
     leftOutAttachments: [],
     fonts: [],
+    container: contents.container,
+    mkv: false,
   };
 }
 
@@ -138,7 +161,8 @@ export function withChapters(draft: Draft, chapters: Chapter[], from: string | n
 /** Fonts to attach, each once. */
 export function withFonts(draft: Draft, fonts: PickedFile[]): Draft {
   const more = fonts.filter((font) => !draft.fonts.some((known) => known.key === font.key));
-  return { ...draft, fonts: [...draft.fonts, ...more] };
+  // An MP4 can't hold fonts: its copy becomes an MKV.
+  return { ...draft, fonts: [...draft.fonts, ...more], mkv: draft.mkv || draft.container === "mp4" };
 }
 
 /**
@@ -183,7 +207,14 @@ export function addTracks(draft: Draft, file: AddedFile): Draft {
       original: false,
     });
   }
-  return { ...without, tracks, added: [...without.added, { ...file, base }] };
+  // What an MP4 can't hold makes its copy an MKV.
+  const misfit = file.contents.tracks.some((track) => track.kind !== "video" && !fitsMp4(track));
+  return {
+    ...without,
+    tracks,
+    added: [...without.added, { ...file, base }],
+    mkv: without.mkv || (without.container === "mp4" && misfit),
+  };
 }
 
 /** The draft without the tracks added from `key`. */
@@ -217,6 +248,7 @@ export function editOf(draft: Draft): TrackEdit {
     chapter_list: draft.chapterList,
     left_out_attachments: draft.leftOutAttachments,
     fonts: draft.fonts.map((font) => font.key),
+    mkv: draft.mkv,
   };
 }
 
@@ -244,7 +276,8 @@ export function changesOf(draft: Draft): { removed: number; kept: number; added:
       !draft.attachments ||
       draft.chapterList !== null ||
       draft.leftOutAttachments.length > 0 ||
-      draft.fonts.length > 0,
+      draft.fonts.length > 0 ||
+      draft.mkv,
   };
 }
 

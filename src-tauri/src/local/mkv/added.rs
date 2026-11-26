@@ -562,6 +562,7 @@ mod tests {
             certain: false,
         };
         let mut contents = Contents {
+            container: Default::default(),
             tracks: vec![track.clone()],
             chapters: Default::default(),
             attachments: Vec::new(),

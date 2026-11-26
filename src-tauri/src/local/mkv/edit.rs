@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use super::{added, chapter_files, Chapter, Contents, Kind, Track};
+use super::{added, chapter_files, Chapter, Container, Contents, Kind, Track};
 use crate::error::{AppError, Result};
 use crate::ytdlp::subtitles::iso639_2;
 
@@ -35,6 +35,39 @@ pub struct TrackEdit {
     /// Font files to attach, by key: what ASS subtitles are drawn with.
     #[serde(default)]
     pub fonts: Vec<String>,
+    /// Save an MP4 (or MOV) as an MKV: what it holds an MP4 can't.
+    #[serde(default)]
+    pub mkv: bool,
+}
+
+/// The kind of file a copy is written as.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Muxer {
+    Matroska,
+    Mp4,
+    Mov,
+}
+
+impl Muxer {
+    /// FFmpeg's name for it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Muxer::Matroska => "matroska",
+            Muxer::Mp4 => "mp4",
+            Muxer::Mov => "mov",
+        }
+    }
+}
+
+/// What an MP4 holds without converting it: the usual video and sound, and
+/// text subtitles written as its timed text. Pictures for subtitles, DTS,
+/// TrueHD, Vorbis and the like need an MKV.
+pub fn fits_mp4(kind: Kind, codec: &str) -> bool {
+    match kind {
+        Kind::Video => ["h264", "hevc", "av1", "vp9", "mpeg4", "mpeg2video", "mjpeg", "prores"].contains(&codec),
+        Kind::Sound => ["aac", "mp3", "ac3", "eac3", "alac", "flac", "opus"].contains(&codec),
+        Kind::Subtitles => super::words::TEXT.contains(&codec),
+    }
 }
 
 /// The font files a copy can attach, by extension, and how Matroska names their kind.
@@ -87,6 +120,25 @@ pub struct AddedInput {
 }
 
 impl TrackEdit {
+    /// The kind of file the copy is: an MKV's stays an MKV and an MPEG-TS
+    /// becomes one; an MP4 (or MOV) stays one unless asked, as its name says.
+    pub fn muxer(&self, contents: &Contents, source: &Path) -> Muxer {
+        match contents.container {
+            Container::Mp4 if !self.mkv => {
+                let mov = source
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("mov"));
+                if mov {
+                    Muxer::Mov
+                } else {
+                    Muxer::Mp4
+                }
+            }
+            _ => Muxer::Matroska,
+        }
+    }
+
     /// The files it adds tracks from, by key, each once, in the order first met.
     pub fn added_keys(&self) -> Vec<&str> {
         let mut keys: Vec<&str> = Vec::new();
@@ -145,6 +197,18 @@ impl TrackEdit {
         }
         if self.fonts.len() > 100 {
             return Err(AppError::internal("That is too many fonts to attach."));
+        }
+        if contents.container == Container::Mp4 && !self.mkv {
+            let misfit = self
+                .tracks
+                .iter()
+                .filter_map(|kept| Self::track(kept, contents, added))
+                .find(|track| !fits_mp4(track.kind, &track.codec));
+            if misfit.is_some() || !self.fonts.is_empty() {
+                return Err(AppError::internal(
+                    "An MP4 can't hold everything chosen. Save it as an MKV.",
+                ));
+            }
         }
         Ok(())
     }
@@ -246,8 +310,10 @@ pub fn args(
     for kept in &edit.tracks {
         push(&["-map", &format!("{}:{}", input_of(kept), kept.index)]);
     }
+    let muxer = edit.muxer(contents, source);
+    let matroska = muxer == Muxer::Matroska;
     let mut attached = 0;
-    if edit.attachments {
+    if edit.attachments && matroska {
         for attachment in &contents.attachments {
             if !edit.left_out_attachments.contains(&attachment.index) {
                 push(&["-map", &format!("0:{}", attachment.index)]);
@@ -270,7 +336,10 @@ pub fn args(
             continue;
         };
         let rewrite = match track.codec.as_str() {
-            "mov_text" => Some("srt"),
+            // An MP4's subtitles are its timed text.
+            "mov_text" if matroska => Some("srt"),
+            "mov_text" => None,
+            _ if !matroska && track.kind == Kind::Subtitles => Some("mov_text"),
             "ass" | "ssa" if kept.charset.is_some() => Some("ass"),
             codec if kept.charset.is_some() && added::TEXT_CODECS.contains(&codec) => Some("srt"),
             _ => None,
@@ -281,18 +350,21 @@ pub fn args(
     }
     // FFmpeg would otherwise mark the first track of a kind to play first
     // when none is (found 2026-11-25: Korra's Greek subtitles were turned on).
-    push(&["-default_mode", "passthrough"]);
+    if matroska {
+        push(&["-default_mode", "passthrough"]);
+    }
     for (place, kept) in edit.tracks.iter().enumerate() {
         if let Some(language) = &kept.language {
-            // Matroska names languages by ISO 639-2's bibliographic codes ("gre").
-            let code = iso639_2(language, true).unwrap_or("und");
+            // Matroska names languages by ISO 639-2's bibliographic codes
+            // ("gre"), MP4 by its terminology codes ("ell").
+            let code = iso639_2(language, matroska).unwrap_or("und");
             push(&[&format!("-metadata:s:{place}"), &format!("language={code}")]);
         }
         push(&[&format!("-metadata:s:{place}"), &format!("title={}", kept.name.trim())]);
         push(&[&format!("-disposition:{place}"), &disposition(kept)]);
     }
     // Fonts attached, each named by its file and of its kind, after the MKV's own.
-    for (place, font) in extras.fonts.iter().enumerate() {
+    for (place, font) in extras.fonts.iter().enumerate().filter(|_| matroska) {
         let mime = font
             .extension()
             .and_then(|ext| ext.to_str())
@@ -316,7 +388,7 @@ pub fn args(
             .map(OsString::from),
         );
     }
-    args.extend(["-f", "matroska"].map(OsString::from));
+    args.extend(["-f", muxer.name()].map(OsString::from));
     args.push(output.into());
     args
 }
@@ -373,6 +445,7 @@ mod tests {
 
     fn korra() -> Contents {
         Contents {
+            container: Default::default(),
             tracks: vec![
                 track(0, Kind::Video, Some(187_570_617)),
                 track(1, Kind::Sound, Some(29_760_579)),
@@ -525,6 +598,7 @@ mod tests {
         let mut track = track(0, Kind::Subtitles, bytes);
         track.codec = codec.into();
         Contents {
+            container: Default::default(),
             tracks: vec![track],
             chapters: Chapters::default(),
             attachments: Vec::new(),
@@ -641,6 +715,7 @@ mod tests {
             ]),
             left_out_attachments: vec![7],
             fonts: vec!["siphon-file:font".into()],
+            mkv: false,
         };
         assert!(edit.check(&contents, &[]).is_ok());
         let extras = Extras {
@@ -693,5 +768,65 @@ mod tests {
             ..edit
         };
         assert!(jumbled.check(&contents, &[]).is_err());
+    }
+
+    #[test]
+    fn an_mp4_stays_an_mp4_with_its_subtitles_as_timed_text_unless_asked() {
+        let mut contents = korra();
+        contents.container = Container::Mp4;
+        contents.tracks[0].codec = "hevc".into();
+        contents.tracks[4].codec = "mov_text".into();
+        contents.tracks[5].codec = "subrip".into();
+        let edit = TrackEdit {
+            tracks: vec![
+                kept(0, None, ""),
+                kept(1, Some("el"), ""),
+                kept(4, Some("el"), ""),
+                kept(5, Some("en"), ""),
+            ],
+            chapters: true,
+            attachments: true,
+            ..Default::default()
+        };
+        assert!(edit.check(&contents, &[]).is_ok());
+        assert_eq!(edit.muxer(&contents, Path::new("Film.mp4")), Muxer::Mp4);
+        assert_eq!(edit.muxer(&contents, Path::new("Film.MOV")), Muxer::Mov);
+        let joined = texts(&args(
+            Path::new("Film.mp4"),
+            Path::new("out.mp4"),
+            &edit,
+            &contents,
+            &[],
+            &Extras::default(),
+        ))
+        .join(" ");
+        // Its own timed text is copied; SRT is written as timed text; MP4's language codes; no Matroska options.
+        assert!(joined.contains("-c copy -c:3 mov_text -metadata:s:0"));
+        assert!(joined.contains("-metadata:s:1 language=ell"));
+        assert!(!joined.contains("-c:2"));
+        assert!(!joined.contains("default_mode"));
+        assert!(!joined.contains("0:6"));
+        assert!(joined.ends_with("-f mp4 out.mp4"));
+        // Pictures for subtitles don't fit an MP4: the edit asks for an MKV.
+        contents.tracks[5].codec = "hdmv_pgs_subtitle".into();
+        assert!(edit.check(&contents, &[]).is_err());
+        let mkv = TrackEdit { mkv: true, ..edit };
+        assert!(mkv.check(&contents, &[]).is_ok());
+        assert_eq!(mkv.muxer(&contents, Path::new("Film.mp4")), Muxer::Matroska);
+        let joined = texts(&args(
+            Path::new("Film.mp4"),
+            Path::new("out.mkv"),
+            &mkv,
+            &contents,
+            &[],
+            &Extras::default(),
+        ))
+        .join(" ");
+        assert!(joined.contains("-c:2 srt"));
+        assert!(joined.contains("language=gre"));
+        assert!(joined.ends_with("-f matroska out.mkv"));
+        // An MPEG-TS becomes an MKV.
+        contents.container = Container::Ts;
+        assert_eq!(mkv.muxer(&contents, Path::new("Film.ts")), Muxer::Matroska);
     }
 }

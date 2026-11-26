@@ -191,6 +191,8 @@ export interface LocalFile {
   version: string;
   /** A Matroska file inside, whatever its name says: its tracks can be chosen. Known once it is read. */
   matroska: boolean;
+  /** Its tracks can be chosen: an MKV, an MP4 or MOV, an MPEG-TS. */
+  editable: boolean;
   /** How many video (covers aside), sound and subtitle tracks it holds, and their languages as tagged. */
   overview: TrackOverview;
 }
@@ -217,6 +219,8 @@ export interface TrackOverview {
 
 /** What an MKV holds, track by track (docs/mkv-editor.md). */
 export interface MkvContents {
+  /** The kind of file: an MP4's copy stays an MP4 unless asked, an MPEG-TS's becomes an MKV. */
+  container: "matroska" | "mp4" | "ts" | "other";
   tracks: MkvTrack[];
   chapters: MkvChapters;
   /** Files carried in it: fonts for its ASS subtitles, a cover. */
@@ -287,6 +291,8 @@ export interface TrackEdit {
   left_out_attachments?: number[];
   /** Font files to attach, by key. */
   fonts?: string[];
+  /** Save an MP4 as an MKV. */
+  mkv?: boolean;
 }
 
 /** A chapter: where it starts, and its name. It runs until the next starts. */

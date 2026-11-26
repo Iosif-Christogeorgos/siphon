@@ -127,7 +127,14 @@ How it got here: Tracks was first a fifth choice in the presets' row, where it r
 
 Tried 2026-11-26 in the dev build, on a copy of Korra S01E01, in both themes: the edge said *6 tracks* and its languages, opened and closed as above, said *5 of 6 tracks kept* after the English surround was left out, and saved the copy (the original's SHA-256 unchanged); a one-picture, one-sound MKV showed no card, and one with a subtitle track *3 tracks · Sound and subtitles in Greek*.
 
+## More than MKV
+
+Done 2026-11-26 (the owner's call, made 2026-11-25: after 0.21.0). An MP4 or MOV, and an MPEG-TS (`.ts`, `.m2ts`, `.mts`), get the tracks card too (`mkv::Container`, `LocalFile::editable`), read as an MKV is.
+
+- **An MP4 stays an MP4** (a MOV a MOV), under its own name: its subtitles are written as an MP4's timed text (`mov_text`, the text alone), its languages in MP4's codes ("ell", not "gre"), and nothing Matroska's (`-default_mode`, attachments) is asked of it. What an MP4 can't hold (`edit::fits_mp4`: pictures for subtitles, DTS, TrueHD, Vorbis, fonts) makes the copy an MKV as soon as it is added, saying why ("The copy is an MKV: an MP4 can't hold fonts."); *Save it as an MKV* does so at will, and *Keep it an MP4* goes back while all fits. The backend refuses an MP4 that wouldn't hold its tracks. An MP4's subtitle track comes out enabled, as MP4 marks the first of each kind.
+- **An MPEG-TS becomes an MKV** (`Clip.ts` → `Edited\Clip.mkv`), which keeps every track as it is; it holds no chapters or names of its own to lose.
+- Tried 2026-11-26 in the dev build, on files made from a copy of Korra S01E01: `Film.mp4` (HEVC, Greek and English AAC, Greek timed text) without its English sound came out `Film.mp4`, the timed text and Greek (`ell`) kept; with a font added, `Film.mkv`, its timed text as SRT and the font attached. `Clip.ts` without its English sound came out `Clip.mkv`. Both originals' SHA-256 unchanged.
+
 ## Open questions
 
 - **Order of the next steps** (2026-11-26, the owner's call): seasons (step 5) before adding tracks (step 6), as planned. Adding tracks, a subtitle file into an MKV say, is not built yet.
-- **Tracks for more than MKV.** Proposed: MP4 and MOV stay MP4 (picture subtitles can't go in MP4: say so and offer MKV, as Customize does); TS and M2TS become MKV. Decided 2026-11-26: after the 0.21.0 release, not before.

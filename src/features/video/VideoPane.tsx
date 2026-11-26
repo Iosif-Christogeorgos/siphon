@@ -78,7 +78,7 @@ export function VideoPane({ video }: { video: VideoInfo }) {
   // An MKV's tracks can be chosen instead (docs/mkv-editor.md), when there is
   // more to choose than one picture and one sound.
   const overview = video.file?.overview;
-  const tracksOffered = hasTracksToChoose(overview, video.file?.matroska === true);
+  const tracksOffered = hasTracksToChoose(overview, video.file?.editable === true);
   const [tracksOn, setTracksOn] = useState(false);
   // What has been chosen of its tracks so far.
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -161,7 +161,7 @@ export function VideoPane({ video }: { video: VideoInfo }) {
   const shownTrim = trims[Math.min(activeIndex, trims.length - 1)] ?? null;
 
   // Changing a choice after a download finished (or failed) brings back the Download button.
-  const choices = JSON.stringify([choice, trims, recordFromStart, tracksOn ? draft?.tracks : null]);
+  const choices = JSON.stringify([choice, trims, recordFromStart, tracksOn && draft ? editOf(draft) : null]);
   useEffect(() => {
     setDownloadIds((ids) =>
       ids.some((id) => {

@@ -131,6 +131,7 @@ impl Original {
             size: stamp.size,
             version: stamp.version(),
             matroska: false,
+            editable: false,
             overview: TrackOverview::default(),
             start: 0.0,
             cover: false,
@@ -165,6 +166,8 @@ pub struct LocalFile {
     /// It is a Matroska file inside, whatever its name says: its tracks can
     /// be chosen (docs/mkv-editor.md). Known once it is read.
     pub matroska: bool,
+    /// Its tracks can be chosen: an MKV, an MP4 or MOV, an MPEG-TS (docs/mkv-editor.md).
+    pub editable: bool,
     /// How many tracks of each kind it holds, and in which languages: its
     /// tracks are offered to be chosen when there is more than one picture
     /// and one sound.

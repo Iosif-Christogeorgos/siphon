@@ -107,7 +107,7 @@ export function FilesPane({ intake }: { intake: Intake }) {
   const languages = useLanguagesKey();
   const mkvs = files.flatMap((file, index) => {
     const local = reads[index]?.data?.file;
-    return local && hasTracksToChoose(local.overview, local.matroska) ? [{ file, index, local }] : [];
+    return local && hasTracksToChoose(local.overview, local.editable) ? [{ file, index, local }] : [];
   });
   const trackReads = useQueries({
     queries: mkvs.map(({ file }) => tracksQuery(file.key, file.version, languages, tracksAsked)),

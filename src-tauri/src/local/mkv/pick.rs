@@ -264,6 +264,7 @@ mod tests {
 
     fn file(tracks: Vec<Track>) -> Contents {
         Contents {
+            container: Default::default(),
             tracks,
             chapters: Chapters::default(),
             attachments: Vec::new(),

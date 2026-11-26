@@ -217,6 +217,7 @@ mod tests {
 
     fn contents(tracks: Vec<Track>) -> Contents {
         Contents {
+            container: Default::default(),
             tracks,
             chapters: Chapters::default(),
             attachments: Vec::new(),

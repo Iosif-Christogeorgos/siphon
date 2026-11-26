@@ -31,9 +31,46 @@ use crate::settings::SettingsStore;
 pub use chapters::Shape;
 pub(crate) use probe::language;
 
+/// The kind of file whose tracks are chosen: an MKV, an MP4 (or MOV), an
+/// MPEG-TS; or another, one tracks are added from.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Container {
+    Matroska,
+    Mp4,
+    Ts,
+    #[default]
+    Other,
+}
+
+impl Container {
+    /// What ffprobe's names for a file type say it is: "matroska,webm",
+    /// "mov,mp4,m4a,3gp,3g2,mj2", "mpegts".
+    pub fn of(format_name: &str) -> Container {
+        let names: Vec<&str> = format_name.split(',').collect();
+        if names.contains(&"matroska") {
+            Container::Matroska
+        } else if names.contains(&"mov") || names.contains(&"mp4") {
+            Container::Mp4
+        } else if names.contains(&"mpegts") {
+            Container::Ts
+        } else {
+            Container::Other
+        }
+    }
+
+    /// Its tracks can be chosen: an MKV, an MP4 or MOV (which stay so), an
+    /// MPEG-TS (which becomes an MKV).
+    pub fn editable(self) -> bool {
+        self != Container::Other
+    }
+}
+
 /// What an MKV holds.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Contents {
+    /// The kind of file it is.
+    pub container: Container,
     pub tracks: Vec<Track>,
     pub chapters: Chapters,
     /// Files carried in it: the fonts its ASS subtitles are drawn with, a cover.
@@ -174,7 +211,9 @@ pub async fn read(app: &AppHandle, bins: &BinaryManager, key: &str) -> Result<Co
         .await
         .map_err(|err| AppError::internal("Couldn't read the file.").with_details(err.to_string()))?;
     let mut contents = inspect(bins, &original).await?;
-    contents.chapters.shape = chapter_shape(original.path()).await;
+    if contents.container == Container::Matroska {
+        contents.chapters.shape = chapter_shape(original.path()).await;
+    }
     let windows = words::windows(contents.duration, contents.size);
     let mut lines = read_words(bins, original.path(), &mut contents.tracks, windows.as_deref()).await;
     lines.extend(read_pictures(bins, original.path(), &mut contents.tracks, windows.as_deref()).await);
@@ -364,7 +403,10 @@ async fn chapter_shape(path: &Path) -> Option<Shape> {
 fn not_mkv(original: &Original) -> AppError {
     AppError::new(
         ErrorKind::Unsupported,
-        format!("Only an MKV's tracks can be chosen, and {} isn't one.", original.name()),
+        format!(
+            "Only the tracks of an MKV, an MP4 or a TS file can be chosen, and {} isn't one.",
+            original.name()
+        ),
     )
 }
 

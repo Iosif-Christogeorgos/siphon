@@ -5,7 +5,7 @@ use std::path::Path;
 
 use serde_json::Value;
 
-use super::{Attachment, Chapter, Chapters, Contents, Kind, Track};
+use super::{Attachment, Chapter, Chapters, Container, Contents, Kind, Track};
 use crate::local::probe::tag;
 use crate::ytdlp::subtitles::language_tag;
 
@@ -41,10 +41,10 @@ pub fn parse_any(json: &str) -> Option<Contents> {
     parse_with(json, false)
 }
 
-fn parse_with(json: &str, matroska: bool) -> Option<Contents> {
+fn parse_with(json: &str, editable: bool) -> Option<Contents> {
     let value: Value = serde_json::from_str(json).ok()?;
-    let format = value["format"]["format_name"].as_str()?;
-    if matroska && !format.split(',').any(|name| name == "matroska") {
+    let container = Container::of(value["format"]["format_name"].as_str()?);
+    if editable && !container.editable() {
         return None;
     }
     let mut tracks = Vec::new();
@@ -98,6 +98,7 @@ fn parse_with(json: &str, matroska: bool) -> Option<Contents> {
         });
     }
     Some(Contents {
+        container,
         tracks,
         chapters: Chapters {
             count: value["chapters"].as_array().map_or(0, Vec::len),
@@ -278,8 +279,17 @@ mod tests {
     }
 
     #[test]
-    fn only_an_mkv() {
-        assert!(parse(r#"{"format": {"format_name": "mov,mp4,m4a,3gp,3g2,mj2"}, "streams": []}"#).is_none());
+    fn only_an_mkv_an_mp4_or_a_ts() {
+        let container = |name: &str| {
+            parse(&format!(r#"{{"format": {{"format_name": "{name}"}}, "streams": []}}"#)).map(|c| c.container)
+        };
+        assert_eq!(container("matroska,webm"), Some(Container::Matroska));
+        assert_eq!(container("mov,mp4,m4a,3gp,3g2,mj2"), Some(Container::Mp4));
+        assert_eq!(container("mpegts"), Some(Container::Ts));
+        assert_eq!(container("avi"), None);
         assert!(parse("not json").is_none());
+        // A file tracks are added from may be any.
+        let any = parse_any(r#"{"format": {"format_name": "srt"}, "streams": []}"#).unwrap();
+        assert_eq!(any.container, Container::Other);
     }
 }

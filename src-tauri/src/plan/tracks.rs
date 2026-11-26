@@ -381,6 +381,7 @@ mod tests {
                 size: 1,
                 version: "1-0".into(),
                 matroska: false,
+                editable: false,
                 overview: Default::default(),
                 start: 0.0,
                 cover: false,

@@ -28,9 +28,12 @@ export function languagesLine(sound: string[], subtitles: string[]): string | nu
   return parts.filter((part) => part).join(" · ") || null;
 }
 
-/** A file whose tracks are worth choosing: more than one picture and one sound to choose from. */
-export function hasTracksToChoose(overview: TrackOverview | undefined, matroska: boolean): boolean {
-  return matroska && overview !== undefined && (overview.video > 1 || overview.sound > 1 || overview.subtitles > 0);
+/**
+ * A file whose tracks are worth choosing: an MKV, MP4 or MPEG-TS with more
+ * than one picture and one sound to choose from.
+ */
+export function hasTracksToChoose(overview: TrackOverview | undefined, editable: boolean): boolean {
+  return editable && overview !== undefined && (overview.video > 1 || overview.sound > 1 || overview.subtitles > 0);
 }
 
 /**

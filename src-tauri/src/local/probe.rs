@@ -245,6 +245,7 @@ impl Probe {
             sizes: SizeFacts::default(),
             file: Some(LocalFile {
                 matroska: self.format.split(',').any(|name| name == "matroska"),
+                editable: crate::local::mkv::Container::of(&self.format).editable(),
                 overview: TrackOverview {
                     video: self.pictures,
                     sound: self.tracks.sounds.len(),
