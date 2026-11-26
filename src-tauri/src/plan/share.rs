@@ -16,7 +16,7 @@
 
 use super::codecs::{AudioCodec, Container, VideoCodec};
 use super::registry::{Target, Tier};
-use super::{max_by_key, warning, AudioAction, AudioStep, Planner, Recipe, Video, VideoAction, VideoEncode};
+use super::{max_by_key, scaled_to, warning, AudioAction, AudioStep, Planner, Recipe, Video, VideoAction, VideoEncode};
 
 /// Aim this far under the limit: services count megabytes differently, and
 /// an encoder's bitrate is an average, not a promise.
@@ -30,7 +30,7 @@ const GOOD_BPP: f64 = 0.07;
 const MIN_BPP: f64 = 0.03;
 /// More than this doesn't show, so a generous limit isn't filled for nothing.
 const MAX_BPP: f64 = 0.2;
-/// Short sides to choose from, largest first.
+/// Resolutions to choose from, largest first (named as `lines_for` names them).
 const LADDER: [u32; 8] = [2160, 1440, 1080, 720, 540, 480, 360, 240];
 
 /// A resolution and frame rate to encode at.
@@ -52,10 +52,30 @@ pub(super) fn audio_kbps(total_kbps: f64) -> u32 {
     }
 }
 
+/// The source's frame, width by height, when known; else a 16:9 one of its resolution.
+fn frame_of(video: &Video) -> (u32, u32) {
+    match (video.format.width, video.format.height) {
+        (Some(w), Some(h)) if w > 0 && h > 0 => (w, h),
+        _ => ((f64::from(video.lines) * 16.0 / 9.0).round() as u32, video.lines),
+    }
+}
+
+/// Pixels in a frame of `frame` scaled down to `lines`, as the encode makes it.
+fn pixels_at(frame: (u32, u32), lines: u32) -> f64 {
+    let (w, h) = scaled_to(frame.0, frame.1, lines);
+    f64::from(w) * f64::from(h)
+}
+
 /// The best-looking size and frame rate for `video_kbps`, never above the
-/// source (`source_lines`, `source_fps`) or the service's own cap.
-/// `None` when even the smallest would look broken.
-pub(super) fn pick_rung(video_kbps: f64, source_lines: u32, source_fps: f64, aspect: f64, cap: u32) -> Option<Rung> {
+/// source (`source_lines`, `source_fps`, its `frame`) or the service's own
+/// cap. `None` when even the smallest would look broken.
+pub(super) fn pick_rung(
+    video_kbps: f64,
+    source_lines: u32,
+    source_fps: f64,
+    frame: (u32, u32),
+    cap: u32,
+) -> Option<Rung> {
     let top = source_lines.min(cap).max(1);
     let mut lines: Vec<u32> = LADDER.iter().copied().filter(|lines| *lines < top).collect();
     lines.insert(0, top);
@@ -68,8 +88,7 @@ pub(super) fn pick_rung(video_kbps: f64, source_lines: u32, source_fps: f64, asp
         .iter()
         .flat_map(|&lines| {
             frame_rates.iter().map(move |&fps| {
-                let short = f64::from(lines);
-                let pixels = short * short * aspect;
+                let pixels = pixels_at(frame, lines);
                 Rung {
                     lines,
                     fps,
@@ -139,11 +158,8 @@ impl Planner<'_> {
         let video_kbps = (total_kbps * OVERHEAD - f64::from(audio_kbps)).max(1.0);
         let best = max_by_key(pool.iter().copied(), |video| (video.lines, video.fps as u32))
             .expect("plan() checks that videos exist");
-        let aspect = match (best.format.width, best.format.height) {
-            (Some(w), Some(h)) if w > 0 && h > 0 => f64::from(w.max(h)) / f64::from(w.min(h)),
-            _ => 16.0 / 9.0,
-        };
-        let rung = pick_rung(video_kbps, best.lines, best.fps, aspect, tier.max_lines);
+        let frame = frame_of(&best);
+        let rung = pick_rung(video_kbps, best.lines, best.fps, frame, tier.max_lines);
 
         // First choice: an original that already fits, and is no less sharp than the encode.
         let fits = |video: &Video| {
@@ -169,7 +185,7 @@ impl Planner<'_> {
         let Some(rung) = rung else {
             // Too long to look decent: plan the smallest version so the summary
             // can say what it would be, but don't offer to download it.
-            let smallest = pick_rung(video_kbps, best.lines, best.fps, aspect, 240).unwrap_or(Rung {
+            let smallest = pick_rung(video_kbps, best.lines, best.fps, frame, 240).unwrap_or(Rung {
                 lines: best.lines.min(240),
                 fps: best.fps.min(30.0),
                 bpp: 0.0,
@@ -224,7 +240,7 @@ impl Planner<'_> {
         })
         .expect("the pool is not empty");
 
-        let pixels = f64::from(rung.lines).powi(2) * 16.0 / 9.0;
+        let pixels = pixels_at(frame_of(&video), rung.lines);
         let ceiling = MAX_BPP * pixels * rung.fps / 1000.0;
         let encode = VideoEncode {
             bitrate_kbps: Some(video_kbps.min(ceiling).max(40.0) as u32),

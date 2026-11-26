@@ -44,7 +44,7 @@ pub struct Choices {
     pub group: Group,
     /// The target last used in each group.
     pub targets: HashMap<Group, TargetId>,
-    /// The quality row for video: a resolution (short side). `None` is "Best".
+    /// The quality row for video: a resolution ("1080p", see `plan::lines_for`). `None` is "Best".
     pub quality: Option<u32>,
     /// The quality row for Music: a bitrate in kbit/s. `None` is "Best".
     pub music_kbps: Option<u32>,

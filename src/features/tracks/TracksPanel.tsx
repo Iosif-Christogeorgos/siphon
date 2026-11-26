@@ -24,6 +24,7 @@ import { Hint } from "@/components/ui/tooltip";
 import { Note } from "@/features/options/PlanCard";
 import { fieldClass } from "@/features/settings/parts";
 import { formatBytes, formatDuration } from "@/lib/format";
+import { linesOf } from "@/lib/formats";
 import { ipc, toAppError } from "@/lib/ipc";
 import { useUi } from "@/stores/ui";
 import { COMMON_LANGUAGES, languageName, primary, systemLanguage } from "@/lib/languages";
@@ -690,7 +691,7 @@ function TrackRow({
   const video = track.kind === "video";
   const title = video
     ? read.height
-      ? `${Math.min(read.width ?? read.height, read.height)}p`
+      ? `${linesOf({ width: read.width ?? null, height: read.height })}p`
       : "Video"
     : track.language
       ? languageName(track.language)

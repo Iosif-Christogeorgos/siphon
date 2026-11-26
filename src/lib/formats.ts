@@ -33,10 +33,23 @@ export const CONTAINER_LABELS: Record<Container, string> = {
   wav: "WAV",
 };
 
-/** Short side of the frame: 1080 for both 1920×1080 and vertical 1080×1920. */
+/** The sizes frames are named by, and how far a frame may be from one to take its name. */
+const USUAL_LINES = [144, 240, 360, 480, 540, 576, 720, 1080, 1440, 2160, 4320];
+const USUAL_WITHIN = 1.08;
+
+/**
+ * What a frame is called ("1080p"), as the backend names it (`plan::lines_for`):
+ * by the 16:9 picture its width belongs to, or its own short side where that is
+ * taller. 1920×1080, vertical 1080×1920 and 1440×1080 are 1080p; a film cropped to
+ * 3840×1600 is 2160p, as YouTube and releases call it. Near a usual size, its name.
+ */
 export function linesOf(format: Pick<Format, "width" | "height">): number {
-  if (format.width && format.height) return Math.min(format.width, format.height);
-  return format.height ?? 0;
+  if (!format.width || !format.height) return format.height ?? 0;
+  const long = Math.max(format.width, format.height);
+  const lines = Math.max(Math.min(format.width, format.height), Math.round((long * 9) / 16));
+  const off = (usual: number) => Math.abs(Math.log(lines / usual));
+  const usual = USUAL_LINES.reduce((best, size) => (off(size) < off(best) ? size : best));
+  return off(usual) <= Math.log(USUAL_WITHIN) ? usual : lines;
 }
 
 /** The familiar "1080p60" label; only mentions frame rates above 30. */

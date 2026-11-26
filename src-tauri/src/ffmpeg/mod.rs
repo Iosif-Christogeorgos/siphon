@@ -509,12 +509,14 @@ pub fn video_filters(video: &VideoStep, encode: &VideoEncode, cut: Option<Trim>,
         filters.push(format!("subtitles=filename={file}"));
     }
     if let Some(lines) = encode.scale_lines.filter(|lines| *lines < video.lines) {
-        // The short side becomes `lines`; -2 keeps the aspect ratio with an even size.
-        let portrait = matches!((video.width, video.height), (Some(w), Some(h)) if w < h);
-        filters.push(if portrait {
-            format!("scale={lines}:-2")
-        } else {
-            format!("scale=-2:{lines}")
+        filters.push(match (video.width, video.height) {
+            // Into the 16:9 picture of that name, keeping the picture's shape: 3840×1600 at 1080 is 1920×800.
+            (Some(w), Some(h)) if w > 0 && h > 0 => {
+                let (w, h) = crate::plan::scaled_to(w, h, lines);
+                format!("scale={w}:{h}")
+            }
+            // Without the frame's size, the height becomes `lines`; -2 keeps the shape with an even width.
+            _ => format!("scale=-2:{lines}"),
         });
     }
     let source_fps = video.fps.filter(|fps| *fps > 0.0);

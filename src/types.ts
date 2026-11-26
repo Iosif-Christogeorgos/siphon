@@ -565,7 +565,7 @@ export interface Hint {
 export type Badge = "lossless" | "converts" | "size_optimized" | "may_not_play";
 
 export interface QualityOption {
-  /** A resolution (short side), or a bitrate for Music. */
+  /** A resolution ("1080p", named as `plan::lines_for` names it), or a bitrate for Music. */
   value: number;
   /** Picking this means converting. */
   converts: boolean;

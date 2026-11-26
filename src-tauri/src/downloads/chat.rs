@@ -156,11 +156,7 @@ impl DownloadManager {
         // The frame the chat is drawn on: the picture after any scaling.
         let (width, height) = match (recipe.video_encode().and_then(|e| e.scale_lines), recipe.video.as_ref()) {
             (Some(lines), Some(video)) if lines < video.lines => {
-                let scale = f64::from(lines) / f64::from(picture.width.min(picture.height));
-                (
-                    ((f64::from(picture.width) * scale / 2.0).round() as u32) * 2,
-                    ((f64::from(picture.height) * scale / 2.0).round() as u32) * 2,
-                )
+                crate::plan::scaled_to(picture.width, picture.height, lines)
             }
             _ => (picture.width, picture.height),
         };

@@ -89,7 +89,7 @@ pub struct Tier {
     pub label: &'static str,
     /// The upload limit in megabytes (10⁶ bytes).
     pub limit_mb: u32,
-    /// The service shows videos no sharper than this (short side), so more is wasted.
+    /// The service shows videos no sharper than this (as `lines_for` names sizes), so more is wasted.
     pub max_lines: u32,
     /// False when the file is sent as a document rather than played in the chat.
     pub inline: bool,

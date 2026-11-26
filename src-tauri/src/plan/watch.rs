@@ -78,7 +78,7 @@ fn natives(target: TargetId, caps: &Capabilities) -> Vec<Native> {
     }
 }
 
-/// What "Best" means on the device (short side).
+/// What "Best" means on the device (as `lines_for` names sizes).
 fn best_lines(target: TargetId) -> u32 {
     match target {
         // Phone screens and their decoders: higher is in the quality row.

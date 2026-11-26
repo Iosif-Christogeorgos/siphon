@@ -50,7 +50,7 @@ pub enum Choice {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PresetChoice {
     pub target: TargetId,
-    /// The quality row: a resolution (short side, e.g. 1080), or a bitrate in
+    /// The quality row: a resolution (e.g. 1080, see `lines_for`), or a bitrate in
     /// kbit/s for Music. `None` is "Best".
     #[serde(default)]
     pub quality: Option<u32>,
@@ -245,7 +245,7 @@ pub struct ReadFrom {
 pub struct VideoStep {
     pub format_id: String,
     pub source: VideoCodec,
-    /// Short side in pixels of the source stream.
+    /// What the source stream is called ("2160p", see `lines_for`).
     pub lines: u32,
     pub width: Option<u32>,
     pub height: Option<u32>,
@@ -271,7 +271,7 @@ pub struct VideoEncode {
     pub hardware: Hardware,
     /// Target bitrate for size-limited output; `None` means constant quality.
     pub bitrate_kbps: Option<u32>,
-    /// Scale down to this short side (never up).
+    /// Scale down to this resolution, keeping the picture's shape (`scaled_to`); never up.
     pub scale_lines: Option<u32>,
     pub max_fps: Option<f64>,
     /// The encoder's fastest setting, at the same quality: a file a little
@@ -480,7 +480,7 @@ impl Recipe {
         })
     }
 
-    /// Output short side after any downscale.
+    /// The output's resolution after any downscale (see `lines_for`).
     pub fn output_lines(&self) -> Option<u32> {
         self.video.as_ref().map(|step| match &step.action {
             VideoAction::Encode(VideoEncode {
@@ -833,13 +833,52 @@ impl Audio<'_> {
     }
 }
 
-/// Short side of the frame: 1080 for both 1920×1080 and vertical 1080×1920.
 fn lines_of(format: &Format) -> u32 {
     match (format.width, format.height) {
-        (Some(w), Some(h)) => w.min(h),
-        (None, Some(h)) => h,
+        (Some(w), Some(h)) if w > 0 && h > 0 => lines_for(w, h),
+        (_, Some(h)) => h,
         _ => 0,
     }
+}
+
+/// The sizes frames are named by, smallest first.
+const USUAL_LINES: [u32; 11] = [144, 240, 360, 480, 540, 576, 720, 1080, 1440, 2160, 4320];
+/// How far a frame may be from a usual size and still take its name.
+const USUAL_WITHIN: f64 = 1.08;
+
+/// What a `width`×`height` frame is called ("1080p"), the way sites, players
+/// and releases name it: by the 16:9 picture its width belongs to, or by its
+/// own short side where that is taller. 1920×1080, vertical 1080×1920 and
+/// 1440×1080 (4:3) are all 1080p; a film cropped to 3840×1600 is 2160p, as
+/// YouTube and every release call it, not 1600p. Within 8% of a usual size it
+/// takes that size's name: 4096×2160 is 2160p, a crop to 1916×798 is 1080p.
+/// Every resolution in Siphon is one of these: what a stream is listed as,
+/// what a preset or the quality row chooses, and what is scaled down to
+/// (`scaled_to`), so what is shown is what is made.
+pub fn lines_for(width: u32, height: u32) -> u32 {
+    let (long, short) = (width.max(height), width.min(height));
+    let lines = short.max((f64::from(long) * 9.0 / 16.0).round() as u32);
+    let off = |usual: u32| (f64::from(lines) / f64::from(usual)).ln().abs();
+    USUAL_LINES
+        .iter()
+        .copied()
+        .min_by(|a, b| off(*a).total_cmp(&off(*b)))
+        .filter(|usual| off(*usual) <= USUAL_WITHIN.ln())
+        .unwrap_or(lines)
+}
+
+/// A `width`×`height` frame brought down to `lines` (as `lines_for` names
+/// sizes), keeping its shape: it fits in the 16:9 picture of that name, the
+/// right way up. 3840×1600 at 1080 is 1920×800, 1920×1080 at 720 is
+/// 1280×720, vertical 1080×1920 at 720 is 720×1280. Never larger than it
+/// was, and each side even, as encoders need.
+pub fn scaled_to(width: u32, height: u32, lines: u32) -> (u32, u32) {
+    let (long, short) = (width.max(height).max(1), width.min(height).max(1));
+    let fit = (f64::from(lines) * 16.0 / 9.0 / f64::from(long))
+        .min(f64::from(lines) / f64::from(short))
+        .min(1.0);
+    let even = |side: u32| ((f64::from(side) * fit / 2.0).round() as u32 * 2).max(2);
+    (even(width), even(height))
 }
 
 fn max_by_key<T: Copy, K: PartialOrd>(items: impl IntoIterator<Item = T>, key: impl Fn(&T) -> K) -> Option<T> {

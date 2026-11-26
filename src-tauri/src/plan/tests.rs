@@ -612,13 +612,102 @@ fn share_on_the_cpu_runs_two_passes() {
 #[test]
 fn bits_per_pixel_pick_a_smaller_cleaner_picture() {
     // 2.5 Mbit/s: blocky at 1080p60, clean at 720p30.
-    let rung = share::pick_rung(2500.0, 1080, 60.0, 16.0 / 9.0, 1080).unwrap();
+    let rung = share::pick_rung(2500.0, 1080, 60.0, (1920, 1080), 1080).unwrap();
     assert_eq!((rung.lines, rung.fps), (720, 30.0));
     // Plenty of bits: the source as it is, never above it.
-    let rung = share::pick_rung(50_000.0, 720, 30.0, 16.0 / 9.0, 1080).unwrap();
+    let rung = share::pick_rung(50_000.0, 720, 30.0, (1280, 720), 1080).unwrap();
     assert_eq!((rung.lines, rung.fps), (720, 30.0));
     // Hopeless.
-    assert!(share::pick_rung(20.0, 1080, 30.0, 16.0 / 9.0, 1080).is_none());
+    assert!(share::pick_rung(20.0, 1080, 30.0, (1920, 1080), 1080).is_none());
+    // A wide film has fewer pixels at each size, so the same bits go further:
+    // at 4 Mbit/s 1080p30 is clean at 1920×800, where 1920×1080 needs 720p.
+    let rung = share::pick_rung(4000.0, 1080, 60.0, (1920, 1080), 1080).unwrap();
+    assert_eq!((rung.lines, rung.fps), (720, 60.0));
+    let rung = share::pick_rung(4000.0, 1080, 60.0, (1920, 800), 1080).unwrap();
+    assert_eq!((rung.lines, rung.fps), (1080, 30.0));
+}
+
+// ── Resolutions ─────────────────────────────────────────────────────────
+
+#[test]
+fn resolutions_are_named_as_sites_players_and_releases_name_them() {
+    assert_eq!(lines_for(1920, 1080), 1080);
+    assert_eq!(lines_for(1080, 1920), 1080);
+    assert_eq!(lines_for(1280, 720), 720);
+    assert_eq!(lines_for(854, 480), 480);
+    assert_eq!(lines_for(720, 576), 576);
+    // 4:3 by its height.
+    assert_eq!(lines_for(1440, 1080), 1080);
+    // A film cropped wider than 16:9 by its width, as YouTube and releases name it.
+    assert_eq!(lines_for(3840, 1600), 2160);
+    assert_eq!(lines_for(3840, 1608), 2160);
+    assert_eq!(lines_for(1920, 804), 1080);
+    assert_eq!(lines_for(1280, 536), 720);
+    assert_eq!(lines_for(2560, 1080), 1440);
+    // Near a usual size: its name.
+    assert_eq!(lines_for(4096, 2160), 2160);
+    assert_eq!(lines_for(1916, 798), 1080);
+    // Nowhere near one: as it is.
+    assert_eq!(lines_for(1600, 1200), 1200);
+}
+
+#[test]
+fn scaling_down_keeps_the_pictures_shape_and_never_goes_up() {
+    assert_eq!(scaled_to(3840, 1600, 1080), (1920, 800));
+    assert_eq!(scaled_to(1920, 1080, 720), (1280, 720));
+    assert_eq!(scaled_to(1080, 1920, 720), (720, 1280));
+    assert_eq!(scaled_to(1440, 1080, 720), (960, 720));
+    assert_eq!(scaled_to(4096, 2160, 1080), (1920, 1012));
+    assert_eq!(scaled_to(1280, 720, 1080), (1280, 720));
+}
+
+/// A film cropped to 2.40:1 as YouTube offers it: VP9 above 1080p, H.264 below.
+fn youtube_wide() -> VideoInfo {
+    let wide = |format: Format, width: u32, height: u32| Format {
+        width: Some(width),
+        height: Some(height),
+        ..format
+    };
+    info(
+        vec![
+            wide(video("137", "avc1.640028", 1080, 24.0, 2500.0), 1920, 804),
+            wide(video("136", "avc1.4d401f", 720, 24.0, 1200.0), 1280, 536),
+            wide(video("271", "vp09.00.50.08", 1440, 24.0, 8000.0), 2560, 1072),
+            wide(video("313", "vp09.00.50.08", 2160, 24.0, 16000.0), 3840, 1608),
+            audio("140", "mp4a.40.2", 129.0),
+        ],
+        600.0,
+    )
+}
+
+#[test]
+fn a_wide_film_is_listed_chosen_and_scaled_by_the_names_it_is_known_by() {
+    let (_, values) = quality_options(
+        &youtube_wide(),
+        &Choice::Preset(preset(TargetId::Windows)),
+        &Capabilities::BASIC,
+    );
+    assert_eq!(values, vec![2160, 1440, 1080, 720]);
+
+    // Android's Best is 1080p: the 1920×804 stream, not the 2560×1072 one.
+    let android = plan_for(&youtube_wide(), TargetId::Android);
+    assert_eq!(android.format_selector(), "137+140");
+    assert_eq!(android.output_lines(), Some(1080));
+
+    // Shrunk for Discord, it keeps its shape.
+    let recipe = share(&youtube_wide(), TargetId::Discord, TierId::DiscordNitroBasic, None);
+    let step = recipe.video.as_ref().unwrap();
+    let encode = recipe.video_encode().expect("nothing fits as it is");
+    let lines = encode.scale_lines.expect("scaled down");
+    let scale = ffmpeg::video_filters(step, encode, None, None)
+        .into_iter()
+        .find(|filter| filter.starts_with("scale="))
+        .unwrap();
+    let source = (step.width.unwrap(), step.height.unwrap());
+    let (w, h) = scaled_to(source.0, source.1, lines);
+    assert_eq!(scale, format!("scale={w}:{h}"));
+    let (shape, made) = (f64::from(source.0) / f64::from(source.1), f64::from(w) / f64::from(h));
+    assert!((shape - made).abs() < 0.02, "{source:?} became {w}×{h}");
 }
 
 // ── Trims and Custom ────────────────────────────────────────────────────
