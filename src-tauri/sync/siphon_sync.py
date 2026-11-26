@@ -3,9 +3,9 @@
 #
 #   python siphon_sync.py setup --models DIR
 #       Downloads the three models into DIR, at pinned revisions, and stores the meaning model at half size.
-#   python siphon_sync.py run --models DIR --video FILM --stream N [--language eng] --subs FILE.srt
-#                             [--charset CP1253] --out OUT.srt
-#       Syncs the subtitles to the speech and writes OUT.srt (UTF-8).
+#   python siphon_sync.py run --models DIR --video FILM --stream N [--language eng] --subs FILE.srt|.ass
+#                             [--charset CP1253] --out OUT.srt|.ass
+#       Syncs the subtitles to the speech and writes OUT (UTF-8), SRT as SRT and ASS or SSA as ASS or SSA.
 #
 # Every line it prints on stdout is one JSON object: {"event": "progress", ...}, then one "done" or "error".
 #
@@ -178,6 +178,152 @@ def read_lines(path, charset):
         plain = " ".join(re.sub(r"<[^>]+>|\{[^}]*\}", "", r).strip().lstrip("-–— ").strip() for r in body).strip()
         lines.append({"s": sec(a), "e": sec(z.split()[0]), "body": body, "text": plain or "…"})
     return lines
+
+
+# ── ASS (and SSA) ──
+# Only the dialogue is paired with speech. Signs (pinned to the picture), songs (karaoke, timed by the
+# syllable from the line's start) and anything drawn are moved with the dialogue around them, keeping
+# their length; comments are left as they are. Copies of a line on several layers (a glow under it, an
+# outline over it) are one line. Only an event's Start and End are rewritten: every other byte stays.
+
+ASS_TIME = re.compile(r"^\s*(\d+):(\d{1,2}):(\d{1,2})[.:](\d{1,3})\s*$")
+# Style names that say what isn't dialogue, by word: "Signs", "TS", "OP Romaji", "ED-Kanji", "Title".
+NOT_SPOKEN = {"sign", "signs", "ts", "typeset", "typesetting", "title", "titles", "eyecatch", "note", "notes",
+              "insert", "logo", "op", "ed", "opening", "ending", "song", "songs", "lyric", "lyrics", "karaoke",
+              "kara", "romaji", "kanji", "music"}
+
+
+def ass_sec(t):
+    m = ASS_TIME.match(t)
+    h, mi, s, frac = m.groups()
+    return int(h) * 3600 + int(mi) * 60 + int(s) + int(frac) / 10 ** len(frac)
+
+
+def ass_stamp(s, like):
+    """`s` seconds as ASS writes a time, with as many decimals as the time it replaces (centiseconds)."""
+    places = len(ASS_TIME.match(like).group(4))
+    units = max(0, int(round(s * 10 ** places)))
+    whole, frac = divmod(units, 10 ** places)
+    return f"{whole // 3600}:{whole // 60 % 60:02d}:{whole % 60:02d}.{frac:0{places}d}"
+
+
+def ass_plain(text):
+    plain = re.sub(r"\{[^}]*\}", "", text)
+    plain = re.sub(r"\\[Nnh]", " ", plain)
+    return re.sub(r"\s+", " ", plain).strip().lstrip("-–— ").strip()
+
+
+def ass_kind(event):
+    """dialogue, moved (signs, songs, drawings, an effect) or kept (comments)."""
+    if event["kind"] == "comment":
+        return "kept"
+    text, style, effect = event["text"], event["style"], event["effect"]
+    if re.search(r"\\(?:k|K|kf|ko)\d", text):                          # karaoke syllables
+        return "moved"
+    if re.search(r"\\(?:pos|move|org|i?clip)\s*\(|\\p[1-9]", text):     # pinned, moving or drawn
+        return "moved"
+    if effect.strip():                                                  # Banner;, Scroll up; …
+        return "moved"
+    if set(re.findall(r"[a-z]+", style.lower())) & NOT_SPOKEN:          # "Signs", "OP1 Romaji", "ED-Kanji"
+        return "moved"
+    if not ass_plain(text):
+        return "moved"
+    return "dialogue"
+
+
+def read_ass(path, charset):
+    """The file's events, if it is ASS or SSA; None if it isn't."""
+    raw = open(path, "rb").read()
+    text = read_text(path, charset)
+    if not re.search(r"^\s*\[Events\]\s*$", text, re.M | re.I):
+        return None
+    rows = text.split("\n")
+    events, section, fields = [], None, None
+    for n, row in enumerate(rows):
+        line = row[:-1] if row.endswith("\r") else row
+        bare = line.strip().lstrip("\ufeff")
+        if bare.startswith("[") and bare.endswith("]"):
+            section = bare.lower()
+            continue
+        if section != "[events]":
+            continue
+        m = re.match(r"^(Format|Dialogue|Comment)(\s*:\s*)", line, re.I)
+        if not m:
+            continue
+        rest = line[m.end():]
+        if m.group(1).lower() == "format":
+            fields = [f.strip().lower() for f in rest.split(",")]
+            continue
+        if not fields or "start" not in fields or "end" not in fields or "text" not in fields:
+            continue
+        parts = rest.split(",", len(fields) - 1)
+        if len(parts) < len(fields) or not ASS_TIME.match(parts[fields.index("start")]) \
+                or not ASS_TIME.match(parts[fields.index("end")]):
+            continue
+        get = lambda name: parts[fields.index(name)] if name in fields else ""
+        events.append({"row": n, "head": line[:m.end()], "parts": parts, "fields": fields,
+                       "kind": m.group(1).lower(), "text": get("text"), "style": get("style"),
+                       "effect": get("effect"), "s": ass_sec(get("start")), "e": ass_sec(get("end"))})
+    if not events:
+        return None
+    for event in events:
+        event["role"] = ass_kind(event)
+    # One line for each moment's words, however many layers draw it; in time order, as SRT lines are.
+    groups = {}
+    for event in events:
+        if event["role"] == "dialogue":
+            key = (round(event["s"], 3), round(event["e"], 3), ass_plain(event["text"]))
+            groups.setdefault(key, []).append(event)
+    lines = [{"s": s, "e": e, "text": plain or "…", "members": members}
+             for (s, e, plain), members in groups.items()]
+    lines.sort(key=lambda line: (line["s"], line["members"][0]["row"]))
+    return {"rows": rows, "events": events, "lines": lines, "bom": raw.startswith(b"\xef\xbb\xbf")}
+
+
+def write_ass(ass, out, path):
+    """Writes the file again with each event's new times, and returns how many were moved with the dialogue."""
+    lines = ass["lines"]
+    new = {}
+    for line, o in zip(lines, out):
+        for event in line["members"]:
+            new[event["row"]] = (o["s"], o["e"])
+    # What isn't spoken moves by the shift of the scene around it: the median shift of the lines spoken within
+    # a minute of it (or of the nearest nine), placed by their words. Not by its next neighbours alone: in a
+    # file out of sync, each line is off by its own error (up to 2 s either way), which a sign would take on.
+    anchors = sorted((line["s"], o["s"] - line["s"]) for line, o in zip(lines, out) if not o.get("guess")) or \
+        sorted((line["s"], o["s"] - line["s"]) for line, o in zip(lines, out))
+
+    def shift_at(t):
+        near = [sh for a, sh in anchors if abs(a - t) <= 60]
+        if len(near) < 5:
+            near = [sh for a, sh in sorted(anchors, key=lambda anchor: abs(anchor[0] - t))[:9]]
+        near.sort()
+        mid = len(near) // 2
+        return near[mid] if len(near) % 2 else (near[mid - 1] + near[mid]) / 2
+    moved = 0
+    for event in ass["events"]:
+        if event["role"] == "moved":
+            sh = shift_at(event["s"])
+            new[event["row"]] = (max(0.0, event["s"] + sh), max(0.0, event["e"] + sh))
+            moved += 1
+    rows = list(ass["rows"])
+    for event in ass["events"]:
+        if event["row"] not in new:
+            continue
+        s, e = new[event["row"]]
+        parts = list(event["parts"])
+        for name, value in (("start", s), ("end", e)):
+            at = event["fields"].index(name)
+            old = parts[at]
+            parts[at] = old.replace(old.strip(), ass_stamp(value, old), 1)
+        cr = "\r" if rows[event["row"]].endswith("\r") else ""
+        rows[event["row"]] = event["head"] + ",".join(parts) + cr
+    text = "\n".join(rows)
+    if text.startswith("\ufeff"):
+        text = text[1:]
+    with open(path, "w", encoding="utf-8-sig" if ass["bom"] else "utf-8", newline="") as f:
+        f.write(text)
+    return moved
 
 
 def start_audio(video, stream):
@@ -628,9 +774,11 @@ def run(args):
     import torch
     if not torch.cuda.is_available():
         raise RuntimeError("Subtitle sync needs an NVIDIA graphics card, and none could be used.")
-    lines = read_lines(args.subs, args.charset)
+    ass = read_ass(args.subs, args.charset)
+    lines = ass["lines"] if ass else read_lines(args.subs, args.charset)
     if not lines:
-        raise RuntimeError("No subtitle lines were found in the file.")
+        raise RuntimeError("No spoken lines were found in the subtitles." if ass else
+                           "No subtitle lines were found in the file.")
     language = LANGUAGES.get((args.language or "").lower())
     if language and language not in TIMED:
         raise RuntimeError(f"Siphon can't yet time words spoken in {language}.")
@@ -649,12 +797,16 @@ def run(args):
     words, chunks = transcribe(audio, speech, args.models, language, torch)
     del audio
     out = pair(lines, words, chunks, speech, args.models, torch, np)
-    with open(args.out, "w", encoding="utf-8", newline="\n") as f:
-        for x, l in enumerate(lines):
-            f.write(f"{x + 1}\n{stamp(out[x]['s'])} --> {stamp(out[x]['e'])}\n" + "\n".join(l["body"]) + "\n\n")
+    moved = 0
+    if ass:
+        moved = write_ass(ass, out, args.out)
+    else:
+        with open(args.out, "w", encoding="utf-8", newline="\n") as f:
+            for x, l in enumerate(lines):
+                f.write(f"{x + 1}\n{stamp(out[x]['s'])} --> {stamp(out[x]['e'])}\n" + "\n".join(l["body"]) + "\n\n")
     guesses = [round(out[x]["s"], 2) for x in range(len(lines)) if out[x].get("guess")]
     say(event="done", lines=len(lines), by_words=len(lines) - len(guesses), placed=len(guesses),
-        placed_at=guesses[:50], seconds=round(time.time() - t0, 1))
+        placed_at=guesses[:50], moved=moved, seconds=round(time.time() - t0, 1))
 
 
 def main():

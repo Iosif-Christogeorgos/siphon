@@ -107,6 +107,9 @@ pub struct SyncSummary {
     /// Where the first of those now start, in seconds.
     #[serde(default)]
     pub placed_at: Vec<f64>,
+    /// In ASS: signs, songs and drawings, moved with the lines spoken around them.
+    #[serde(default)]
+    pub moved: usize,
     pub seconds: f64,
 }
 
@@ -581,9 +584,7 @@ impl SubSync {
         let work = self.root.join("work").join(work_id());
         tokio::fs::create_dir_all(&work).await?;
         *self.syncing_in.lock().unwrap() = Some(work.clone());
-        let made = self
-            .sync_in(&work, key, &bins.ffmpeg(), video, stream, language, subs)
-            .await;
+        let made = self.sync_in(&work, key, &bins, video, stream, language, subs).await;
         *self.syncing_in.lock().unwrap() = None;
         if made.is_err() {
             let _ = tokio::fs::remove_dir_all(&work).await;
@@ -599,20 +600,30 @@ impl SubSync {
         &self,
         work: &Path,
         key: &str,
-        ffmpeg: &Path,
+        bins: &BinaryManager,
         video: &Path,
         stream: usize,
         language: Option<&str>,
         subs: Subtitles<'_>,
     ) -> Result<(PathBuf, SyncSummary)> {
         // A track of the film's own is taken out to a file, needed only while the sync reads it.
-        let (subs, taken_out, charset, stem) = match subs {
+        // ASS and SSA stay so (their styles, signs and songs are kept); anything else is SRT.
+        let (subs, taken_out, charset, stem, kind) = match subs {
             Subtitles::File { path, charset } => {
                 let stem = path
                     .file_stem()
                     .map(|s| s.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "subtitles".into());
-                (path.to_path_buf(), false, charset, stem)
+                let ext = path
+                    .extension()
+                    .map(|e| e.to_string_lossy().to_ascii_lowercase())
+                    .unwrap_or_default();
+                let kind = if ext == "ass" || ext == "ssa" {
+                    ext
+                } else {
+                    "srt".into()
+                };
+                (path.to_path_buf(), false, charset, stem, kind)
             }
             Subtitles::Track(index) => {
                 let film = video
@@ -620,7 +631,6 @@ impl SubSync {
                     .map(|s| s.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "film".into());
                 let stem = format!("{film} (track {index})");
-                let path = work.join(format!("{stem}.srt"));
                 let _ = self.app.emit(
                     PROGRESS_EVENT,
                     SyncProgress {
@@ -629,11 +639,17 @@ impl SubSync {
                         fraction: 0.0,
                     },
                 );
-                self.take_out(ffmpeg, video, index, &path).await?;
-                (path, true, None, stem)
+                let kind = if self.styled(&bins.ffprobe(), video, index).await {
+                    "ass"
+                } else {
+                    "srt"
+                };
+                let path = work.join(format!("{stem}.{kind}"));
+                self.take_out(&bins.ffmpeg(), video, index, kind, &path).await?;
+                (path, true, None, stem, kind.to_string())
             }
         };
-        let out = work.join(format!("{stem}.synced.srt"));
+        let out = work.join(format!("{stem}.synced.{kind}"));
 
         let mut cmd = self.python_command();
         cmd.env("HF_HUB_OFFLINE", "1")
@@ -720,15 +736,28 @@ impl SubSync {
         let _ = std::fs::remove_dir_all(self.root.join("work"));
     }
 
-    /// Writes text subtitle track `index` of `video` out as an SRT file, for a
-    /// sync of subtitles the film already has. FFmpeg reads the whole film for
-    /// it (a track's packets are spread all through it): seconds on an SSD.
-    async fn take_out(&self, ffmpeg: &Path, video: &Path, index: usize, srt: &Path) -> Result<()> {
+    /// Whether subtitle track `index` of `video` is ASS or SSA, which a sync keeps as it is.
+    async fn styled(&self, ffprobe: &Path, video: &Path, index: usize) -> bool {
+        let mut cmd = process::command(ffprobe);
+        cmd.args(["-v", "error", "-select_streams", &index.to_string()])
+            .args(["-show_entries", "stream=codec_name", "-of", "csv=p=0"])
+            .arg(video);
+        cmd.output()
+            .await
+            .is_ok_and(|out| matches!(String::from_utf8_lossy(&out.stdout).trim(), "ass" | "ssa"))
+    }
+
+    /// Writes text subtitle track `index` of `video` out to a file, for a sync
+    /// of subtitles the film already has: as ASS when it is (`kind`), copied as
+    /// it is, else as SRT. FFmpeg reads the whole film for it (a track's packets
+    /// are spread all through it): seconds on an SSD.
+    async fn take_out(&self, ffmpeg: &Path, video: &Path, index: usize, kind: &str, file: &Path) -> Result<()> {
+        let codec = if kind == "ass" { "copy" } else { "srt" };
         let mut cmd = process::command(ffmpeg);
         cmd.args(["-v", "error", "-nostdin", "-y", "-i"])
             .arg(video)
-            .args(["-map", &format!("0:{index}"), "-c:s", "srt", "-f", "srt"])
-            .arg(srt)
+            .args(["-map", &format!("0:{index}"), "-c:s", codec, "-f", kind])
+            .arg(file)
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
         process::below_others(&mut cmd);

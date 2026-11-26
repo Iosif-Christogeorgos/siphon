@@ -138,6 +138,8 @@ export interface SyncSummary {
   placed: number;
   /** Where the first of those now start, in seconds. */
   placed_at: number[];
+  /** In ASS: signs, songs and drawings, moved with the lines spoken around them. */
+  moved: number;
   seconds: number;
 }
 

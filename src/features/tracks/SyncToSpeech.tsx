@@ -76,7 +76,8 @@ export function SyncToSpeech({
           <span className="font-medium text-foreground">Synced to the speech.</span>{" "}
           <span className="text-muted-foreground">
             {summary.by_words} of {summary.lines} lines by their own words
-            {summary.placed > 0 && `, ${summary.placed} placed between them`}.
+            {summary.placed > 0 && `, ${summary.placed} placed between them`}
+            {summary.moved > 0 && `; ${summary.moved} ${summary.moved === 1 ? "sign or song" : "signs and songs"} moved with them`}.
           </span>
         </span>
         <button

@@ -93,10 +93,13 @@ const CODECS: Record<string, string> = {
 const PICTURES = new Set(["hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle"]);
 
 /**
- * A film's own subtitle tracks that can be synced to the speech: plain text,
- * taken out as SRT with nothing lost. ASS keeps styling SRT can't.
+ * Subtitles that can be synced to the speech: in text. A film's plain text
+ * tracks are taken out as SRT with nothing lost; ASS and SSA stay so, their
+ * signs and songs moved with the dialogue (docs/subtitle-sync.md). A file
+ * added is synced as SRT, ASS or SSA.
  */
-const SYNCABLE = new Set(["subrip", "mov_text", "webvtt", "text"]);
+const SYNCABLE = new Set(["subrip", "mov_text", "webvtt", "text", "ass", "ssa"]);
+const SYNCABLE_FILES = new Set(["subrip", "ass", "ssa"]);
 
 /** The encodings a text subtitle file not in UTF-8 may be read in (`local/mkv/added.rs`), as people know them. */
 const CHARSETS: { id: string; label: string }[] = [
@@ -211,11 +214,11 @@ export function TracksPanel({
                     onMove={(by) => onDraft(moved(draft, track.index, by))}
                     synced={Boolean(added ? added.synced : syncOf(draft, track))}
                     sync={
-                      // An SRT file added to the film, or a text subtitle track of its own:
+                      // A subtitle file added to the film, or a text subtitle track of its own:
                       // its timing can be synced to the speech.
                       track.kind !== "subtitles" ? undefined : added ? (
                         added.contents.tracks.length === 1 &&
-                        read.codec === "subrip" && (
+                        SYNCABLE_FILES.has(read.codec) && (
                           <SyncToSpeech
                             fileKey={fileKey}
                             draft={draft}
