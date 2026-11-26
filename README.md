@@ -143,6 +143,7 @@ To convert a file on your PC instead, drop it on the window or press **Browse**,
 | [Subtitles](docs/subtitles.md) | Which subtitles a download gets, where each preset puts them, and what was tested |
 | [Chat](docs/chat.md) | Twitch chat drawn into the picture: how it is read, timed and drawn, what was measured, and its limits |
 | [Files on your PC](docs/local-files.md) | Converting files on your PC: where what is made goes, how the files themselves are kept safe, what was tested |
+| [Choosing a film's tracks](docs/mkv-editor.md) | Keeping, leaving out and adding tracks for a film or a season: how each track's language is known, chapters and fonts, what was tested |
 | [Subtitle sync](docs/subtitle-sync.md) | Syncing subtitles to a film's speech, line by line: how, the models and the download, what was measured |
 | [Decisions](docs/decisions.md) | Why things work the way they do, what was measured, and known issues |
 | [Development](docs/development.md) | Running from source, checks, building an installer and releasing |

@@ -1,6 +1,6 @@
 # How Siphon works
 
-What each part of Siphon does and why, in more depth than the [README](../README.md). The reasons behind the harder choices, with what was measured, are in [decisions.md](decisions.md); what each preset assumes, with sources, is in [presets.md](presets.md); signing in to sites is in [sign-in.md](sign-in.md); subtitles are in [subtitles.md](subtitles.md); Twitch chat is in [chat.md](chat.md); converting files on this PC is in [local-files.md](local-files.md). Building and releasing are in [development.md](development.md).
+What each part of Siphon does and why, in more depth than the [README](../README.md). The reasons behind the harder choices, with what was measured, are in [decisions.md](decisions.md); what each preset assumes, with sources, is in [presets.md](presets.md); signing in to sites is in [sign-in.md](sign-in.md); subtitles are in [subtitles.md](subtitles.md); Twitch chat is in [chat.md](chat.md); converting files on this PC is in [local-files.md](local-files.md); choosing a film's tracks is in [mkv-editor.md](mkv-editor.md); syncing subtitles to speech is in [subtitle-sync.md](subtitle-sync.md). Building and releasing are in [development.md](development.md).
 
 ## Managed binaries
 
@@ -160,9 +160,11 @@ Progress comes from `--progress-template` lines that the backend parses and fold
 src/                     React + TypeScript frontend
   components/            Shared UI (title bar, error card, shadcn/ui primitives)
   features/              One folder per feature: setup, link, video, playlist, presets, options,
-                         trim, download, queue, settings, speed, sign-in, home, chat, files
+                         trim, download, queue, settings, speed, sign-in, home, chat, files,
+                         tracks (a film's or a season's tracks, and Sync to speech)
   lib/                   IPC wrappers, formatting, motion presets
-  stores/                Zustand stores (binaries, choices, downloads, trim, toasts, appUpdate, ui, speed, signIn),
+  stores/                Zustand stores (binaries, choices, downloads, trim, toasts, appUpdate, ui, speed, signIn,
+                         subsync, theme),
                          and the shared settings query
   types.ts               Types mirrored from the Rust backend
 src-tauri/               Rust backend (Tauri 2)
@@ -176,6 +178,9 @@ src-tauri/               Rust backend (Tauri 2)
   src/ffmpeg/            Hardware encoder detection and conversion arguments
   src/downloads/         The download queue, jobs (pause, resume, cancel), progress tracking, and live recording (live.rs; Twitch without its ads: twitch_feed.rs), drawing chat in (chat.rs, live_chat.rs, live_draw.rs), and converting files on this PC (files.rs)
   src/local/             Files on this PC: taking them in (drops, Browse, folders), the keys the webview knows them by, reading them with ffprobe, and what is made of them and called
+  src/local/mkv/         The MKV editor: reading a film's tracks and how sure their languages are (words, Windows' OCR,
+                         chapters), my languages' suggestion, files added, chapters files, and the copy's arguments
+  src/subsync/           Subtitle sync: its optional download, the private Python, running a sync and its work files
   src/chat/              Twitch chat: reading it (replay, IRC), emotes and badges, and drawing it as a layer
   src/throttle/          The speed limit: the local proxy, the shared fair limiter, the system proxy
   src/sessions/          Signed-in sites: cookie jars (DPAPI), which site a link is, the sign-in window,
@@ -184,6 +189,7 @@ src-tauri/               Rust backend (Tauri 2)
   src/app_update.rs      Checking for and installing a newer Siphon
   src/preview.rs         Where the trim preview plays from (embed, stream or cached copy)
   src/commands.rs        The IPC surface
+  sync/                  The subtitle sync itself (siphon_sync.py), and the package versions it was tested with
 .github/workflows/ci.yml        Runs the checks on every push and pull request
 .github/workflows/release.yml   Runs the checks, then builds and signs a draft release when a version tag is pushed
 docs/how-it-works.md     This file
@@ -194,6 +200,8 @@ docs/live.md             Recording live streams: how, what was tested, and its l
 docs/subtitles.md        Subtitles: which a download gets, where each preset puts them, what was tested
 docs/chat.md             Twitch chat drawn in: how it is read, timed and drawn, what was measured
 docs/local-files.md      Converting files on this PC: how, what was tested, and its limits
+docs/mkv-editor.md       Choosing a film's tracks: how languages are known, seasons, adding tracks, chapters and fonts
+docs/subtitle-sync.md    Syncing subtitles to a film's speech: how, the models and the download, what was measured
 docs/decisions.md        Why things work the way they do, and known issues
 docs/media/              The README's screenshots and demo
 app-icon.svg             Icon source; regenerate with `npx tauri icon app-icon.svg`

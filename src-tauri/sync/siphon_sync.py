@@ -1,5 +1,5 @@
 # Siphon's subtitle sync: gives every line of a subtitle file the moment its words are spoken in a film.
-# Siphon runs it in its own private Python (see src-tauri/src/sync/mod.rs and docs/subtitle-sync.md).
+# Siphon runs it in its own private Python (see src-tauri/src/subsync/mod.rs and docs/subtitle-sync.md).
 #
 #   python siphon_sync.py setup --models DIR
 #       Downloads the three models into DIR, at pinned revisions, and stores the meaning model at half size.
@@ -11,7 +11,7 @@
 #
 # How a sync works:
 #   1. The dialogue is pulled out of the film (its centre channel, where films put speech).
-#   2. A voice detector (Silero VAD) finds where someone speaks, 64 stretches of the film at once.
+#   2. A voice detector (Silero VAD) finds where someone speaks, 32 stretches of the film at once.
 #   3. Qwen3-ASR writes down what is said, and Qwen3-ForcedAligner times every word.
 #   4. The words are cut into short phrases at pauses and punctuation.
 #   5. A rough whole-film fit (speech against lines on screen, by FFT, with frame-rate ratios and a slow
