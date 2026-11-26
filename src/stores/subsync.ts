@@ -78,7 +78,10 @@ export const useSubSync = create<SubSyncState>((set, get) => ({
       if (failed.kind !== "cancelled") set({ failure: { key: request.id, message: failed.message } });
     } finally {
       set({ running: null, progress: null });
-      // The synced copy is in its draft by the time this looks.
+      // A new synced copy is on the disk: whether anything uses it is told even
+      // when what is used hasn't changed (the film was closed, or another opened,
+      // while it synced). It is in its draft, if it has one, by the time this looks.
+      told = null;
       review();
     }
   },
@@ -128,3 +131,5 @@ function review() {
 
 // A copy that finished, or was taken out of Activity, may have been the last to use one.
 useDownloads.subscribe(review);
+// And as the window starts: if it was reloaded, its drafts went with it.
+review();
