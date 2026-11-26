@@ -58,6 +58,8 @@ Syncs take turns, one at a time, in the order asked (`useSubSync` in `src/stores
 
 uv's download cache is deleted once the packages are copied out of it. A download that stops carries on where it stopped (each model has a `.complete` mark); `ready.json`, written last, says the whole is there, and its `VERSION` makes an older install be made again when the packages or models change. **Remove** in Settings deletes the folder.
 
+**How fast it downloads** (measured 2026-11-26, on the owner's line of about 55-63 MiB/s): a first install took 4 min 40 s for 12.1 GB. PyTorch (download.pytorch.org) and the models (Hugging Face's CDN) each came at the line's full speed, and four connections at once were no faster than one, so there is no quicker source: PyTorch's CUDA builds for Windows are only on its own index (PyPI's are for the processor alone), and Hugging Face is the models' home. About 65 s of it is not downloading: installing the packages (26 s) and making BGE-M3 half size (36 s). Starting the models while PyTorch installs, and converting BGE-M3 while the others download, would save about a minute; left as it is (the owner's call), since it is fast already and the install works. Hugging Face's own parallel downloader, `hf_xet`, is not installed: `huggingface_hub` asks for it only where the processor is named `amd64` in lower case, and Windows says `AMD64`. It could help on lines faster than one connection gets, which couldn't be measured here; it would also keep a chunk cache, to be turned off (`HF_XET_CHUNK_CACHE_SIZE_BYTES=0`).
+
 The download is offered only where `nvidia-smi` lists an NVIDIA card with 8 GB or more; the models run in bfloat16 on CUDA.
 
 ## Measured
