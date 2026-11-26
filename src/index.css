@@ -43,6 +43,15 @@
   --destructive-soft: light-dark(oklch(0.58 0.19 25 / 0.08), oklch(0.72 0.17 22 / 0.12));
   --destructive-glow: light-dark(oklch(0.58 0.19 25 / 0.14), oklch(0.72 0.17 22 / 0.32));
   --success: light-dark(oklch(0.6 0.13 158), oklch(0.78 0.15 160));
+  /* A plan's warnings (HDR, a track left out): worth reading before converting, but not errors, so amber. */
+  --caution: light-dark(oklch(0.68 0.15 65), oklch(0.83 0.14 78));
+  --caution-foreground: light-dark(oklch(0.5 0.12 55), oklch(0.86 0.13 80));
+  --caution-soft: light-dark(oklch(0.7 0.15 68 / 0.13), oklch(0.83 0.14 78 / 0.13));
+  --caution-edge: light-dark(oklch(0.66 0.15 65 / 0.3), oklch(0.83 0.14 78 / 0.2));
+  --caution-glow: light-dark(oklch(0.72 0.16 68 / 0.35), oklch(0.83 0.14 78 / 0.35));
+  /* A warning's card, opaque so the cards stacked under it don't show through. */
+  --notice: color-mix(in oklab, var(--caution) 8%, var(--card));
+  --notice-behind: color-mix(in oklab, var(--caution) 6%, var(--card-behind));
   /* On air: the LIVE mark and a recording's REC. Its own red, not an error's. */
   --live: light-dark(oklch(0.6 0.22 27), oklch(0.7 0.2 25));
   --live-soft: light-dark(oklch(0.6 0.22 27 / 0.1), oklch(0.7 0.2 25 / 0.14));
@@ -91,6 +100,12 @@
   --color-destructive: var(--destructive);
   --color-destructive-soft: var(--destructive-soft);
   --color-success: var(--success);
+  --color-caution: var(--caution);
+  --color-caution-foreground: var(--caution-foreground);
+  --color-caution-soft: var(--caution-soft);
+  --color-caution-edge: var(--caution-edge);
+  --color-notice: var(--notice);
+  --color-notice-behind: var(--notice-behind);
   --color-live: var(--live);
   --color-live-soft: var(--live-soft);
   --color-border: var(--border);
@@ -138,6 +153,16 @@
     to {
       opacity: 0;
       transform: scale(3.2);
+    }
+  }
+  /* A band of light crossing the top warning once, when a new choice brings other warnings. */
+  --animate-notice-shine: notice-shine 1.3s 0.15s cubic-bezier(0.4, 0, 0.2, 1) 1 both;
+  @keyframes notice-shine {
+    from {
+      background-position: 150% 0;
+    }
+    to {
+      background-position: -60% 0;
     }
   }
   /* A recording's dot, breathing slowly. */

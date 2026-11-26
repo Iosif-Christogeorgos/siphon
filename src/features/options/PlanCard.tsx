@@ -14,6 +14,7 @@ import { formatBytes, formatBytesRange } from "@/lib/format";
 import { spring } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import type { Badge, LiveStatus, PlanSummary } from "@/types";
+import { NoticeStack } from "./NoticeStack";
 
 const BADGES: Record<Badge, { icon: typeof Zap; label: string; accent: boolean }> = {
   lossless: { icon: Zap, label: "No quality loss", accent: true },
@@ -102,7 +103,7 @@ export function PlanCard({
   // How long converting (or, for a copied clip, cutting) takes. Share's badge says enough on its own.
   const time =
     plan.convert_seconds !== null && plan.badge !== "size_optimized" ? formatConvertTime(plan.convert_seconds) : null;
-  // Only warnings stay in view; the explanation and notes for the curious wait behind the ⓘ.
+  // Only warnings stay in view, folded into one stack; the explanation and notes for the curious wait behind the ⓘ.
   const notes = plan.hints.filter((hint) => hint.level === "info");
   const warnings = plan.hints.filter((hint) => hint.level === "warning");
 
@@ -204,11 +205,7 @@ export function PlanCard({
             )}
           </Note>
         )}
-        {warnings.map((hint) => (
-          <Note key={hint.text} warning>
-            {hint.text}
-          </Note>
-        ))}
+        {warnings.length > 0 && <NoticeStack key="warnings" notices={warnings} />}
       </AnimatePresence>
     </div>
   );

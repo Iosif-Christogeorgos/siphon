@@ -687,13 +687,15 @@ function Badge({ status }: { status: Status }) {
     case "ready": {
       // What a single file says above its button, said here before Convert:
       // its subtitle tracks the file type can't hold, say.
-      const warnings = status.plan.hints.filter((hint) => hint.level === "warning").map((hint) => hint.text);
-      if (warnings.length === 0) return null;
+      const warnings = status.plan.hints.filter((hint) => hint.level === "warning");
+      const [first] = warnings;
+      if (!first) return null;
       return (
-        <Hint label={warnings.join(" ")} className="max-w-64 text-pretty">
-          <span className="flex shrink-0 items-center gap-1 rounded-md bg-destructive-soft px-1.5 py-0.5 text-[11px] font-medium text-foreground">
-            <TriangleAlert className="size-3 text-destructive" />
-            {warnings.some((text) => text.includes("subtitle")) ? "Subtitles left out" : "Note"}
+        <Hint label={warnings.map((hint) => hint.text).join(" ")} className="max-w-64 text-pretty">
+          <span className="flex shrink-0 items-center gap-1 rounded-md bg-caution-soft px-1.5 py-0.5 text-[11px] font-medium text-foreground">
+            <TriangleAlert className="size-3 text-caution-foreground" />
+            {first.title ?? "Note"}
+            {warnings.length > 1 && <span className="text-muted-foreground">+{warnings.length - 1}</span>}
           </span>
         </Hint>
       );
