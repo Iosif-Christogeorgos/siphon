@@ -92,7 +92,7 @@ Open a film or an episode (MKV, MP4 or TS) and pull out the **tracks** card tuck
 
 ### Subtitles in time with the speech
 
-Got subtitles from another release that come early in one scene and late in the next? Add the SRT or ASS to the film, or open the subtitles it already has, and press **Sync to speech**: Siphon listens to the film, writes down what is said word by word, and gives every line the moment its own words are spoken, matched by meaning, so Greek subtitles sync to English speech. It fixes each line on its own, not just the whole file, and needs no other subtitles to compare with. In ASS, the styles stay as they are and the signs and songs move with their scenes. It runs on your NVIDIA graphics card, about a minute and a half for a two-hour film, and is an optional download in Settings (about 11 GB), there only if you want it.
+Got subtitles from another release that come early in one scene and late in the next? Add the SRT or ASS to the film, or open the subtitles it already has, and press **Sync to speech**: Siphon listens to the film, writes down what is said word by word, and gives every line the moment its own words are spoken, matched by meaning, so Greek subtitles sync to English speech. It fixes each line on its own, not just the whole file, and needs no other subtitles to compare with. In ASS, the styles stay as they are and the signs and songs move with their scenes. Sync a whole season's subtitles with one press: the episodes take turns on the graphics card, waiting if a game is using it. It runs on your NVIDIA graphics card, about a minute and a half for a two-hour film, and is an optional download in Settings (about 11 GB), there only if you want it.
 
 ### Record live streams
 
