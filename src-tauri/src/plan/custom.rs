@@ -134,7 +134,9 @@ impl Planner<'_> {
             // Not the user's choice: this codec can only be cut by converting it.
             VideoAction::Encode(self.encode(video_target))
         } else {
-            recipe.hints.push(warning(format!(
+            recipe.hints.push(warning(
+                "Loses a little quality",
+                format!(
                 "Converting {} to {} takes time and loses a little quality; it never adds any. Keep the original codec unless a device needs {}.",
                 video.codec.label(),
                 video_target.label(),

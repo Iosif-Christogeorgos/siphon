@@ -218,9 +218,10 @@ pub(super) fn keep(recipe: &mut Recipe, file: &FileTracks, choice: &Choice, caps
     }
     if !left_out.is_empty() {
         let all = left_out.len() == file.subtitles.len();
-        recipe
-            .hints
-            .push(warning(left_out_note(&left_out, all, container, group.is_none())));
+        recipe.hints.push(warning(
+            "Subtitles left out",
+            left_out_note(&left_out, all, container, group.is_none()),
+        ));
     }
 }
 

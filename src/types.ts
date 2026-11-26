@@ -557,6 +557,8 @@ export interface Trim {
 
 export interface Hint {
   level: "info" | "warning";
+  /** A warning's name in a few words ("HDR colours"), shown while the warnings are folded together. */
+  title: string | null;
   text: string;
 }
 

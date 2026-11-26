@@ -206,6 +206,7 @@ impl Planner<'_> {
         }
         if recipe.video.as_ref().is_some_and(|video| video.hdr) {
             recipe.hints.push(warning(
+                "HDR colours",
                 "This video is HDR. On screens without HDR, colours may look washed out.",
             ));
         }

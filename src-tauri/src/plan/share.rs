@@ -124,10 +124,13 @@ impl Planner<'_> {
                 .expect("plan() checks that videos exist");
             recipe.audio = self.audio_for(&video, &[AudioCodec::Aac], AudioCodec::Aac);
             recipe.video = Some(Self::video_step(&video, VideoAction::Copy));
-            recipe.hints.push(warning(format!(
-                "The site didn’t say how long this video is, so Siphon can’t promise it fits under {}.",
-                megabytes(tier.limit_mb)
-            )));
+            recipe.hints.push(warning(
+                "Length unknown",
+                format!(
+                    "The site didn’t say how long this video is, so Siphon can’t promise it fits under {}.",
+                    megabytes(tier.limit_mb)
+                ),
+            ));
             return recipe;
         };
 
@@ -196,10 +199,13 @@ impl Planner<'_> {
         self.encode_for_share(&mut recipe, &pool, rung, video_kbps, audio_kbps);
         recipe.reason = Some(format!("no original stream fits under {}", megabytes(tier.limit_mb)));
         if rung.bpp < GOOD_BPP {
-            recipe.hints.push(warning(format!(
-                "This is long for {}, so it will look soft. Trimming it, or a larger limit, will help.",
-                megabytes(tier.limit_mb)
-            )));
+            recipe.hints.push(warning(
+                "Will look soft",
+                format!(
+                    "This is long for {}, so it will look soft. Trimming it, or a larger limit, will help.",
+                    megabytes(tier.limit_mb)
+                ),
+            ));
         }
         recipe
     }

@@ -349,6 +349,10 @@ pub enum HintLevel {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Hint {
     pub level: HintLevel,
+    /// A warning's name in a few words ("HDR colours"), for when the
+    /// warnings are folded into one row; notes have none.
+    #[serde(default)]
+    pub title: Option<String>,
     pub text: String,
 }
 
@@ -847,13 +851,16 @@ fn max_by_key<T: Copy, K: PartialOrd>(items: impl IntoIterator<Item = T>, key: i
 fn info(text: impl Into<String>) -> Hint {
     Hint {
         level: HintLevel::Info,
+        title: None,
         text: text.into(),
     }
 }
 
-fn warning(text: impl Into<String>) -> Hint {
+/// A warning: `title` names it in a few words, `text` says it in full.
+fn warning(title: &str, text: impl Into<String>) -> Hint {
     Hint {
         level: HintLevel::Warning,
+        title: Some(title.to_string()),
         text: text.into(),
     }
 }
@@ -1329,10 +1336,13 @@ fn audio_conversion_hint(source: AudioCodec, target: AudioCodec, source_kbps: Op
         return None;
     }
     Some(if target.is_lossless() {
-        warning(format!(
+        warning(
+            "Larger, not better",
+            format!(
             "The source is {described}. Converting it to {} can’t bring back detail that was never there; it only makes the file several times larger.",
             target.label()
-        ))
+        ),
+        )
     } else {
         info(format!(
             "The source is {described}. Converting it to {} compresses it a second time, which slightly lowers quality.",

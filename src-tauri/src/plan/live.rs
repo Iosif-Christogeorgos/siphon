@@ -152,7 +152,7 @@ pub fn hints(recipe: &Recipe, extractor: Option<&str>, limit: Option<u64>, free:
     let mut hints = Vec::new();
     let needs = stream_rate(recipe);
     match (limit, needs) {
-        (Some(limit), Some(needs)) if limit < needs => hints.push(warning(format!(
+        (Some(limit), Some(needs)) if limit < needs => hints.push(warning("Speed limit too low", format!(
             "Your speed limit ({}) is lower than this stream needs ({}). The recording will fall behind, and parts of the stream will be missing from it. Raise the limit in Settings first.",
             rate(limit),
             rate(needs)
@@ -167,9 +167,10 @@ pub fn hints(recipe: &Recipe, extractor: Option<&str>, limit: Option<u64>, free:
         let hours = free as f64 / per_hour as f64;
         let text = format!("about {} of this stream", span(hours * HOUR));
         if hours < 2.0 {
-            hints.push(warning(format!(
-                "The disk only has room for {text}. Siphon stops and saves the recording before it fills up."
-            )));
+            hints.push(warning(
+                "Little room on the disk",
+                format!("The disk only has room for {text}. Siphon stops and saves the recording before it fills up."),
+            ));
         } else {
             hints.push(info(format!("The disk has room for {text}.")));
         }
@@ -200,13 +201,15 @@ pub fn next_check(status: LiveStatus, since: Option<u64>, now: u64) -> Duration 
 fn info(text: impl Into<String>) -> Hint {
     Hint {
         level: HintLevel::Info,
+        title: None,
         text: text.into(),
     }
 }
 
-fn warning(text: impl Into<String>) -> Hint {
+fn warning(title: &str, text: impl Into<String>) -> Hint {
     Hint {
         level: HintLevel::Warning,
+        title: Some(title.to_string()),
         text: text.into(),
     }
 }
