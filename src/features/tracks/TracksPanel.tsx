@@ -49,6 +49,7 @@ import {
   withFonts,
   withTrack,
 } from "./draft";
+import { FlagToggle } from "./FlagToggle";
 import { type PickedRead, readPicked, tracksQuery, useLanguagesKey } from "./reading";
 
 const KINDS: { kind: MkvKind; label: string; icon: typeof Film }[] = [
@@ -845,15 +846,15 @@ function TrackDetails({
       )}
       <input
         aria-label="Name"
-        placeholder="No name"
+        placeholder="Name (optional)"
         value={track.name}
         onChange={(event) => onChange({ name: event.target.value })}
         className="h-8 w-44 min-w-0 rounded-lg border border-border-strong bg-card px-3 text-[13px] outline-none transition-shadow placeholder:text-subtle-foreground focus-visible:ring-[3px] focus-visible:ring-ring/40"
       />
       {toggles.map((toggle) => (
-        <Toggle key={toggle.label} on={toggle.on} onClick={() => onChange(toggle.change)}>
+        <FlagToggle key={toggle.label} on={toggle.on} onClick={() => onChange(toggle.change)}>
           {toggle.label}
-        </Toggle>
+        </FlagToggle>
       ))}
       {!(first && last) && (
         <span className="ml-auto flex gap-1">
@@ -875,22 +876,6 @@ function TrackDetails({
 
 const MOVE =
   "grid size-8 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-35";
-
-function Toggle({ on, onClick, children }: { on: boolean; onClick: () => void; children: ReactNode }) {
-  return (
-    <button
-      type="button"
-      aria-pressed={on}
-      onClick={onClick}
-      className={cn(
-        "h-8 rounded-lg px-2.5 text-xs transition-colors focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-none",
-        on ? "bg-primary-soft text-primary" : "text-muted-foreground hover:bg-accent hover:text-foreground",
-      )}
-    >
-      {children}
-    </button>
-  );
-}
 
 /** How Siphon knows a track's language: read, taken by its tag, or in doubt. */
 function Certainty({ track, read }: { track: DraftTrack; read: MkvTrack }) {

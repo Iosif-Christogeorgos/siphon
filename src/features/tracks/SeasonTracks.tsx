@@ -10,6 +10,7 @@ import { cn } from "@/lib/utils";
 import { useUi } from "@/stores/ui";
 import type { PickedFile } from "@/types";
 import { type Draft, withFonts } from "./draft";
+import { FlagToggle } from "./FlagToggle";
 import { kindOfPicked, readPicked } from "./reading";
 import { applyPicked } from "./TracksPanel";
 import {
@@ -221,21 +222,13 @@ function Row({
         </p>
       </div>
       {kept && (
-        <button
-          type="button"
-          aria-pressed={row.first === "all"}
+        <FlagToggle
+          on={row.first === "all" ? true : row.first === "some" ? "some" : false}
           onClick={() => onFirst(row.first !== "all")}
-          className={cn(
-            "h-7 shrink-0 rounded-lg px-2.5 text-xs transition-colors focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-none",
-            row.first === "all"
-              ? "bg-primary-soft text-primary"
-              : row.first === "some"
-                ? "text-primary hover:bg-accent"
-                : "text-muted-foreground hover:bg-accent hover:text-foreground",
-          )}
+          className="h-7"
         >
           {row.first === "some" ? "Plays first in some" : "Plays first"}
-        </button>
+        </FlagToggle>
       )}
     </li>
   );
