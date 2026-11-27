@@ -101,6 +101,9 @@ impl Default for Settings {
 impl Settings {
     /// Brings values from disk or the UI into their allowed ranges.
     fn sanitized(mut self) -> Self {
+        // A folder named in full: an empty, relative or drive-relative one (`C:Videos`)
+        // would be taken from wherever Siphon was started. The default stands instead.
+        self.output_dir = self.output_dir.filter(|dir| dir.is_absolute());
         self.max_concurrent = self.max_concurrent.clamp(1, MAX_CONCURRENT_LIMIT);
         self.languages = tags(self.languages.iter().map(String::as_str));
         self.speed_limit = self
@@ -213,6 +216,27 @@ mod tests {
         // The styles still there are read as they were.
         let settings: Settings = serde_json::from_str(r#"{"filename": "date_title"}"#).unwrap();
         assert_eq!(settings.filename, FilenameStyle::DateTitle);
+    }
+
+    #[test]
+    fn a_download_folder_must_be_named_in_full() {
+        let folder = |dir: &str| {
+            Settings {
+                output_dir: Some(PathBuf::from(dir)),
+                ..Settings::default()
+            }
+            .sanitized()
+            .output_dir
+        };
+        assert_eq!(folder(r"D:\Videos"), Some(PathBuf::from(r"D:\Videos")));
+        assert_eq!(
+            folder(r"\\nas\share\Videos"),
+            Some(PathBuf::from(r"\\nas\share\Videos"))
+        );
+        // Taken from wherever Siphon was started: the default stands instead.
+        for unclear in ["", "Videos", r"C:Videos", r"\Videos"] {
+            assert_eq!(folder(unclear), None, "{unclear:?}");
+        }
     }
 
     #[test]
