@@ -603,6 +603,7 @@ fn share_blocks_a_video_too_long_to_look_decent() {
     let long = info(youtube_4k().formats, 3.0 * 3600.0);
     let recipe = share(&long, TargetId::Discord, TierId::DiscordFree, None);
     assert!(recipe.blocked.as_deref().is_some_and(|reason| reason.contains("Trim")));
+    assert_eq!(recipe.fits.as_deref(), Some("too long for Discord (20 MB)"));
 }
 
 #[test]

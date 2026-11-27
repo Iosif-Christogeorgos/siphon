@@ -198,6 +198,8 @@ impl Planner<'_> {
                 "This video is too long to look decent under {}. Trim it to the part you want, or pick a larger limit.",
                 megabytes(tier.limit_mb)
             ));
+            // Not "fits Discord (20 MB)" beside a size of hundreds of megabytes.
+            recipe.fits = Some(format!("too long for {} ({})", target.name, megabytes(tier.limit_mb)));
             return recipe;
         };
 
