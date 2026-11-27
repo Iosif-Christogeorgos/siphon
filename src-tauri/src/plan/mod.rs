@@ -908,6 +908,15 @@ fn warning(title: &str, text: impl Into<String>) -> Hint {
 
 /// Decides what to download and how to process it. Pure: no I/O.
 pub fn plan(video: &VideoInfo, choice: &Choice, trim: Option<Trim>, caps: &Capabilities) -> Result<Recipe> {
+    // A part ends where the video does: one asked past it was sized, and named
+    // ("0m00s-0m30s"), for more than the file held. The trimmer never asks for one.
+    let trim = trim.map(|trim| match video.duration {
+        Some(duration) => Trim {
+            end: trim.end.min(duration),
+            ..trim
+        },
+        None => trim,
+    });
     if trim.is_some_and(|trim| !(trim.start >= 0.0 && trim.end > trim.start)) {
         return Err(AppError::internal("The selected part of the video is empty."));
     }

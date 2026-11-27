@@ -599,6 +599,23 @@ fn share_says_why_it_converts_a_part_an_original_of_would_fit() {
 }
 
 #[test]
+fn a_part_ends_where_the_video_does() {
+    let choice = Choice::Preset(preset(TargetId::Max));
+    let part = |start, end| plan(&youtube_4k(), &choice, Some(Trim { start, end }), &nvidia());
+    let past = part(590.0, 620.0).unwrap();
+    assert_eq!(
+        past.trim,
+        Some(Trim {
+            start: 590.0,
+            end: 600.0
+        })
+    );
+    assert_eq!(past.duration, Some(10.0));
+    // One that starts after the end is nothing at all.
+    assert!(part(610.0, 640.0).is_err());
+}
+
+#[test]
 fn share_blocks_a_video_too_long_to_look_decent() {
     let long = info(youtube_4k().formats, 3.0 * 3600.0);
     let recipe = share(&long, TargetId::Discord, TierId::DiscordFree, None);
