@@ -96,6 +96,8 @@ export const ipc = {
   /** Bytes, looking the video up first if needed (for playlist totals). */
   estimateDownload: (url: string, choice: Choice) => invoke<number | null>("estimate_download", { url, choice }),
   previewSource: (url: string, level: number) => invoke<Preview>("preview_source", { url, level }),
+  /** The video at `url` was closed: a preview copy still being made of it stops. */
+  previewStop: (url: string) => invoke<void>("preview_stop", { url }),
   /**
    * The chat box at `at` seconds of the video, placed on a frame `width` × `height`:
    * its left, top, width and height as four little-endian u32s, then its pixels (RGBA).

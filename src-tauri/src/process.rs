@@ -32,12 +32,32 @@ pub fn below_others(cmd: &mut Command) {
 
 /// Runs a command to completion and captures its output. Returns `None` if
 /// it outlives `limit`, in which case its whole process tree is killed.
-pub async fn output_within(mut cmd: Command, limit: Duration) -> std::io::Result<Option<Output>> {
+pub async fn output_within(cmd: Command, limit: Duration) -> std::io::Result<Option<Output>> {
+    output_until(cmd, limit, std::future::pending()).await
+}
+
+/// [`output_within`], cut short the same way when `stop` resolves first.
+/// Either way it ends with Siphon (see [`end_with_siphon`]).
+pub async fn output_until(
+    mut cmd: Command,
+    limit: Duration,
+    stop: impl std::future::Future<Output = ()>,
+) -> std::io::Result<Option<Output>> {
     let child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    end_with_siphon(&child);
     let pid = child.id();
-    match tokio::time::timeout(limit, child.wait_with_output()).await {
-        Ok(output) => output.map(Some),
-        Err(_) => {
+    // Held until the tree is killed: dropped first, it would end only the
+    // process at its head (`kill_on_drop`), and yt-dlp's would go on.
+    let output = child.wait_with_output();
+    tokio::pin!(output);
+    tokio::select! {
+        output = &mut output => output.map(Some),
+        () = async {
+            tokio::select! {
+                () = tokio::time::sleep(limit) => {}
+                () = stop => {}
+            }
+        } => {
             if let Some(pid) = pid {
                 kill_tree(pid).await;
             }

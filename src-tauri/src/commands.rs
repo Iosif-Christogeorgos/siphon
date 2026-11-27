@@ -437,11 +437,20 @@ pub async fn preview_source(
     app: AppHandle,
     bins: Binaries<'_>,
     cache: State<'_, MediaCache>,
+    making: State<'_, preview::Making>,
     url: String,
     level: u8,
 ) -> Result<Preview> {
+    let stop = making.watch(&url);
     let video = remembered(&app, &bins, &cache, &url).await?;
-    preview::source(&app, &bins, &video, level).await
+    preview::source(&app, &bins, &video, level, stop).await
+}
+
+/// The video at `url` was closed: a preview copy still being made of it
+/// isn't needed, and stops (what was made of it so far is deleted).
+#[tauri::command]
+pub fn preview_stop(making: State<'_, preview::Making>, url: String) {
+    making.stop(&url);
 }
 
 #[tauri::command]

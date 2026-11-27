@@ -10,12 +10,15 @@
 //! A file on this PC plays as it is where WebView2 can play it, and from a
 //! small copy made of it otherwise (see [`file_source`]).
 
+use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
+use tokio::sync::watch;
 
 use crate::binaries::BinaryManager;
 use crate::error::{AppError, ErrorKind, Result};
@@ -53,10 +56,57 @@ pub struct Preview {
     pub level: u8,
 }
 
+/// The small copies being made for previews, by the link (or a file's key)
+/// each is for: closing the video stops its copy (see [`Making::stop`]).
+/// Otherwise nothing would: a copy of a three-hour film went on for minutes
+/// after the film was closed, and after Siphon was, holding the file open.
+#[derive(Default)]
+pub struct Making(Mutex<HashMap<String, watch::Sender<bool>>>);
+
+impl Making {
+    /// What stops the copies made for `url`.
+    pub fn watch(&self, url: &str) -> Stop {
+        let mut making = self.0.lock().unwrap();
+        Stop(
+            making
+                .entry(url.to_string())
+                .or_insert_with(|| watch::channel(false).0)
+                .subscribe(),
+        )
+    }
+
+    /// Stops every copy being made for `url`; one asked for later starts afresh.
+    pub fn stop(&self, url: &str) {
+        if let Some(stop) = self.0.lock().unwrap().remove(url) {
+            let _ = stop.send(true);
+        }
+    }
+}
+
+/// Says when the copy it was given to is to stop.
+#[derive(Clone)]
+pub struct Stop(watch::Receiver<bool>);
+
+impl Stop {
+    async fn stopped(mut self) {
+        let _ = self.0.wait_for(|stop| *stop).await;
+    }
+
+    fn asked(&self) -> bool {
+        *self.0.borrow()
+    }
+}
+
 /// Finds a preview source at `level` or the next level that has one.
-pub async fn source(app: &AppHandle, bins: &BinaryManager, video: &VideoInfo, level: u8) -> Result<Preview> {
+pub async fn source(
+    app: &AppHandle,
+    bins: &BinaryManager,
+    video: &VideoInfo,
+    level: u8,
+    stop: Stop,
+) -> Result<Preview> {
     if video.file.is_some() {
-        return file_source(app, bins, video, level).await;
+        return file_source(app, bins, video, level, stop).await;
     }
     if level == 0 && video.extractor.as_deref() == Some("Youtube") && !video.id.is_empty() {
         return Ok(Preview {
@@ -75,7 +125,7 @@ pub async fn source(app: &AppHandle, bins: &BinaryManager, video: &VideoInfo, le
     // A stream as it airs is never downloaded for a preview: it doesn't end,
     // so yt-dlp would record it until the time limit.
     if level <= LAST_LEVEL && video.live.is_none() {
-        let path = download_proxy(app, bins, video).await?;
+        let path = download_proxy(app, bins, video, stop).await?;
         return Ok(Preview {
             source: PreviewSource::File {
                 path: path.to_string_lossy().into_owned(),
@@ -129,7 +179,13 @@ fn stream_url(video: &VideoInfo) -> Option<String> {
 /// copy made of it (level 2): Matroska, HEVC and an OBS recording's MPEG-TS
 /// it doesn't. The file is let through the asset protocol on its own; the
 /// protocol's scope is otherwise only Siphon's own folders.
-async fn file_source(app: &AppHandle, bins: &BinaryManager, video: &VideoInfo, level: u8) -> Result<Preview> {
+async fn file_source(
+    app: &AppHandle,
+    bins: &BinaryManager,
+    video: &VideoInfo,
+    level: u8,
+    stop: Stop,
+) -> Result<Preview> {
     let original = app
         .state::<Grants>()
         .get(&video.url)
@@ -146,7 +202,7 @@ async fn file_source(app: &AppHandle, bins: &BinaryManager, video: &VideoInfo, l
         });
     }
     if level <= LAST_LEVEL {
-        let copy = copy_of_file(app, bins, video, original.path()).await?;
+        let copy = copy_of_file(app, bins, video, original.path(), stop).await?;
         return Ok(Preview {
             source: PreviewSource::File {
                 path: copy.to_string_lossy().into_owned(),
@@ -190,7 +246,13 @@ fn plays_as_it_is(video: &VideoInfo) -> bool {
 /// (the short side) and its sound, made here, which takes moments rather
 /// than a download's minutes. Its timestamps start at zero where the file
 /// starts, as a part to cut is counted (see `downloads::files`).
-async fn copy_of_file(app: &AppHandle, bins: &BinaryManager, video: &VideoInfo, file: &Path) -> Result<PathBuf> {
+async fn copy_of_file(
+    app: &AppHandle,
+    bins: &BinaryManager,
+    video: &VideoInfo,
+    file: &Path,
+    stop: Stop,
+) -> Result<PathBuf> {
     let dir = cache_dir(app)?;
     tokio::fs::create_dir_all(&dir).await?;
     let version = video
@@ -234,12 +296,16 @@ async fn copy_of_file(app: &AppHandle, bins: &BinaryManager, video: &VideoInfo, 
         ])
         .arg(&partial);
     let _in_use = bins.in_use().await;
-    let output = process::output_within(cmd, PROXY_TIMEOUT).await?.ok_or_else(|| {
-        AppError::new(
+    let Some(output) = process::output_until(cmd, PROXY_TIMEOUT, stop.clone().stopped()).await? else {
+        let _ = tokio::fs::remove_file(&partial).await;
+        if stop.asked() {
+            return Err(AppError::cancelled());
+        }
+        return Err(AppError::new(
             ErrorKind::Unavailable,
             "Making the preview took too long. You can still type the times.",
-        )
-    })?;
+        ));
+    };
     if !output.status.success() || !partial.is_file() {
         let _ = tokio::fs::remove_file(&partial).await;
         return Err(
@@ -266,7 +332,7 @@ pub fn clear_cache(app: &AppHandle) {
 }
 
 /// Downloads a ~360p copy of the whole video for previewing.
-async fn download_proxy(app: &AppHandle, bins: &BinaryManager, video: &VideoInfo) -> Result<PathBuf> {
+async fn download_proxy(app: &AppHandle, bins: &BinaryManager, video: &VideoInfo, stop: Stop) -> Result<PathBuf> {
     let dir = cache_dir(app)?;
     tokio::fs::create_dir_all(&dir).await?;
 
@@ -315,12 +381,24 @@ async fn download_proxy(app: &AppHandle, bins: &BinaryManager, video: &VideoInfo
     cmd.args(["--output", &format!("{name}.%(ext)s"), "--"]).arg(&video.url);
 
     let _in_use = bins.in_use().await;
-    let output = process::output_within(cmd, PROXY_TIMEOUT).await?.ok_or_else(|| {
-        AppError::new(
+    let Some(output) = process::output_until(cmd, PROXY_TIMEOUT, stop.clone().stopped()).await? else {
+        // What yt-dlp had fetched: `<name>.mp4.part`, `<name>.f18.mp4.part` and the like.
+        if let Ok(mut entries) = tokio::fs::read_dir(&dir).await {
+            let prefix = format!("{name}.");
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                if entry.file_name().to_string_lossy().starts_with(&prefix) {
+                    let _ = tokio::fs::remove_file(entry.path()).await;
+                }
+            }
+        }
+        if stop.asked() {
+            return Err(AppError::cancelled());
+        }
+        return Err(AppError::new(
             ErrorKind::Network,
             "Preparing the preview took too long. You can still type the times.",
-        )
-    })?;
+        ));
+    };
     if !output.status.success() {
         return Err(errors::classify(&String::from_utf8_lossy(&output.stderr)));
     }

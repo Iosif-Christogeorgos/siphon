@@ -1,4 +1,4 @@
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { MessageSquareText, Scissors } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -135,11 +135,22 @@ export function VideoPane({ video }: { video: VideoInfo }) {
   // Choices are locked while a download runs: it was started with the ones shown.
   const running = download !== undefined && download.status !== "finished" && download.status !== "failed";
 
-  // Stream picks and trim ranges belong to the previous video.
+  // Stream picks and trim ranges belong to the previous video. Its trim goes when it does too: left
+  // open, it opened the next video's pane with Trim open for a moment, which asked for a preview.
   useEffect(() => {
     useChoices.getState().resetForVideo();
     useTrim.getState().reset();
+    return () => useTrim.getState().reset();
   }, []);
+  // A preview copy still being made of a video that is closed stops, and is asked for afresh if it opens again.
+  const queryClient = useQueryClient();
+  useEffect(
+    () => () => {
+      void ipc.previewStop(video.url).catch(() => undefined);
+      queryClient.removeQueries({ queryKey: ["preview", video.url] });
+    },
+    [video.url, queryClient],
+  );
 
   // A channel whose chat hasn't been placed yet opens the place to put it, once:
   // each streamer's layout differs (a webcam, a minimap).
