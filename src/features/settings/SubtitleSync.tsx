@@ -121,8 +121,9 @@ export function SubtitleSync() {
       );
       body = (
         <p className="text-xs text-muted-foreground">
-          <span className="font-medium text-success">Ready.</span> Runs on your {status.gpu}. In a film’s tracks, open
-          an added SRT file and press <span className="font-medium text-foreground">Sync to speech</span>.
+          <span className="font-medium text-success">Ready.</span> Runs on your {status.gpu}. In a film’s or a season’s
+          tracks, press <span className="font-medium text-foreground">Sync to speech</span> beside subtitles in text,
+          the film’s own or ones you add.
           {removeError && <span className="mt-1 block text-destructive">{removeError}</span>}
         </p>
       );
