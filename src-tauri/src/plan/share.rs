@@ -138,7 +138,8 @@ impl Planner<'_> {
         );
 
         let Some(duration) = self.duration else {
-            // Without a length there is no budget: take a small original and say so.
+            // Without a length there is no budget: take a small original and say so. One that comes
+            // out over the limit is converted to fit, planned then from the file (`fit_downloaded`).
             let video = max_by_key(Self::at_resolution(&pool, 480), |video| video.bitrate_rank())
                 .expect("plan() checks that videos exist");
             recipe.audio = self.audio_for(&video, &[AudioCodec::Aac], AudioCodec::Aac);
@@ -146,7 +147,7 @@ impl Planner<'_> {
             recipe.hints.push(warning(
                 "Length unknown",
                 format!(
-                    "The site didn’t say how long this video is, so Siphon can’t promise it fits under {}.",
+                    "The site didn’t say how long this video is. If the original comes out over {}, Siphon converts it to fit.",
                     megabytes(tier.limit_mb)
                 ),
             ));

@@ -416,6 +416,14 @@ pub async fn read(app: &AppHandle, bins: &BinaryManager, key: &str) -> Result<Ar
     Ok(info)
 }
 
+/// What a file Siphon made itself holds, read as a file on this PC is: a
+/// download whose site didn't say enough of it to plan its conversion by.
+pub(crate) async fn read_made(bins: &BinaryManager, path: &Path) -> Result<VideoInfo> {
+    let original = Original::new(std::path::absolute(path)?);
+    let stamp = Stamp::of(original.path()).ok_or_else(gone)?;
+    run_probe(bins, original.path()).await?.video_info(&original, stamp)
+}
+
 pub(crate) fn lost_track() -> AppError {
     AppError::internal("Siphon lost track of this file. Drop it on the window again.")
 }

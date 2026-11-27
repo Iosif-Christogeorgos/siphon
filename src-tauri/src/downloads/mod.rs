@@ -974,6 +974,39 @@ impl DownloadManager {
         }
     }
 
+    /// How a Share download whose video the site gave no length for, and
+    /// which came out over the limit, is converted to fit: planned again from
+    /// the file, read as a file on this PC is, which says its length (and,
+    /// for a direct link, its streams, which the site didn't say either).
+    /// None when it can't be read, and the download is kept as it is.
+    async fn fit_downloaded(
+        &self,
+        job: &JobContext<'_>,
+        choice: &Choice,
+        caps: &plan::Capabilities,
+        file: &Path,
+    ) -> Result<Option<Recipe>> {
+        let Ok(made) = local::read_made(job.bins, file).await else {
+            return Ok(None);
+        };
+        let planned = plan::plan(&made, choice, None, caps)?;
+        if let Some(reason) = planned.blocked {
+            return Err(AppError::new(ErrorKind::TooLong, reason));
+        }
+        log::line(
+            job.app,
+            &format!(
+                "share: {:.0} s long and over the limit, so it is converted to fit",
+                made.duration.unwrap_or_default()
+            ),
+        );
+        Ok(if planned.encodes_video() {
+            Some(planned)
+        } else {
+            planned.fallback.map(|fallback| *fallback)
+        })
+    }
+
     /// Waits for `delay`, or until the job is stopped. Returns false if it was stopped.
     async fn wait_unless_stopped(&self, id: &str, delay: Duration) -> bool {
         let delay = tokio::time::sleep(delay);
@@ -1136,15 +1169,27 @@ impl DownloadManager {
         let (recipe, source) = if recipe.needs_ffmpeg_pass() {
             (recipe, downloaded)
         } else {
-            match (recipe.fallback.as_deref(), recipe.size_limit) {
+            let over = recipe
+                .size_limit
+                .is_some_and(|limit| file_size(downloaded.path()) > limit);
+            let fit = match recipe.fallback.as_deref() {
                 // Share: an original that was expected to fit but came out over
                 // the limit is converted after all.
-                (Some(fallback), Some(limit)) if file_size(downloaded.path()) > limit => {
+                Some(fallback) if over => Some(fallback.clone()),
+                // Of a video the site didn't say the length of, there was no
+                // budget to plan that by: it is planned now, from the file.
+                None if over && video.duration.is_none() => {
+                    self.fit_downloaded(job, choice, &caps, downloaded.path()).await?
+                }
+                _ => None,
+            };
+            match fit {
+                Some(fit) => {
                     let source = work.join(downloaded.path().file_name().unwrap_or_default());
                     tokio::fs::create_dir_all(&work).await?;
-                    (fallback.clone(), move_file(downloaded, &source).await?)
+                    (fit, move_file(downloaded, &source).await?)
                 }
-                _ => {
+                None => {
                     let path = self.publish(downloaded, job.id).await?;
                     let _ = tokio::fs::remove_dir_all(&work).await;
                     return Ok(Done::file(path, note));
