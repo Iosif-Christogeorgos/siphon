@@ -518,14 +518,14 @@ def pair(lines, words, chunks, speech, models, torch, np):
             a[int(l["s"] * ratio / FR):max(int(l["s"] * ratio / FR) + 1, int(l["e"] * ratio / FR))] = 1
         return a
 
-    def best_offset(sub, mask=None, max_off=120.0):
+    def best_offset(sub, mask=None, max_off=120.0, around=0.0):
         b = np.where(sub > 0, 1.0, -1.0)
         if mask is not None:
             b = b * mask
         c = np.fft.irfft(sp_f * np.conj(np.fft.rfft(b, N)), N)
-        lim = int(max_off / FR)
-        cand = np.concatenate([c[N - lim:], c[:lim + 1]])
-        return (int(np.argmax(cand)) - lim) * FR, float(cand.max())
+        lim, at = int(max_off / FR), int(round(around / FR))
+        cand = c[np.arange(at - lim, at + lim + 1) % N]
+        return (int(np.argmax(cand)) - lim + at) * FR, float(cand.max())
 
     ratio, off, best = 1.0, 0.0, -1e18
     for r in (1.0, 25 / 23.976, 23.976 / 25, 24 / 23.976, 23.976 / 24, 25 / 24, 24 / 25):
@@ -539,7 +539,8 @@ def pair(lines, words, chunks, speech, models, torch, np):
             continue
         mask = np.zeros(n)
         mask[int(a * ratio / FR):int((a + 600) * ratio / FR)] = 1
-        o, _ = best_offset(subs_frames(ratio, sel), mask, 20)
+        # Within 20 s of the whole film's offset: of 0, a file more than 20 s off was put back where it was.
+        o, _ = best_offset(subs_frames(ratio, sel), mask, 20, off)
         pts.append((a + 300, o - off))
     slope, inter = (np.polyfit([p[0] for p in pts], [p[1] for p in pts], 1) if len(pts) >= 3 else (0.0, 0.0))
     for l in lines:
