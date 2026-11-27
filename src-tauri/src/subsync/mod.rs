@@ -180,8 +180,6 @@ impl SubSync {
         if sync.is_installed() {
             sync.status.lock().unwrap().state = State::Ready;
         }
-        // Gone at launch as well as at closing, in case the last session never closed.
-        sync.clear_work();
         Ok(sync)
     }
 
@@ -804,10 +802,26 @@ impl SubSync {
         }
     }
 
-    /// Takes away every synced copy. None is of use once Siphon closes: files
-    /// added to a film, synced copies among them, aren't kept across a restart.
-    pub fn clear_work(&self) {
-        let _ = std::fs::remove_dir_all(self.root.join("work"));
+    /// Takes away every synced copy but those at `keep`, as Siphon closes and
+    /// again at launch, in case the last session never closed. A film's
+    /// choices of tracks aren't kept across a restart, so only a paused or
+    /// failed copy of its tracks may still read one: those are kept
+    /// (`DownloadManager::inputs_kept`), for Resume and Try again.
+    pub fn keep_work(&self, keep: &[PathBuf]) {
+        let Ok(entries) = std::fs::read_dir(self.root.join("work")) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if keep.iter().any(|kept| kept.parent() == Some(path.as_path())) {
+                continue;
+            }
+            let _ = if path.is_dir() {
+                std::fs::remove_dir_all(&path)
+            } else {
+                std::fs::remove_file(&path)
+            };
+        }
     }
 
     /// Whether subtitle track `index` of `video` is ASS or SSA, which a sync keeps as it is.

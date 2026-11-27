@@ -90,7 +90,11 @@ fn main() {
             downloads::sweep_work(app.handle(), &downloads.kept_ids());
             let binaries = binaries::BinaryManager::new(app.handle())?;
             app.manage(Arc::new(binaries));
-            app.manage(Arc::new(subsync::SubSync::new(app.handle())?));
+            let subsync = subsync::SubSync::new(app.handle())?;
+            // A copy of tracks that was paused or failed still reads the files it adds tracks from.
+            downloads.regrant_inputs(&app.state::<local::Grants>());
+            subsync.keep_work(&downloads.inputs_kept());
+            app.manage(Arc::new(subsync));
             app.manage(sessions::Sessions::load(app.handle()));
             app.manage(sessions::sign_in::SignInWindow::default());
             app.manage(Arc::new(downloads));
@@ -195,8 +199,8 @@ fn main() {
                 tauri::async_runtime::block_on(downloads.shut_down());
                 // Every download has stopped: no cookie file may stay behind.
                 app.state::<Arc<sessions::Sessions>>().sweep_temp();
-                // Nor a synced copy of subtitles, which no later session can use.
-                app.state::<Arc<subsync::SubSync>>().clear_work();
+                // Nor a synced copy of subtitles, but those a paused or failed copy of tracks reads.
+                app.state::<Arc<subsync::SubSync>>().keep_work(&downloads.inputs_kept());
             }
         });
 }

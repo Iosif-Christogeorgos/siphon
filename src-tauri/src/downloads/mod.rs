@@ -398,6 +398,12 @@ pub struct DownloadManager {
     /// until it has finished or is cancelled: a paused or failed one can be
     /// resumed after Siphon was restarted (see [`files`]). Never written to.
     originals: Mutex<HashMap<String, PathBuf>>,
+    /// The other files a copy of an MKV's tracks reads, by id, kept as long
+    /// as its `originals` entry: those it adds tracks from (a synced copy of
+    /// subtitles among them) and the fonts it attaches. After a restart the
+    /// window still names them by their keys, which are given back at launch
+    /// (see [`DownloadManager::regrant_inputs`]). Never written to.
+    inputs: Mutex<HashMap<String, Vec<PathBuf>>>,
     /// Who may convert a file on this PC now, by what it takes (see [`files`]).
     files_gate: Mutex<files::FilesGate>,
     /// Where `leftovers` and `finished` are kept between sessions. None in tests.
@@ -417,6 +423,8 @@ struct SavedState {
     recordings: HashMap<String, live::Recording>,
     #[serde(default)]
     originals: HashMap<String, PathBuf>,
+    #[serde(default)]
+    inputs: HashMap<String, Vec<PathBuf>>,
 }
 
 /// Everything one running job needs.
@@ -481,6 +489,7 @@ impl DownloadManager {
             finished: Mutex::new(saved.finished.into_iter().filter(|path| path.exists()).collect()),
             recordings: Mutex::new(saved.recordings),
             originals: Mutex::new(saved.originals),
+            inputs: Mutex::new(saved.inputs),
             state_file: Some(state_file),
             ..Self::default()
         }
@@ -495,11 +504,13 @@ impl DownloadManager {
             let finished = self.finished.lock().unwrap();
             let recordings = self.recordings.lock().unwrap();
             let originals = self.originals.lock().unwrap();
+            let inputs = self.inputs.lock().unwrap();
             let view = serde_json::json!({
                 "leftovers": &*leftovers,
                 "finished": &*finished,
                 "recordings": &*recordings,
                 "originals": &*originals,
+                "inputs": &*inputs,
             });
             serde_json::to_vec(&view)
         };
@@ -702,13 +713,65 @@ impl DownloadManager {
             .lock()
             .unwrap()
             .insert(request.id.clone(), original.path().to_path_buf());
+        if let Some(edit) = &request.tracks {
+            self.remember_inputs(&grants, &request.id, edit)?;
+        }
         self.save();
         Ok(Source::File(original))
     }
 
-    /// A conversion of a file is done: its file needn't be remembered.
+    /// Remembers the files a copy of tracks reads besides the original, as
+    /// the original is. One that is gone since an earlier try is said so here.
+    fn remember_inputs(&self, grants: &Grants, id: &str, edit: &crate::local::mkv::edit::TrackEdit) -> Result<()> {
+        if let Some(saved) = self.inputs.lock().unwrap().get(id) {
+            if let Some(gone) = saved.iter().find(|path| !path.is_file()) {
+                let name = gone.file_name().map(|name| name.to_string_lossy().into_owned());
+                return Err(AppError::new(
+                    ErrorKind::Unavailable,
+                    format!(
+                        "{} isn't there any more. It may have been moved or deleted.",
+                        name.as_deref().unwrap_or("A file whose tracks were added")
+                    ),
+                ));
+            }
+        }
+        let keys: Vec<&str> = edit
+            .added_keys()
+            .into_iter()
+            .chain(edit.fonts.iter().map(String::as_str))
+            .collect();
+        let paths: Vec<PathBuf> = keys
+            .iter()
+            .filter_map(|key| grants.get(key))
+            .map(|file| file.path().to_path_buf())
+            .collect();
+        // One the window names but nobody gave is the job's to say (it can't be found).
+        if paths.len() == keys.len() {
+            self.inputs.lock().unwrap().insert(id.to_string(), paths);
+        }
+        Ok(())
+    }
+
+    /// Gives back the keys of the files remembered copies of tracks read
+    /// besides their originals, as at launch: the window's Resume and Try
+    /// again name them by those, and so does its list of the synced copies of
+    /// subtitles still in use (`sync_keep`), which would otherwise all go.
+    pub fn regrant_inputs(&self, grants: &Grants) {
+        for path in self.inputs.lock().unwrap().values().flatten() {
+            let _ = grants.grant(path);
+        }
+    }
+
+    /// Every file a remembered copy of tracks reads besides its original.
+    pub fn inputs_kept(&self) -> Vec<PathBuf> {
+        self.inputs.lock().unwrap().values().flatten().cloned().collect()
+    }
+
+    /// A conversion of a file is done: its files needn't be remembered.
     fn forget_original(&self, id: &str) {
-        if self.originals.lock().unwrap().remove(id).is_some() {
+        let original = self.originals.lock().unwrap().remove(id);
+        let inputs = self.inputs.lock().unwrap().remove(id);
+        if original.is_some() || inputs.is_some() {
             self.save();
         }
     }
@@ -815,7 +878,8 @@ impl DownloadManager {
     async fn discard_leftovers(&self, id: &str) {
         let leftovers = self.leftovers.lock().unwrap().remove(id);
         let original = self.originals.lock().unwrap().remove(id);
-        if leftovers.is_some() || original.is_some() {
+        let inputs = self.inputs.lock().unwrap().remove(id);
+        if leftovers.is_some() || original.is_some() || inputs.is_some() {
             self.save();
         }
         if let Some(leftovers) = leftovers {
