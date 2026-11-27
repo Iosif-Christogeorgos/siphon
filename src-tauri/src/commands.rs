@@ -240,8 +240,9 @@ pub async fn sync_subtitles(
         None => None,
     };
     let (key, subtitles) = match (&given, track) {
+        // The film's too: the same file may be added to two films, each synced to its own speech.
         (Some((key, given)), _) => (
-            key.clone(),
+            format!("{file}>{key}"),
             Subtitles::File {
                 path: given.path(),
                 charset: charset.as_deref(),

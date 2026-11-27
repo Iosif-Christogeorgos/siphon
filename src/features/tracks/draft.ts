@@ -74,6 +74,13 @@ export interface TrackSync {
 /** What names the sync of the film's own track `index` while it runs (`SyncProgress::key`). */
 export const ownSyncId = (film: string, index: number) => `${film}#${index}`;
 
+/**
+ * What names a sync of a file added to a film: the film too, as the same
+ * file may be added to two (the second's sync was taken for the first's, and
+ * dropped). Mirrors `sync_subtitles` in commands.rs.
+ */
+export const addedSyncId = (film: string, added: string) => `${film}>${added}`;
+
 /** The film's own track `index` synced to the speech: kept where it is, with every choice made of it. */
 export function withTrackSynced(draft: Draft, index: number, file: AddedFile, summary: SyncSummary): Draft {
   return { ...draft, syncs: { ...draft.syncs, [index]: { file, summary } } };
@@ -105,7 +112,8 @@ export function canSync(draft: Draft, contents: MkvContents, track: DraftTrack):
 
 /** What names a track's sync while it waits or runs: the added file's key, or `<film>#<track>`. */
 export function syncIdOf(film: string, draft: Draft, track: DraftTrack): string {
-  return addedOf(draft, track)?.key ?? ownSyncId(film, track.index);
+  const added = addedOf(draft, track);
+  return added ? addedSyncId(film, added.key) : ownSyncId(film, track.index);
 }
 
 /** Whether a track has been synced to the speech. */

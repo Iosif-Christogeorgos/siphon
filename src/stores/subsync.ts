@@ -5,7 +5,7 @@ import { useDownloads } from "@/stores/downloads";
 import type { SubSyncStatus, Synced, SyncProgress } from "@/types";
 
 interface SyncRequest {
-  /** What names this sync while it runs: the added file's key, or `<film>#<track>` (`ownSyncId`). */
+  /** What names this sync while it runs: `<film>><added file>` (`addedSyncId`), or `<film>#<track>` (`ownSyncId`). */
   id: string;
   /** The film's key. */
   file: string;

@@ -5,6 +5,7 @@ import type { SyncProgress } from "@/types";
 import {
   type Draft,
   type DraftAdded,
+  addedSyncId,
   ownSyncId,
   speechTrack,
   withoutSync,
@@ -50,7 +51,7 @@ export function askSync(
   const track = "track" in target ? target.track : null;
   useSubSync.getState().sync(
     {
-      id: added ? added.key : ownSyncId(fileKey, track ?? 0),
+      id: added ? addedSyncId(fileKey, added.key) : ownSyncId(fileKey, track ?? 0),
       file: fileKey,
       subs: added?.key ?? null,
       track,
@@ -94,7 +95,7 @@ export function SyncToSpeech({
 }) {
   const added = "added" in target ? target.added : null;
   const track = "track" in target ? target.track : null;
-  const id = added ? added.key : ownSyncId(fileKey, track ?? 0);
+  const id = added ? addedSyncId(fileKey, added.key) : ownSyncId(fileKey, track ?? 0);
   const summary = added ? added.synced?.summary : track !== null ? draft.syncs[track]?.summary : undefined;
   const status = useSubSync((state) => state.status);
   const running = useSubSync((state) => state.running?.id ?? null);
