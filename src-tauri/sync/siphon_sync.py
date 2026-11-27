@@ -303,8 +303,9 @@ def write_ass(ass, out, path):
     moved = 0
     for event in ass["events"]:
         if event["role"] == "moved":
-            sh = shift_at(event["s"])
-            new[event["row"]] = (max(0.0, event["s"] + sh), max(0.0, event["e"] + sh))
+            # One that would start before the film does starts with it, keeping its length.
+            sh = max(shift_at(event["s"]), -event["s"])
+            new[event["row"]] = (event["s"] + sh, event["e"] + sh)
             moved += 1
     rows = list(ass["rows"])
     for event in ass["events"]:
@@ -733,8 +734,21 @@ def pair(lines, words, chunks, speech, models, torch, np):
             sh = shift(prev) * (1 - w_) + shift(nxt) * w_
         out[x] = {"s": lines[x]["s"] + sh, "e": lines[x]["e"] + sh, "sim": None, "guess": True}
 
-    # Speech times to screen times.
     LEAD, LINGER, GAP, CPS, MINLEN = 0.04, 0.45, 0.085, 20.0, 1.0
+    # Lines placed before the film starts (a credit nobody speaks, in a file that ran late) start with it
+    # instead, in their order and spacing, squeezed into the time before the next line if they must be.
+    # Written as they were, at 0:00 to 0:00, they had no length and never showed.
+    early = next((x for x in range(G) if out[x]["s"] >= 0), G)
+    if early:
+        base = out[0]["s"]
+        span = max(out[x]["e"] for x in range(early)) - base
+        room = out[early]["s"] - LEAD - GAP if early < G else span
+        squeeze = min(1.0, max(0.0, room) / span) if span > 0 else 1.0
+        for x in range(early):
+            out[x]["s"] = (out[x]["s"] - base) * squeeze
+            out[x]["e"] = (out[x]["e"] - base) * squeeze
+
+    # Speech times to screen times.
     for o in out:
         if not o.get("guess"):
             o["s"] -= LEAD
@@ -798,6 +812,9 @@ def run(args):
     words, chunks = transcribe(audio, speech, args.models, language, torch)
     del audio
     out = pair(lines, words, chunks, speech, args.models, torch, np)
+    # With no line matched to its words, every time would be a guess.
+    if all(o.get("guess") for o in out):
+        raise RuntimeError("None of the lines matched what is said in the film. The subtitles may be for another film.")
     moved = 0
     if ass:
         moved = write_ass(ass, out, args.out)
