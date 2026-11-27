@@ -29,11 +29,13 @@ export function languagesLine(sound: string[], subtitles: string[]): string | nu
 }
 
 /**
- * A file whose tracks are worth choosing: an MKV, MP4 or MPEG-TS with more
- * than one picture and one sound to choose from.
+ * A film whose tracks can be chosen and added to: any MKV, MP4 or MPEG-TS
+ * with a picture, even one with nothing else to choose from, which is the
+ * film most often given subtitles (the owner's call, 2026-11-27). A sound
+ * file has none: subtitles are of no use to it.
  */
 export function hasTracksToChoose(overview: TrackOverview | undefined, editable: boolean): boolean {
-  return editable && overview !== undefined && (overview.video > 1 || overview.sound > 1 || overview.subtitles > 0);
+  return editable && overview !== undefined && overview.video > 0;
 }
 
 /**
