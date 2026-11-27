@@ -225,6 +225,13 @@ pub async fn sync_subtitles(
     charset: Option<String>,
 ) -> Result<Synced> {
     ensure_ready(&bins)?;
+    // One of those the window offers, as for reading a file added (`added::read`).
+    if charset
+        .as_deref()
+        .is_some_and(|chosen| !local::mkv::added::CHARSETS.contains(&chosen))
+    {
+        return Err(AppError::internal("Siphon doesn't know that encoding."));
+    }
     let video = grants.get(&file).ok_or_else(local::lost_track)?;
     if !video.path().is_file() {
         return Err(local::gone());
