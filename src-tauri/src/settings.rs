@@ -27,11 +27,14 @@ pub enum FilenameStyle {
 
 impl FilenameStyle {
     /// The yt-dlp output template for this style, without extension.
-    /// Lengths are capped in bytes so paths stay within OS limits.
+    /// Lengths are capped in bytes so names stay within Windows' 255 with
+    /// what Siphon and yt-dlp add while working (`.siphon-…`, `.f137`, `.part`):
+    /// at most 213, as Channel - Title. The id too: a direct link's is its
+    /// file name, as its title is, which once made a name over 360.
     pub fn template(self) -> &'static str {
         match self {
             FilenameStyle::Title => "%(title).180B",
-            FilenameStyle::TitleId => "%(title).180B [%(id)s]",
+            FilenameStyle::TitleId => "%(title).180B [%(id).30B]",
             FilenameStyle::ChannelTitle => "%(channel,uploader|Unknown).60B - %(title).150B",
             FilenameStyle::DateTitle => "%(upload_date>%Y-%m-%d|undated)s %(title).180B",
         }
@@ -210,6 +213,39 @@ mod tests {
         // The styles still there are read as they were.
         let settings: Settings = serde_json::from_str(r#"{"filename": "date_title"}"#).unwrap();
         assert_eq!(settings.filename, FilenameStyle::DateTitle);
+    }
+
+    #[test]
+    fn every_file_name_style_stays_short_enough_for_windows() {
+        for style in [
+            FilenameStyle::Title,
+            FilenameStyle::TitleId,
+            FilenameStyle::ChannelTitle,
+            FilenameStyle::DateTitle,
+        ] {
+            let template = style.template();
+            // Each field's longest (a date is ten characters), and the text between them.
+            let mut longest = 0;
+            let mut rest = template;
+            while let Some(at) = rest.find("%(") {
+                longest += at;
+                let end = rest[at..].find(')').unwrap() + at;
+                let field = &rest[at..=end];
+                let after = &rest[end + 1..];
+                longest += if field.starts_with("%(upload_date>") {
+                    10
+                } else {
+                    let cap = after.strip_prefix('.').and_then(|cap| cap.split_once('B'));
+                    let (bytes, tail) = cap.unwrap_or_else(|| panic!("{template}: {field} has no length cap"));
+                    rest = tail;
+                    longest += bytes.parse::<usize>().unwrap();
+                    continue;
+                };
+                rest = after.strip_prefix('s').unwrap_or(after);
+            }
+            longest += rest.len();
+            assert!(longest <= 213, "{template} can make a name of {longest} bytes");
+        }
     }
 
     #[test]
