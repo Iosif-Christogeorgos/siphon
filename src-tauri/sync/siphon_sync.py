@@ -504,7 +504,8 @@ def pair(lines, words, chunks, speech, models, torch, np):
 
     # Rough whole-film fit.
     FR = 0.01
-    n = int(max(phrases[-1]["e"], lines[-1]["e"] * 1.05) / FR) + 200
+    # As long as the film, and a little: not ten hours for one line written as 10:05:00 instead of 00:05:00.
+    n = int(max(phrases[-1]["e"], min(lines[-1]["e"], phrases[-1]["e"] + 600) * 1.05) / FR) + 200
     sp = np.zeros(n)
     for w in words:
         sp[int(w["s"] / FR):int(w["e"] / FR) + 1] = 1
@@ -717,12 +718,29 @@ def pair(lines, words, chunks, speech, models, torch, np):
             o["s"] = onset(o["s"], words[q - 1]["e"] if q > 0 else 0.0)
 
     # Lines still unplaced: by their placed neighbours.
+    FAR = 60.0
     for x in range(G):
         if out[x]:
             continue
         prev = next((y for y in range(x - 1, -1, -1) if out[y] and not out[y].get("guess")), None)
         nxt = next((y for y in range(x + 1, G) if out[y]), None)
         shift = lambda y: out[y]["s"] - lines[y]["s"]
+        # A line whose own time is wrong (written as 10:05:00, out of its order by more than a minute)
+        # goes where its order puts it, between its neighbours: moved by their shift, it stayed hours
+        # away, and every line after it was pushed there after it.
+        late = nxt is not None and lines[x]["s"] > lines[nxt]["s"] + FAR
+        early = prev is not None and lines[x]["s"] < lines[prev]["s"] - FAR
+        if late or early:
+            length = lines[x]["e"] - lines[x]["s"]
+            length = length if 0 < length <= 10 else 2.0
+            if prev is not None and nxt is not None:
+                s = (out[prev]["e"] + out[nxt]["s"] - length) / 2
+            elif nxt is not None:
+                s = out[nxt]["s"] - length - 0.2
+            else:
+                s = out[prev]["e"] + 0.2
+            out[x] = {"s": s, "e": s + length, "sim": None, "guess": True}
+            continue
         if prev is None and nxt is None:
             sh = lines[x]["p"] - lines[x]["s"]
         elif prev is None:
