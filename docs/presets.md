@@ -60,7 +60,7 @@ The limits move often and the sources disagree; where they do, Siphon takes the 
 
 How a Share file is made (`share.rs`):
 
-1. If an H.264 + AAC original fits under the limit (with 5% to spare) and is at least as sharp as an encode would be, it is **copied** (a trimmed part is smart-cut: see decisions.md).
+1. If an H.264 + AAC original fits under the limit (with 5% to spare) and is at least as sharp as an encode would be, it is **copied** (a trimmed part is smart-cut: see decisions.md). A video with no sound at all (a screen recording, a clip posted as a GIF) needs no AAC: until 2026-11-27 it was always encoded, so a 7.3 MB clip came out at 16.6 MB.
 2. Otherwise the budget is `limit × 0.95 ÷ length` (the trimmed length when a part is selected). Audio gets 128, 96, 64 or 48 kbit/s depending on how tight it is; video gets the rest, less 2% for the container.
 3. The size and frame rate are chosen by **bits per pixel**: the largest picture (then the higher frame rate) that gets at least 0.07, so 720p30 wins over a blocky 1080p60. Never above the source or what the service shows. A generous limit isn't filled for nothing: 0.2 bits per pixel is the ceiling.
 4. H.264 + AAC in MP4 with the index at the front, so it plays in the chat. On the GPU, NVENC runs its two-pass mode in one go; on the CPU, x264 runs two passes.

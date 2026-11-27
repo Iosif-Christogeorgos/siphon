@@ -502,6 +502,23 @@ fn share_copies_an_original_that_already_fits() {
 }
 
 #[test]
+fn share_copies_a_silent_original_that_already_fits() {
+    // A 7.3 MB clip with no sound at all: it has no AAC to bring, and needs none.
+    let clip = Format {
+        filesize: Some(7_300_000),
+        ..video("0", "avc1.64001f", 720, 30.0, 2_900.0)
+    };
+    let recipe = share(&info(vec![clip], 20.0), TargetId::Discord, TierId::DiscordFree, None);
+    assert!(copied(&recipe));
+    assert!(recipe.audio.is_none());
+    assert_eq!(recipe.badge, Badge::Lossless);
+    // Converted only if it comes out over the limit after all, and then without sound too.
+    let fallback = recipe.fallback.as_deref().unwrap();
+    assert!(fallback.encodes_video());
+    assert!(fallback.audio.is_none());
+}
+
+#[test]
 fn share_encodes_to_a_budget_that_fits_and_drops_resolution_before_quality() {
     // Ten minutes into 50 MB: about 630 kbit/s all told. (Without YouTube's
     // small 360p file, which would fit as it is.)

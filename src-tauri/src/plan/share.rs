@@ -162,12 +162,14 @@ impl Planner<'_> {
         let rung = pick_rung(video_kbps, best.lines, best.fps, frame, tier.max_lines);
 
         // First choice: an original that already fits, and is no less sharp than the encode.
+        // A video with no sound at all (a screen recording, a clip posted as a GIF) needs no AAC.
+        let silent = self.audios.is_empty();
         let fits = |video: &Video| {
             let audio = if video.has_audio() { None } else { aac.as_ref() };
             let carries_aac = if video.has_audio() {
                 AudioCodec::of(video.format) == AudioCodec::Aac
             } else {
-                aac.is_some()
+                aac.is_some() || silent
             };
             carries_aac
                 && video
