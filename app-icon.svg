@@ -1,23 +1,14 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <!-- Siphon: a tube that lifts over a bend and lets a drop fall on the far, lower side. -->
+  <!-- Siphon: a drop holding a play button that points down. Playing a video becomes downloading it. -->
   <defs>
-    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#3fd8cf" />
-      <stop offset="1" stop-color="#0a8f9c" />
-    </linearGradient>
-    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#fff" stop-opacity="0.28" />
-      <stop offset="0.55" stop-color="#fff" stop-opacity="0" />
+    <linearGradient id="drop" x1="120" y1="60" x2="400" y2="480" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#5ee8de" />
+      <stop offset="1" stop-color="#07808d" />
     </linearGradient>
   </defs>
-  <rect x="32" y="32" width="448" height="448" rx="108" fill="url(#tile)" />
-  <rect x="32" y="32" width="448" height="448" rx="108" fill="url(#sheen)" />
   <path
-    d="M176 262V214a80 80 0 0 1 160 0v104"
-    fill="none"
-    stroke="#fff"
-    stroke-width="54"
-    stroke-linecap="round"
+    fill="url(#drop)"
+    fill-rule="evenodd"
+    d="M244.4 56.3Q256 40 267.6 56.3L386.4 223.3A160 160 0 1 1 125.6 223.3ZM190 277H322A15 15 0 0 1 334.66 300.04L268.66 404.04A15 15 0 0 1 243.34 404.04L177.34 300.04A15 15 0 0 1 190 277Z"
   />
-  <path d="M336 356c24 30 37 48 37 67a37 37 0 0 1-74 0c0-19 13-37 37-67z" fill="#fff" />
 </svg>

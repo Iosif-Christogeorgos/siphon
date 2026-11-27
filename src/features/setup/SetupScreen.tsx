@@ -1,6 +1,6 @@
 import { Check, RotateCw, TriangleAlert } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
-import { LogoTile } from "@/components/Logo";
+import { LogoMark } from "@/components/Logo";
 import { Button } from "@/components/ui/button";
 import { riseIn, spring } from "@/lib/motion";
 import { TOOL_NAMES, TOOL_ORDER, TOOL_ROLES } from "@/lib/tools";
@@ -27,7 +27,7 @@ export function SetupScreen() {
       variants={{ visible: { transition: { staggerChildren: 0.06 } } }}
     >
       <motion.div variants={riseIn}>
-        <LogoTile className="size-16" />
+        <LogoMark className="size-16" />
       </motion.div>
       <motion.h1 variants={riseIn} className="mt-6 text-xl font-semibold tracking-tight">
         Setting up Siphon

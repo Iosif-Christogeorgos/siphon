@@ -65,4 +65,4 @@ The signing key is in the repository secret `TAURI_SIGNING_PRIVATE_KEY`; its pub
 
 ## Screenshots
 
-The README's screenshots and demo in `docs/media/` were taken from the dev build over the DevTools protocol, at twice the window's size, in both themes (GitHub shows the one matching the reader's), and framed with rounded corners and a shadow. They are lossless WebP; the demo is a GIF. The videos shown are Blender Foundation open movies (CC BY), so they can be shown freely. Retake them when the main screen changes noticeably.
+The README's screenshots and demo in `docs/media/` were taken from the dev build over the DevTools protocol, at twice the window's size, in both themes (GitHub shows the one matching the reader's), and framed with rounded corners and a shadow. They are lossless WebP; the demo is a GIF. The videos shown are Blender Foundation open movies (CC BY), so they can be shown freely. Retake them when the main screen changes noticeably. When the logo changed (2026-11-28), only the mark in their title bars was redrawn; every other pixel is as taken.

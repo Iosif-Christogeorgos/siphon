@@ -1,7 +1,7 @@
 import { ArrowRight, Check, LoaderCircle, RefreshCw } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { type ReactNode, useEffect, useState } from "react";
-import { LogoTile } from "@/components/Logo";
+import { LogoMark } from "@/components/Logo";
 import { Button } from "@/components/ui/button";
 import { spring } from "@/lib/motion";
 import { TOOL_NAMES, TOOL_ORDER, TOOL_ROLES } from "@/lib/tools";
@@ -52,7 +52,7 @@ export function Versions() {
       {/* Siphon itself, on a band of its own colour when there is a newer one to restart into. */}
       <div className={cn("relative px-4 py-3.5 transition-colors duration-300", app.available && "bg-primary-soft")}>
         <div className="flex items-center gap-3">
-          <LogoTile className="size-9 shrink-0" />
+          <LogoMark className="size-9 shrink-0" />
           <div className="min-w-0 flex-1">
             <p className="text-[13px] font-semibold tracking-tight">Siphon</p>
             <p className="text-xs text-muted-foreground">{app.available ? "A new version is ready" : "This app"}</p>
