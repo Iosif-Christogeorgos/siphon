@@ -63,6 +63,7 @@ const KINDS = [
  */
 export function SeasonTracks({
   files,
+  chosen,
   total,
   reading,
   onDrafts,
@@ -71,6 +72,8 @@ export function SeasonTracks({
 }: {
   /** The files read so far, each with its draft. */
   files: SeasonFile[];
+  /** The files selected in the list, which are the copies Save makes. */
+  chosen: Set<string>;
   /** How many of the list's files have tracks to choose. */
   total: number;
   /** How many are still being read. */
@@ -102,7 +105,8 @@ export function SeasonTracks({
     ? files.reduce((sum, file) => sum + (file.contents.suggestion?.left_out.length ?? 0), 0)
     : 0;
   const unsure = files.filter((file) => toCheck(file.contents, file.draft).length > 0).length;
-  const { copies, removed, added, size } = seasonSummary(files);
+  // What Save makes: the selected files' copies, not every file's (it said "1 copy" with none selected).
+  const { copies, removed, added, size } = seasonSummary(files.filter((file) => chosen.has(file.key)));
 
   return (
     <fieldset disabled={disabled} className="min-w-0 space-y-3 border-0 p-0 py-1.5">

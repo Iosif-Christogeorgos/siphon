@@ -237,19 +237,19 @@ export function FilesPane({ intake }: { intake: Intake }) {
   };
 
   const chosen = files.flatMap((file, index) => (selected.has(file.key) && selectable(index) ? [index] : []));
+  const chosenKeys = new Set(chosen.map((index) => files[index]?.key ?? ""));
   const shownSelectable = shown.filter((row) => selectable(row.index));
   const allShown = shownSelectable.length > 0 && shownSelectable.every((row) => selected.has(row.file.key));
   // Still being read or planned: a file is only started once its plan says there is something to make.
   const waiting = chosen.filter((index) =>
     tracksOn ? trackStatuses[index]?.kind !== "ready" : statuses[index]?.kind !== "ready",
   ).length;
-  const total = chosen.reduce((sum, index) => {
-    if (tracksOn) {
-      const status = trackStatuses[index];
-      return sum + (status?.kind === "ready" ? (sizeOf(status.draft, status.contents) ?? 0) : 0);
-    }
-    const status = statuses[index];
-    return sum + (status?.kind === "ready" ? (status.plan.estimated_size ?? 0) : 0);
+  // Unknown if any one's is: a file that doesn't say its tracks' sizes summed as nothing ("≈ 0 B").
+  const total = chosen.reduce<number | null>((sum, index) => {
+    const status = tracksOn ? trackStatuses[index] : statuses[index];
+    if (sum === null || status?.kind !== "ready") return sum;
+    const bytes = "draft" in status ? sizeOf(status.draft, status.contents) : status.plan.estimated_size;
+    return bytes == null ? null : sum + bytes;
   }, 0);
   const leftOut = statuses.filter((status) => status.kind === "nothing").length;
   const unreadable = statuses.filter((status) => status.kind === "unreadable").length;
@@ -332,6 +332,7 @@ export function FilesPane({ intake }: { intake: Intake }) {
           <TracksDeck open={tracksOn} onOpenChange={openTracks} disabled={false} title={deckTitle} said={deckSaid}>
             <SeasonTracks
               files={seasonFiles}
+              chosen={chosenKeys}
               total={mkvs.length}
               reading={tracksReading}
               onDrafts={(changed) => setDrafts((now) => ({ ...now, ...Object.fromEntries(changed) }))}
@@ -346,10 +347,10 @@ export function FilesPane({ intake }: { intake: Intake }) {
         <div className="flex items-center justify-between gap-2 border-b py-2 pr-2 pl-4">
           <span className="min-w-0 truncate text-[13px] text-muted-foreground tabular-nums">
             {chosen.length} of {files.length} selected
-            {chosen.length > 0 && choice && (
+            {chosen.length > 0 && choice && (waiting > 0 || total !== null) && (
               <span className="text-subtle-foreground">
                 {" · "}
-                {waiting > 0 ? `reading ${waiting} more…` : `≈ ${formatBytes(total)}`}
+                {waiting > 0 ? `reading ${waiting} more…` : `≈ ${formatBytes(total ?? 0)}`}
               </span>
             )}
           </span>
