@@ -244,10 +244,13 @@ function QueueItem({ download }: { download: Download }) {
 /**
  * What a failed row offers: signing in where an account is the likely fix and
  * Siphon has none (signing in retries it by itself), the sign-in Siphon has
- * where the site's answer leaves it to the user, otherwise Try again.
+ * where the site's answer leaves it to the user, otherwise Try again; nothing
+ * where trying again gives the same answer every time (too long for Share's
+ * limit, protected by DRM): its message says what to do instead.
  */
 function FailedAction({ download }: { download: Download }) {
   const { retry } = useDownloads.getState();
+  if (download.error?.kind === "too_long" || download.error?.kind === "drm") return null;
   const need = download.error?.sign_in;
   const likely = need && (need.chance === "needed" || need.chance === "maybe");
   if (need && likely && (!need.signed_in || (need.refused && need.chance === "needed"))) {
