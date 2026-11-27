@@ -408,6 +408,8 @@ pub struct DownloadManager {
     files_gate: Mutex<files::FilesGate>,
     /// Where `leftovers` and `finished` are kept between sessions. None in tests.
     state_file: Option<PathBuf>,
+    /// Where each job's work folder is made (see [`work_dir`]). None in tests.
+    work_root: Option<PathBuf>,
 }
 
 /// What the download list needs from one session to the next: the files of
@@ -481,9 +483,13 @@ impl DownloadManager {
     /// The manager, with what the last session left: paused and failed
     /// downloads' files (those still on disk), and finished files that still exist.
     pub fn load(app: &AppHandle) -> Self {
-        match app.path().app_config_dir() {
+        let manager = match app.path().app_config_dir() {
             Ok(dir) => Self::from_file(dir.join("downloads.json")),
             Err(_) => Self::default(),
+        };
+        Self {
+            work_root: work_root(app).ok(),
+            ..manager
         }
     }
 
@@ -892,6 +898,11 @@ impl DownloadManager {
         }
         if let Some(leftovers) = leftovers {
             leftovers.remove().await;
+        }
+        // And its work folder, which every try makes, whatever it kept there: until
+        // 2026-11-27 a cancelled download's stayed, empty, until a launch a day later.
+        if let Some(root) = &self.work_root {
+            let _ = tokio::fs::remove_dir_all(root.join(id)).await;
         }
     }
 
@@ -2800,6 +2811,24 @@ mod naming_tests {
 #[cfg(test)]
 mod saved_state_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_cancelled_download_takes_its_work_folder_with_it() {
+        let root = std::env::temp_dir().join(format!("siphon-work-{}", std::process::id()));
+        let work = root.join("paused");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::write(work.join("Clip.info.json"), b"{}").unwrap();
+        let manager = DownloadManager {
+            work_root: Some(root.clone()),
+            ..DownloadManager::default()
+        };
+        manager.keep_leftovers("paused", Leftovers::default());
+        // Cancelled while paused: no job runs, and its folder goes all the same.
+        manager.cancel("paused").await;
+        assert!(!work.exists());
+        assert!(manager.kept_ids().is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[tokio::test]
     async fn paused_downloads_and_finished_files_outlive_a_restart() {
