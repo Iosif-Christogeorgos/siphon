@@ -288,12 +288,13 @@ mod tests {
         assert_eq!(name(&preset(TargetId::Music), None), "Clip.mp3");
         assert_eq!(name(&preset(TargetId::Original), None), "Clip.m4a");
         assert_eq!(name(&preset(TargetId::Max), None), "Clip.mp4");
-        let part = Trim { start: 60.0, end: 75.5 };
+        // A part of the minute-long file.
+        let part = Trim { start: 30.0, end: 45.5 };
         assert_eq!(
             name(&preset(TargetId::Discord), Some(part)),
-            "Clip (Discord, 1m00s-1m15s).mp4"
+            "Clip (Discord, 0m30s-0m45s).mp4"
         );
-        assert_eq!(name(&preset(TargetId::Max), Some(part)), "Clip (1m00s-1m15s).mp4");
+        assert_eq!(name(&preset(TargetId::Max), Some(part)), "Clip (0m30s-0m45s).mp4");
         let reels = Choice::Preset(PresetChoice {
             tier: Some(TierId::Reels),
             ..match preset(TargetId::Social) {
