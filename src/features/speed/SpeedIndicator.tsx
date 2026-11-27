@@ -38,7 +38,7 @@ export function SpeedIndicator() {
             <Hint label="All downloads together. Click to change or remove the limit.">
               <button
                 type="button"
-                onClick={() => openPanel("settings")}
+                onClick={() => openPanel("settings", "downloads")}
                 className="flex h-6 items-center gap-1 rounded-full border border-border-strong px-2 text-muted-foreground transition-colors duration-100 hover:bg-accent hover:text-foreground"
               >
                 <Gauge className="size-3" strokeWidth={2} />

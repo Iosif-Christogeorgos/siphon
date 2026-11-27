@@ -10,7 +10,7 @@ import { spring } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import { useSignIn } from "@/stores/signIn";
 import type { SignInMode, SiteSession } from "@/types";
-import { Card } from "./parts";
+import { Card, Status } from "./parts";
 
 /**
  * The sites Siphon is signed in to: each with whether its sign-in still works
@@ -83,34 +83,28 @@ export function SignedInSites() {
                       <button
                         type="button"
                         aria-label={`About the ${session.site} sign-in`}
-                        className="grid size-5 shrink-0 place-items-center rounded-full text-subtle-foreground transition-colors hover:bg-accent hover:text-foreground"
+                        className="grid size-5 shrink-0 place-items-center rounded-full text-subtle-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
                       >
                         <Info className="size-3" />
                       </button>
                     </Hint>
                   </div>
-                  <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                    <span
-                      aria-hidden
-                      className={cn(
-                        "size-1.5 shrink-0 rounded-full",
-                        session.expired ? "bg-destructive" : "bg-success shadow-[0_0_6px_var(--success)]",
-                      )}
-                    />
+                  <div className="mt-0.5">
                     {session.expired ? (
-                      <span className="text-destructive">Expired · sign in again when a video asks</span>
+                      <Status tone="error" label="Expired">
+                        sign in again when a video asks
+                      </Status>
                     ) : (
-                      <span className="truncate">
-                        <span className="text-foreground/90">Active</span>
-                        {session.last_used && ` · used ${formatDay(session.last_used * 1000)}`}
-                      </span>
+                      <Status tone="on" label="Active">
+                        {session.last_used ? `used ${formatDay(session.last_used * 1000)}` : null}
+                      </Status>
                     )}
-                  </p>
+                  </div>
                 </div>
                 <button
                   type="button"
                   onClick={() => void signOut(session.site)}
-                  className="-mr-1 flex h-7 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-[13px] font-medium text-muted-foreground transition-colors duration-150 hover:bg-destructive-soft hover:text-destructive [&_svg]:size-3.5"
+                  className="-mr-1 flex h-7 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-[13px] font-medium text-muted-foreground outline-none transition-[background-color,color,transform] duration-150 hover:bg-destructive-soft hover:text-destructive focus-visible:ring-[3px] focus-visible:ring-ring/40 active:scale-[0.97] [&_svg]:size-3.5"
                 >
                   <LogOut />
                   Sign out
@@ -121,6 +115,7 @@ export function SignedInSites() {
                 <Segmented
                   label={`When to use the ${session.site} sign-in`}
                   group={`sign-in-mode-${session.site}`}
+                  variant="tray"
                   value={session.mode}
                   options={[
                     {

@@ -41,9 +41,11 @@ export function MyLanguages({
               key={language}
               layout
               transition={spring}
-              className="flex h-8 items-center gap-1.5 rounded-lg border border-border-strong bg-background/40 pr-1 pl-2.5 text-[13px]"
+              className="flex h-8 items-center gap-1.5 rounded-lg border border-border-strong bg-card pr-1 pl-2.5 text-[13px] font-medium shadow-[var(--card-edge),0_1px_2px_rgb(0_0_0/0.06)]"
             >
-              <span className="text-xs tabular-nums text-subtle-foreground">{place + 1}</span>
+              <span className="grid size-4 place-items-center rounded-full bg-primary-soft text-[10px] font-semibold tabular-nums text-primary">
+                {place + 1}
+              </span>
               {name}
               {place > 0 && (
                 <Hint label={`Put ${name} before ${languageName(list[place - 1] ?? "")}`}>
@@ -69,7 +71,7 @@ export function MyLanguages({
         })}
         <li>
           <Select value="" onValueChange={(language) => onChange([...list, language])}>
-            <SelectTrigger aria-label="Add a language" className="h-8 w-auto gap-1.5 border-dashed text-muted-foreground">
+            <SelectTrigger aria-label="Add a language" className="h-8 w-auto gap-1.5 border-dashed bg-transparent text-muted-foreground hover:border-primary/40 hover:bg-primary-soft/40 hover:text-foreground data-[state=open]:border-primary/50 data-[state=open]:text-foreground">
               Add a language
             </SelectTrigger>
             <SelectContent className="max-h-72">

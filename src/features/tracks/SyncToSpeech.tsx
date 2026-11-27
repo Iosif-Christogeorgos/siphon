@@ -199,7 +199,7 @@ export function SyncToSpeech({
           disabled={locked !== null}
           className={className}
           hint={locked ?? "Download subtitle sync in Settings to use it."}
-          onPress={() => openPanel("settings")}
+          onPress={() => openPanel("settings", "sync")}
         />
       )}
       {/* Under the whole row of flags, whatever comes after the key in it. */}

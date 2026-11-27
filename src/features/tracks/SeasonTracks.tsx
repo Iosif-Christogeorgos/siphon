@@ -119,7 +119,7 @@ export function SeasonTracks({
           Choices here are made in every file. Your languages are in{" "}
           <button
             type="button"
-            onClick={() => openPanel("settings")}
+            onClick={() => openPanel("settings", "languages")}
             className="rounded-sm text-primary underline-offset-2 hover:underline focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-none"
           >
             Settings
@@ -327,7 +327,7 @@ function useRowSync(syncs: RowSync[], onDraft: (key: string, change: DraftChange
               ? `Subtitle sync is downloading: ${Math.round((status.progress ?? 0) * 100)}%.`
               : "Download subtitle sync in Settings to sync these to the speech."
         }
-        onPress={() => openPanel("settings")}
+        onPress={() => openPanel("settings", "sync")}
       />
     );
   } else if (pending.length > 0) {

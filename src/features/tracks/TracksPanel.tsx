@@ -278,7 +278,7 @@ function Languages({
   const settingsLink = (
     <button
       type="button"
-      onClick={() => openPanel("settings")}
+      onClick={() => openPanel("settings", "languages")}
       className="rounded-sm text-primary underline-offset-2 hover:underline focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-none"
     >
       Settings

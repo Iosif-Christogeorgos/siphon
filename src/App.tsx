@@ -7,7 +7,7 @@ import { Toaster } from "@/components/Toaster";
 import { DropTarget } from "@/features/files/DropTarget";
 import { Home } from "@/features/home/Home";
 import { QueueSheet } from "@/features/queue/QueueSheet";
-import { SettingsSheet } from "@/features/settings/SettingsSheet";
+import { SettingsPanel } from "@/features/settings/SettingsPanel";
 import { SetupScreen } from "@/features/setup/SetupScreen";
 import { ipc, onDownloadEvent, onSpeed, onSubSyncStatus, onSyncProgress, onToolStatus, onToolUpdated } from "@/lib/ipc";
 import { announce } from "@/lib/notices";
@@ -104,7 +104,7 @@ export function App() {
           </AnimatePresence>
           {/* Inside the boundary too: a panel that fails must not blank the window. */}
           <QueueSheet />
-          <SettingsSheet />
+          <SettingsPanel />
         </ErrorBoundary>
       </main>
       {/* Files dragged over the window: once the tools are there to read them. */}

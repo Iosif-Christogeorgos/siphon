@@ -325,6 +325,36 @@
   }
 }
 
+/*
+ * A row of Settings (`Row` in features/settings/parts.tsx): its name with a
+ * small control beside it, its explanation under the name, and anything wide
+ * under that. Once the page has room, the wide part goes beside the name and
+ * explanation instead, so each setting reads across.
+ */
+.settings-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: "title control" "hint hint" "body body";
+  column-gap: 0.75rem;
+}
+
+@container settings (min-width: 34rem) {
+  .settings-row {
+    grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.3fr);
+    grid-template-areas: "title control" "hint body";
+    column-gap: 1.75rem;
+  }
+
+  .settings-row[data-body-only] {
+    grid-template-areas: "title body" "hint body";
+  }
+
+  .settings-row[data-stacked] {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "title control" "hint hint" "body body";
+  }
+}
+
 /* Loading placeholder with a slow sheen. */
 @utility skeleton {
   border-radius: 0.5rem;

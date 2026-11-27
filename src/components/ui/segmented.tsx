@@ -18,6 +18,7 @@ export function Segmented<T extends string | number>({
   onChange,
   className,
   size = "sm",
+  variant = "soft",
 }: {
   /** Read by screen readers. */
   label: string;
@@ -31,13 +32,25 @@ export function Segmented<T extends string | number>({
   className?: string;
   /** "md" for a primary row, such as the preset groups. */
   size?: "sm" | "md";
+  /**
+   * "soft": a tinted highlight on a faint track. "tray": keys in a recessed
+   * tray, the chosen one raised out of it, as a track's flags are (Settings).
+   */
+  variant?: "soft" | "tray";
 }) {
+  const tray = variant === "tray";
   return (
     <div
       role="radiogroup"
       aria-label={label}
       onKeyDown={onRadioKeys}
-      className={cn("flex shrink-0 rounded-lg bg-accent p-0.5", className)}
+      className={cn(
+        "flex shrink-0",
+        tray
+          ? "gap-0.5 rounded-[10px] border border-border bg-well p-[3px] shadow-[inset_0_1px_2px_rgb(0_0_0/0.1)]"
+          : "rounded-lg bg-accent p-0.5",
+        className,
+      )}
     >
       {options.map((option) => {
         const selected = option.id === value;
@@ -53,20 +66,29 @@ export function Segmented<T extends string | number>({
             tabIndex={selected || (value === null && option === options[0]) ? 0 : -1}
             onClick={() => !option.disabled && onChange(option.id)}
             className={cn(
-              "relative flex flex-1 items-center justify-center gap-1.5 rounded-md font-medium whitespace-nowrap outline-none transition-colors duration-150 focus-visible:ring-[3px] focus-visible:ring-ring/40 [&_svg]:size-3.5 [&_svg]:shrink-0",
+              "relative flex flex-1 items-center justify-center gap-1.5 font-medium whitespace-nowrap outline-none transition-[color,background-color,transform] duration-150 focus-visible:ring-[3px] focus-visible:ring-ring/40 [&_svg]:size-3.5 [&_svg]:shrink-0",
+              tray ? "rounded-[7px]" : "rounded-md",
               size === "md" ? "h-8 px-3 text-[13px]" : "h-7 px-2.5 text-xs",
               option.disabled
                 ? "cursor-default text-subtle-foreground opacity-60"
                 : selected
                   ? "text-primary"
-                  : "text-muted-foreground hover:text-foreground",
+                  : cn(
+                      "text-muted-foreground hover:text-foreground",
+                      tray && "hover:bg-accent active:translate-y-px active:scale-[0.98]",
+                    ),
             )}
           >
             {selected && (
               <motion.span
                 layoutId={`segmented-${group}`}
                 transition={spring}
-                className="absolute inset-0 rounded-md bg-primary-soft ring-1 ring-primary/15"
+                className={cn(
+                  "absolute inset-0",
+                  tray
+                    ? "rounded-[7px] bg-popover shadow-[var(--card-edge),0_0_0_1px_var(--border),0_1px_2px_rgb(0_0_0/0.16)]"
+                    : "rounded-md bg-primary-soft ring-1 ring-primary/15",
+                )}
               />
             )}
             <span className="relative flex items-center gap-1.5 tabular-nums">

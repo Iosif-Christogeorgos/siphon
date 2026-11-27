@@ -2,6 +2,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { Check, FileVideo, FolderOpen, RotateCcw } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { type KeyboardEvent, useEffect, useState } from "react";
+import { Button } from "@/components/ui/button";
 import { onRadioKeys } from "@/components/ui/radio-keys";
 import { Segmented } from "@/components/ui/segmented";
 import { Hint } from "@/components/ui/tooltip";
@@ -10,7 +11,7 @@ import { spring } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import type { Theme } from "@/stores/theme";
 import type { FilenameStyle } from "@/types";
-import { fieldClass, Reveal } from "./parts";
+import { fieldClass, Reveal, wellClass } from "./parts";
 
 // ── Save to ─────────────────────────────────────────────────────────────
 
@@ -39,37 +40,41 @@ export function FolderTile({
   const parent = parts.slice(0, -1).join("\\");
 
   return (
-    <div className="group/folder flex items-center gap-1 rounded-xl border border-border-strong bg-background/60 p-1.5 transition-[border-color,background-color] duration-200 hover:border-primary/40 hover:bg-primary-soft/40">
-      <div
-        // A large target for the pointer; Change is the control for the keyboard and screen readers.
+    <div className="group/folder flex items-center gap-1 rounded-xl border border-border-strong bg-background/60 p-1.5 transition-[border-color,background-color,box-shadow] duration-200 hover:border-primary/40 hover:bg-primary-soft/40 has-[[data-folder]:active]:shadow-[inset_0_1px_2px_rgb(0_0_0/0.08)]">
+      <button
+        type="button"
+        data-folder
+        // The whole tile is a target for the pointer; it says what it opens for screen readers.
+        aria-label={`Save to ${folder}. Choose another folder`}
         onClick={() => void choose()}
-        className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 pl-1"
+        className="flex min-w-0 flex-1 items-center gap-3 rounded-lg py-0.5 pl-1 text-left outline-none focus-visible:ring-[3px] focus-visible:ring-ring/40"
       >
-        <div className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary-soft text-primary ring-1 ring-primary/15 transition-transform duration-300 ease-out-expo group-hover/folder:scale-105">
+        <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary-soft text-primary ring-1 ring-primary/15 transition-transform duration-300 ease-out-expo group-hover/folder:scale-105 group-active/folder:scale-95">
           <FolderOpen className="size-4" strokeWidth={1.75} />
-        </div>
-        <div className="min-w-0 flex-1 leading-tight">
+        </span>
+        <span className="block min-w-0 flex-1 leading-tight">
           <AnimatePresence mode="popLayout" initial={false}>
-            <motion.div
+            <motion.span
               key={folder}
+              className="block"
               initial={{ opacity: 0, y: 6, filter: "blur(3px)" }}
               animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
               exit={{ opacity: 0, y: -6, filter: "blur(3px)" }}
               transition={spring}
             >
-              <p title={folder} className="truncate text-[13px] font-medium">
+              <span title={folder} className="block truncate text-[13px] font-medium">
                 {name}
-              </p>
+              </span>
               {parent && (
                 // Right to left, so the ellipsis falls at the start; <bdi> keeps the path itself left to right.
-                <p dir="rtl" title={folder} className="truncate text-left text-[11px] text-subtle-foreground">
+                <span dir="rtl" title={folder} className="mt-0.5 block truncate text-left text-[11px] text-subtle-foreground">
                   <bdi dir="ltr">{parent}</bdi>
-                </p>
+                </span>
               )}
-            </motion.div>
+            </motion.span>
           </AnimatePresence>
-        </div>
-      </div>
+        </span>
+      </button>
       <AnimatePresence initial={false}>
         {custom && (
           <motion.div
@@ -80,25 +85,23 @@ export function FolderTile({
             transition={spring}
           >
             <Hint label="Use the Downloads folder again">
-              <button
-                type="button"
-                aria-label="Use the Downloads folder again"
-                onClick={() => onChange(null)}
-                className="grid size-8 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-              >
+              <Button variant="ghost" size="icon-sm" aria-label="Use the Downloads folder again" onClick={() => onChange(null)} className="size-8 rounded-lg">
                 <RotateCcw className="size-3.5" />
-              </button>
+              </Button>
             </Hint>
           </motion.div>
         )}
       </AnimatePresence>
-      <button
-        type="button"
+      <Button
+        variant="secondary"
+        size="sm"
+        tabIndex={-1}
+        aria-hidden
         onClick={() => void choose()}
-        className="h-8 rounded-lg bg-secondary px-3 text-[13px] font-medium transition-[background-color,transform] duration-150 hover:bg-border-strong active:scale-[0.97]"
+        className="shadow-[var(--card-edge)] group-hover/folder:bg-border-strong"
       >
         Change
-      </button>
+      </Button>
     </div>
   );
 }
@@ -121,12 +124,13 @@ export function FileNames({ style, onChange }: { style: FilenameStyle; onChange:
       <Segmented
         label="File names"
         group="filename"
+        variant="tray"
         className="w-full"
         value={style}
         options={FILENAME_STYLES.map(({ id, label, hint }) => ({ id, label, hint }))}
         onChange={onChange}
       />
-      <div className="flex h-9 items-center gap-2.5 rounded-lg border border-dashed border-border-strong px-3">
+      <div className={cn("flex h-9 items-center gap-2.5 px-3", wellClass)}>
         <FileVideo className="size-3.5 shrink-0 text-subtle-foreground" />
         <div className="relative min-w-0 flex-1">
           {/* Each style slides its example in. */}
@@ -195,7 +199,7 @@ export function Lanes({
       aria-valuemax={max}
       aria-valuenow={value}
       onKeyDown={onKeyDown}
-      className="flex items-center gap-2.5 rounded-lg py-0.5 pr-1 pl-2 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/40"
+      className="flex items-center gap-2.5 rounded-lg py-0.5 pr-1 pl-2 outline-none transition-colors duration-150 hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/40"
     >
       <div className="flex h-6 items-end" onPointerLeave={() => setPointed(null)}>
         {Array.from({ length: max }, (_, index) => {
@@ -295,6 +299,7 @@ export function SpeedLimit({ limit, onChange }: { limit: number | null; onChange
       <Segmented<number | "off" | "custom">
         label="Speed limit"
         group="speed-limit"
+        variant="tray"
         className="w-full"
         value={custom ? "custom" : (preset ?? null)}
         options={[
