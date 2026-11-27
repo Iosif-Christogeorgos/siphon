@@ -455,6 +455,14 @@ impl JobContext<'_> {
             AppError::internal("Couldn't create the download folder. Check the folder in Settings.")
                 .with_details(format!("{}: {err}", output_dir.display()))
         })?;
+        // A folder that is there can still refuse files (C:\Windows, a read-only
+        // drive), which yt-dlp would only say in Python's words, as it failed.
+        if !local::writable(&output_dir, self.id) {
+            return Err(AppError::internal(format!(
+                "Siphon can't save files in {}. Choose another download folder in Settings.",
+                output_dir.display()
+            )));
+        }
         Ok(output_dir)
     }
 

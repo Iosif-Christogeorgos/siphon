@@ -204,6 +204,29 @@ const RULES: &[Rule] = &[
         message: "There isn't enough free disk space to finish this download.",
     },
     Rule {
+        // The download folder refuses files (C:\Windows, a read-only drive). Siphon checks
+        // it before a download starts (`JobContext::output_dir`); this is for one that
+        // changed meanwhile. In yt-dlp's words: "[Errno 13] Permission denied: '….part'".
+        needles: &["errno 13", "[winerror 5]", "unable to open for writing"],
+        kind: ErrorKind::Internal,
+        retry: Retry::No,
+        chance: Chance::Never,
+        message: "Siphon can't save files in the download folder. Choose another folder in Settings.",
+    },
+    Rule {
+        // A network folder that isn't there now: "[WinError 53] The network path was not found".
+        needles: &[
+            "winerror 53",
+            "winerror 67",
+            "network path was not found",
+            "network name cannot be found",
+        ],
+        kind: ErrorKind::Network,
+        retry: Retry::No,
+        chance: Chance::Never,
+        message: "The download folder is on a network drive that can't be reached. Check that it's connected, or choose another folder in Settings.",
+    },
+    Rule {
         // yt-dlp hands section downloads to ffmpeg, which reports a refused
         // or dropped connection only as an exit code.
         needles: &["ffmpeg exited with code"],
@@ -322,17 +345,42 @@ pub fn classify(log: &str) -> AppError {
     }
 
     // Unknown: surface yt-dlp's own last error line, minus its prefix noise.
-    let message = log
+    let last = log
         .lines()
         .rev()
         .find_map(|line| line.trim().strip_prefix("ERROR:"))
-        .map(|line| line.trim().to_string())
-        .filter(|line| !line.is_empty() && line.len() <= 200)
+        .map(str::trim)
+        .unwrap_or_default();
+    let said = site_says(last);
+    // "[dailymotion] x8j6rdo: Not found.": the site's own word that there's no such video.
+    if said.is_some_and(|said| said.trim_end_matches('.').eq_ignore_ascii_case("not found")) {
+        let mut error = AppError::new(
+            ErrorKind::Unavailable,
+            "The site says there's no such video. It may have been removed, or the link may be wrong.",
+        )
+        .with_details(redact(log));
+        error.chance = Chance::Never;
+        return error;
+    }
+    let message = match said {
+        Some(said) => format!("The site says: {said}"),
+        None => last.to_string(),
+    };
+    let message = Some(message)
+        .filter(|message| !last.is_empty() && message.len() <= 200)
         .unwrap_or_else(|| "Something went wrong while talking to the site.".to_string());
     let mut error = AppError::internal(redact(&message)).with_details(redact(log));
     // An answer Siphon doesn't recognise: an account rarely helps, but might.
     error.chance = Chance::Unknown;
     error
+}
+
+/// What a site said, in an error line from its extractor, without the
+/// extractor and the video it is about: `[dailymotion] x8j6rdo: Not found.`
+/// → `Not found.` None for a line of yt-dlp's own (`Postprocessing: …`).
+fn site_says(line: &str) -> Option<&str> {
+    let (_, rest) = line.strip_prefix('[')?.split_once("] ")?;
+    Some(rest.split_once(": ").map_or(rest, |(_, said)| said).trim()).filter(|said| !said.is_empty())
 }
 
 #[cfg(test)]
@@ -355,6 +403,28 @@ mod tests {
         let dropped = "[http @ 0000027533a89b80] HTTP error 404 Not Found
                        [in#0/hls @ 0000027533a7ea40] Failed to reload playlist 0";
         assert!(!stream_over(dropped));
+    }
+
+    #[test]
+    fn says_in_plain_words_what_a_folder_or_a_site_refused() {
+        // Messages seen 2026-11-26, shown as they were.
+        let folder =
+            classify(r"ERROR: unable to open for writing: [Errno 13] Permission denied: 'C:\Windows\clip.part'");
+        assert!(folder.message.contains("download folder"), "{}", folder.message);
+        let network = classify(r"ERROR: [WinError 53] The network path was not found: '\\nas\videos'");
+        assert!(network.message.contains("network drive"), "{}", network.message);
+        let gone = classify("ERROR: [dailymotion] x8j6rdo: Not found.");
+        assert_eq!(gone.kind, ErrorKind::Unavailable);
+        assert!(!gone.message.contains('['), "{}", gone.message);
+        // Anything else a site says, without the extractor and the video's id; yt-dlp's own, as it is.
+        assert_eq!(
+            classify("ERROR: [vimeo] 123: Something unusual happened").message,
+            "The site says: Something unusual happened"
+        );
+        assert_eq!(
+            classify("ERROR: Postprocessing: Conversion failed!").message,
+            "Postprocessing: Conversion failed!"
+        );
     }
 
     #[test]
