@@ -136,24 +136,46 @@ impl DownloadManager {
         let contents = mkv::inspect(job.bins, original).await?;
         let added = added_inputs(job, edit).await?;
         edit.check(&contents, &added)?;
-        let extras = extras(job, edit, &contents).await?;
-        if !self.wait_for_turn(job.id, Load::Disk).await {
-            return Err(AppError::cancelled());
+        let made = match extras(job, edit, &contents).await {
+            Ok(extras) => self.copy_in_turn(job, original, edit, &contents, &added, &extras).await,
+            Err(error) => Err(error),
+        };
+        // Its chapters were written there for FFmpeg (`extras`), and are written
+        // anew by another try: until 2026-11-27 they stayed, until a launch a day later.
+        if let Ok(work) = work_dir(job.app, job.id) {
+            let _ = tokio::fs::remove_dir_all(work).await;
         }
-        let made = self
-            .keep_tracks(
-                job,
-                original,
-                TrackCopy {
-                    extras: &extras,
-                    edit,
-                    contents: &contents,
-                    added: &added,
-                },
-            )
-            .await;
-        self.end_turn(Load::Disk);
         made
+    }
+
+    /// The copy, once the disk is free for it.
+    async fn copy_in_turn(
+        &self,
+        job: &JobContext<'_>,
+        original: &Original,
+        edit: &TrackEdit,
+        contents: &mkv::Contents,
+        added: &[AddedInput],
+        extras: &Extras,
+    ) -> Result<Done> {
+        if self.wait_for_turn(job.id, Load::Disk).await {
+            let made = self
+                .keep_tracks(
+                    job,
+                    original,
+                    TrackCopy {
+                        extras,
+                        edit,
+                        contents,
+                        added,
+                    },
+                )
+                .await;
+            self.end_turn(Load::Disk);
+            made
+        } else {
+            Err(AppError::cancelled())
+        }
     }
 
     async fn keep_tracks(&self, job: &JobContext<'_>, original: &Original, copy: TrackCopy<'_>) -> Result<Done> {
