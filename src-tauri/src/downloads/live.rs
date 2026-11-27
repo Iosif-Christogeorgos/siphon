@@ -935,7 +935,7 @@ impl DownloadManager {
         };
         self.attach_cookies(job.id, cookies);
         self.add_cookies(job.id, &mut cmd);
-        let name = format!("{}{}", job.place.prefix(), job.settings.filename_template());
+        let name = format!("{}{}", job.place.prefix(), job.settings.recording_filename_template());
         cmd.arg("--paths").arg(&recording.output_dir).args([
             "--output",
             &args::recording_template(&name, &args::own_marker(job.id), part, from_start),

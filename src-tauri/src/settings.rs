@@ -39,6 +39,18 @@ impl FilenameStyle {
             FilenameStyle::DateTitle => "%(upload_date>%Y-%m-%d|undated)s %(title).180B",
         }
     }
+
+    /// The template for a live recording: as [`FilenameStyle::template`],
+    /// but Date Title says the date once. yt-dlp adds the time a recording
+    /// starts to a live stream's title ("alanzoka (live) 2026-11-27 00:37"),
+    /// which made two dates beside the stream's; `fulltitle` is the title
+    /// without it. The other styles keep it: it tells recordings apart.
+    pub fn recording_template(self) -> &'static str {
+        match self {
+            FilenameStyle::DateTitle => "%(upload_date>%Y-%m-%d|undated)s %(fulltitle,title).180B",
+            style => style.template(),
+        }
+    }
 }
 
 /// A style this version doesn't know is read as the default rather than
@@ -132,6 +144,11 @@ impl Settings {
     /// The yt-dlp output template for file names, without extension.
     pub fn filename_template(&self) -> &'static str {
         self.filename.template()
+    }
+
+    /// The yt-dlp output template for a live recording's file name (see [`FilenameStyle::recording_template`]).
+    pub fn recording_filename_template(&self) -> &'static str {
+        self.filename.recording_template()
     }
 }
 
@@ -247,28 +264,29 @@ mod tests {
             FilenameStyle::ChannelTitle,
             FilenameStyle::DateTitle,
         ] {
-            let template = style.template();
-            // Each field's longest (a date is ten characters), and the text between them.
-            let mut longest = 0;
-            let mut rest = template;
-            while let Some(at) = rest.find("%(") {
-                longest += at;
-                let end = rest[at..].find(')').unwrap() + at;
-                let field = &rest[at..=end];
-                let after = &rest[end + 1..];
-                longest += if field.starts_with("%(upload_date>") {
-                    10
-                } else {
-                    let cap = after.strip_prefix('.').and_then(|cap| cap.split_once('B'));
-                    let (bytes, tail) = cap.unwrap_or_else(|| panic!("{template}: {field} has no length cap"));
-                    rest = tail;
-                    longest += bytes.parse::<usize>().unwrap();
-                    continue;
-                };
-                rest = after.strip_prefix('s').unwrap_or(after);
+            for template in [style.template(), style.recording_template()] {
+                // Each field's longest (a date is ten characters), and the text between them.
+                let mut longest = 0;
+                let mut rest = template;
+                while let Some(at) = rest.find("%(") {
+                    longest += at;
+                    let end = rest[at..].find(')').unwrap() + at;
+                    let field = &rest[at..=end];
+                    let after = &rest[end + 1..];
+                    longest += if field.starts_with("%(upload_date>") {
+                        10
+                    } else {
+                        let cap = after.strip_prefix('.').and_then(|cap| cap.split_once('B'));
+                        let (bytes, tail) = cap.unwrap_or_else(|| panic!("{template}: {field} has no length cap"));
+                        rest = tail;
+                        longest += bytes.parse::<usize>().unwrap();
+                        continue;
+                    };
+                    rest = after.strip_prefix('s').unwrap_or(after);
+                }
+                longest += rest.len();
+                assert!(longest <= 213, "{template} can make a name of {longest} bytes");
             }
-            longest += rest.len();
-            assert!(longest <= 213, "{template} can make a name of {longest} bytes");
         }
     }
 
