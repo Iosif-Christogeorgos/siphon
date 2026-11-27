@@ -567,12 +567,21 @@ impl DownloadManager {
     /// A file on this PC (its key in place of a link) is converted when its
     /// turn comes (see [`files`]).
     pub fn start(self: &Arc<Self>, app: AppHandle, request: DownloadRequest) -> Result<()> {
+        // One job for an id: a second took the first's place in the list, which
+        // could then no longer be paused or stopped. The window never asks twice.
+        let running = || AppError::new(ErrorKind::Busy, "This download is already running.");
+        if self.jobs.lock().unwrap().contains_key(&request.id) {
+            return Err(running());
+        }
         let source = self.source_of(&app, &request)?;
         let id = request.id;
         let recording = request.record;
-        match &source {
+        let registered = match &source {
             Source::Link(_) => self.register(&id, recording.is_none()),
             Source::File(_) => self.register_file(&id),
+        };
+        if !registered {
+            return Err(running());
         }
 
         let manager = Arc::clone(self);
@@ -673,22 +682,33 @@ impl DownloadManager {
     }
 
     /// Adds a job to the list, and a download to the back of the queue.
-    fn register(&self, id: &str, queued: bool) {
-        self.jobs.lock().unwrap().insert(id.to_string(), Job::default());
+    /// False if a job of that id is already there (it is left as it is).
+    fn register(&self, id: &str, queued: bool) -> bool {
+        match self.jobs.lock().unwrap().entry(id.to_string()) {
+            std::collections::hash_map::Entry::Occupied(_) => return false,
+            std::collections::hash_map::Entry::Vacant(entry) => entry.insert(Job::default()),
+        };
         if queued {
             self.gate.lock().unwrap().waiting.push_back(id.to_string());
         }
+        true
     }
 
     /// Adds a conversion of a file on this PC to the list. It waits for its
     /// turn by what it takes (see [`files`]), not in the downloads' queue,
     /// and what it runs keeps below other programs, so the PC stays usable.
-    fn register_file(&self, id: &str) {
+    fn register_file(&self, id: &str) -> bool {
         let job = Job {
             gentle: true,
             ..Job::default()
         };
-        self.jobs.lock().unwrap().insert(id.to_string(), job);
+        match self.jobs.lock().unwrap().entry(id.to_string()) {
+            std::collections::hash_map::Entry::Occupied(_) => false,
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(job);
+                true
+            }
+        }
     }
 
     /// What a request makes its file from: its link, or the file on this PC
@@ -2811,6 +2831,19 @@ mod naming_tests {
 #[cfg(test)]
 mod saved_state_tests {
     use super::*;
+
+    #[test]
+    fn one_job_for_an_id() {
+        let manager = DownloadManager::default();
+        assert!(manager.register("same", true));
+        // A second would take the first's place, which could then no longer be stopped.
+        assert!(!manager.register("same", true));
+        assert!(!manager.register_file("same"));
+        assert_eq!(manager.gate.lock().unwrap().waiting.len(), 1);
+        // Once it has ended, the id can run again (Resume, Try again).
+        manager.end_job("same");
+        assert!(manager.register_file("same"));
+    }
 
     #[tokio::test]
     async fn a_cancelled_download_takes_its_work_folder_with_it() {
