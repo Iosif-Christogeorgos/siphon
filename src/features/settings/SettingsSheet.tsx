@@ -208,7 +208,7 @@ function SectionTabs({ active, onPick }: { active: SectionId; onPick: (id: Secti
             onClick={() => onPick(id)}
             onPointerEnter={() => setPointed(id)}
             className={cn(
-              "relative h-9 flex-auto px-1 text-[12.5px] font-medium whitespace-nowrap outline-none transition-colors duration-200 focus-visible:text-primary",
+              "relative h-9 flex-auto text-xs font-medium whitespace-nowrap outline-none transition-colors duration-200 focus-visible:text-primary",
               current ? "text-foreground" : "text-muted-foreground hover:text-foreground",
             )}
           >
