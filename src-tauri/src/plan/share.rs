@@ -215,8 +215,20 @@ impl Planner<'_> {
             return recipe;
         }
 
+        // An original that fits but is softer than the encode isn't "none that fits".
+        let softer_fits = pool
+            .iter()
+            .copied()
+            .any(|video| video.codec == VideoCodec::H264 && fits(&video));
         self.encode_for_share(&mut recipe, &pool, rung, video_kbps, audio_kbps);
-        recipe.reason = Some(format!("no original stream fits under {}", megabytes(tier.limit_mb)));
+        recipe.reason = Some(if softer_fits {
+            format!(
+                "{} has room for a sharper picture than the original",
+                megabytes(tier.limit_mb)
+            )
+        } else {
+            format!("no original stream fits under {}", megabytes(tier.limit_mb))
+        });
         if rung.bpp < GOOD_BPP {
             recipe.hints.push(warning(
                 "Will look soft",

@@ -573,6 +573,22 @@ fn share_budgets_for_the_trimmed_length() {
 }
 
 #[test]
+fn share_says_why_it_converts_a_part_an_original_of_would_fit() {
+    // Without 1080p in H.264, a part's 720p original fits, but an encode of the 1080p VP9 is sharper.
+    let mut video = youtube_4k();
+    video.formats.retain(|format| format.id != "137");
+    let trim = Some(Trim { start: 60.0, end: 90.0 });
+    let part = share(&video, TargetId::Discord, TierId::DiscordFree, trim);
+    assert!(part.encodes_video());
+    assert_eq!(part.output_lines(), Some(1080));
+    let reason = |recipe: &Recipe| recipe.reason.clone().unwrap_or_default();
+    assert_eq!(reason(&part), "20 MB has room for a sharper picture than the original");
+    // Where none fits, that is what it says.
+    let whole = share(&video, TargetId::Discord, TierId::DiscordFree, None);
+    assert_eq!(reason(&whole), "no original stream fits under 20 MB");
+}
+
+#[test]
 fn share_blocks_a_video_too_long_to_look_decent() {
     let long = info(youtube_4k().formats, 3.0 * 3600.0);
     let recipe = share(&long, TargetId::Discord, TierId::DiscordFree, None);
