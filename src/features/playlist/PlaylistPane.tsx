@@ -1,6 +1,6 @@
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { Check, ChevronRight, ListPlus, ListVideo, Search, X } from "lucide-react";
-import { Fragment, type MouseEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, type MouseEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { Button } from "@/components/ui/button";
 import { PresetArea } from "@/features/presets/PresetArea";
@@ -62,6 +62,8 @@ export function PlaylistPane({ playlist, onOpen }: { playlist: PlaylistInfo; onO
   const { entries } = playlist;
   // A stream on air or scheduled is opened to record, not queued with the rest.
   const videos = useMemo(() => entries.filter((entry) => !opens(entry)), [entries]);
+  // Each video's place in the list, its number; looked up per row, not searched for.
+  const position = useMemo(() => new Map(videos.map((entry, index) => [entry, index])), [videos]);
   const have = useHave(videos);
 
   // A channel starts with its first tab (Videos) selected, not its Live and Shorts too,
@@ -140,6 +142,11 @@ export function PlaylistPane({ playlist, onOpen }: { playlist: PlaylistInfo; onO
     }
     anchor.current = entry.url;
   };
+  // The same function from one render to the next, so a row redraws only when it changes:
+  // a channel of thousands redrew every row for one tick (half a second, 2026-11-26).
+  const latestOnRow = useRef(onRow);
+  latestOnRow.current = onRow;
+  const onRowStable = useCallback((entry: PlaylistEntry, event: MouseEvent) => latestOnRow.current(entry, event), []);
 
   const shownSelectable = visibleVideos.filter(selectable);
   const allShown = shownSelectable.length > 0 && shownSelectable.every((entry) => selected.has(entry.url));
@@ -161,7 +168,7 @@ export function PlaylistPane({ playlist, onOpen }: { playlist: PlaylistInfo; onO
     for (const entry of chosen) {
       start({ url: entry.url, title: entry.title, thumbnail: entry.thumbnail }, choice, null, {
         folder: options.folder ? playlist.title : null,
-        number: options.number ? [videos.indexOf(entry) + 1, videos.length] : null,
+        number: options.number ? [(position.get(entry) ?? 0) + 1, videos.length] : null,
       });
     }
     // They're in the queue now; nothing is left selected to add twice.
@@ -275,16 +282,18 @@ export function PlaylistPane({ playlist, onOpen }: { playlist: PlaylistInfo; onO
                   </li>
                 )}
                 {section.entries.map((entry) => (
-                  <li key={entry.url}>
+                  // Rows out of sight aren't laid out or drawn: ticking them all in a channel
+                  // of thousands took 0.7 s, then 0.25 s (2026-11-27).
+                  <li key={entry.url} className="[contain-intrinsic-size:auto_44px] [content-visibility:auto]">
                     {opens(entry) ? (
                       <LinkRow entry={entry} onOpen={() => onOpen(entry.url)} />
                     ) : (
                       <EntryRow
                         entry={entry}
-                        index={videos.indexOf(entry)}
+                        index={position.get(entry) ?? 0}
                         checked={selected.has(entry.url) && selectable(entry)}
                         have={have.of.get(entry.url)}
-                        onClick={(event) => onRow(entry, event)}
+                        onRow={onRowStable}
                       />
                     )}
                   </li>
@@ -452,18 +461,18 @@ function Option({ checked, onChange, children }: { checked: boolean; onChange: (
   );
 }
 
-function EntryRow({
+const EntryRow = memo(function EntryRow({
   entry,
   index,
   checked,
   have,
-  onClick,
+  onRow,
 }: {
   entry: PlaylistEntry;
   index: number;
   checked: boolean;
   have: Have | undefined;
-  onClick: (event: MouseEvent) => void;
+  onRow: (entry: PlaylistEntry, event: MouseEvent) => void;
 }) {
   const queued = have === "queued";
   return (
@@ -472,7 +481,7 @@ function EntryRow({
       role="checkbox"
       aria-checked={checked}
       aria-disabled={queued}
-      onClick={queued ? undefined : onClick}
+      onClick={queued ? undefined : (event) => onRow(entry, event)}
       className={cn(
         "flex w-full items-center gap-3 rounded-xl px-2 py-1.5 text-left transition-colors",
         queued ? "cursor-default" : "hover:bg-accent",
@@ -500,7 +509,7 @@ function EntryRow({
       )}
     </button>
   );
-}
+});
 
 /** Entries that are opened rather than queued: another playlist, or a stream on air or scheduled. */
 const opens = (entry: PlaylistEntry) => entry.is_playlist || entry.live !== null;
