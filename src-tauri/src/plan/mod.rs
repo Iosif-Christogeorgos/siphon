@@ -1367,10 +1367,14 @@ fn lossy_target_kbps(source_kbps: Option<f64>) -> u32 {
 
 /// The honest note that goes with an audio conversion.
 fn audio_conversion_hint(source: AudioCodec, target: AudioCodec, source_kbps: Option<f64>) -> Option<Hint> {
-    let described = match source_kbps {
-        Some(kbps) if kbps > 0.0 => format!("{} kbps {}", kbps.round(), source.label()),
-        _ => source.label().to_string(),
+    // What the source is, where there is something to say: not "The source is audio."
+    // for a codec Siphon doesn't name, of a bitrate nobody said.
+    let described = match (source_kbps, source) {
+        (Some(kbps), _) if kbps > 0.0 => Some(format!("{} kbps {}", kbps.round(), source.label())),
+        (_, AudioCodec::Other) => None,
+        _ => Some(source.label().to_string()),
     };
+    let lead = described.map_or_else(String::new, |described| format!("The source is {described}. "));
     if source.is_lossless() {
         return None;
     }
@@ -1378,13 +1382,13 @@ fn audio_conversion_hint(source: AudioCodec, target: AudioCodec, source_kbps: Op
         warning(
             "Larger, not better",
             format!(
-            "The source is {described}. Converting it to {} can’t bring back detail that was never there; it only makes the file several times larger.",
+            "{lead}Converting it to {} can’t bring back detail that was never there; it only makes the file several times larger.",
             target.label()
         ),
         )
     } else {
         info(format!(
-            "The source is {described}. Converting it to {} compresses it a second time, which slightly lowers quality.",
+            "{lead}Converting it to {} compresses it a second time, which slightly lowers quality.",
             target.label()
         ))
     })

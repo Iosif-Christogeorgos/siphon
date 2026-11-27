@@ -420,6 +420,16 @@ fn music_says_when_a_bitrate_is_higher_than_the_source() {
 }
 
 #[test]
+fn an_audio_hint_names_the_source_only_when_it_can() {
+    let text = |source, kbps| audio_conversion_hint(source, AudioCodec::Mp3, kbps).unwrap().text;
+    assert!(text(AudioCodec::Opus, Some(160.0)).starts_with("The source is 160 kbps Opus. Converting it to MP3"));
+    assert!(text(AudioCodec::Opus, None).starts_with("The source is Opus. "));
+    // A codec Siphon doesn't name, of a bitrate nobody said: not "The source is audio."
+    assert!(text(AudioCodec::Other, None).starts_with("Converting it to MP3"));
+    assert!(text(AudioCodec::Other, Some(96.0)).starts_with("The source is 96 kbps audio. "));
+}
+
+#[test]
 fn best_audio_keeps_the_original_track() {
     let recipe = plan_for(&youtube_4k(), TargetId::Original);
     assert_eq!(recipe.format_selector(), "251");
