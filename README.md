@@ -47,10 +47,12 @@ The original is kept whenever it already plays where it's going, because convert
 
 ### Cut exactly the part you want
 
+<p align="center">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/media/trim-dark.webp">
   <img src="docs/media/trim-light.webp" width="640" alt="The trim panel with a 15-second part of Spring selected, and the Share preset fitting it under Discord's 20 MB limit at 1080p with no quality loss">
 </picture>
+</p>
 
 Pick one or more parts on a timeline, with a live preview and frame-by-frame keys. Only those parts are downloaded, and each starts and ends on the exact frame you chose. Siphon re-encodes only the second or two around each cut and copies the rest untouched, so an hour of 1080p is cut in about 20 seconds.
 
