@@ -203,7 +203,7 @@ docs/local-files.md      Converting files on this PC: how, what was tested, and 
 docs/mkv-editor.md       Choosing a film's tracks: how languages are known, seasons, adding tracks, chapters and fonts
 docs/subtitle-sync.md    Syncing subtitles to a film's speech: how, the models and the download, what was measured
 docs/decisions.md        Why things work the way they do, and known issues
-docs/media/              The README's screenshots and demo
+docs/media/              The README's screenshots
 app-icon.svg             Icon source; regenerate with `npx tauri icon app-icon.svg`
 ```
 
